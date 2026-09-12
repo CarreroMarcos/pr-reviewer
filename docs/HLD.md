@@ -171,7 +171,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 
 **Responsibilities:**
 
-1. **Credential hydration with rotation handling.** One batched `GetParameters` call at cold start (cold start always fetches); cached in module globals within the warm container only. On a 401 from GitHub or the LLM: drop cache → re-fetch → retry once. Periodic re-fetch every 30 minutes bounds stale-credential lifetime. The SSM read uses the worker role's narrowest-possible scoped permission.
+1. **Credential hydration with rotation handling.** One batched `GetParameters` call at cold start (cold start always fetches); cached in warm-container state behind an injectable accessor (§4.4) — never re-fetched mid-warm except on 401 or the 30-minute TTL. On a 401 from GitHub or the LLM: drop cache → re-fetch → retry once. Periodic re-fetch every 30 minutes bounds stale-credential lifetime. The SSM read uses the worker role's narrowest-possible scoped permission.
 2. **Diff retrieval.** Construct `https://api.github.com/repos/{repo}/pulls/{n}` endpoints from envelope identifiers; validate scheme/host/path if a payload URL must be used. Pin `X-GitHub-Api-Version: 2026-03-10` (current version; `2022-11-28` remains supported until March 10, 2028 and is the header-less default). Send an explicit `User-Agent` (GitHub may reject requests without one). `GET /repos/{repo}/pulls/{n}` responses are third-party data: validate shape (HTTP 200, `head.sha` is 40-hex) before the live-head fence consumes them; response-embedded URLs are never used for navigation (§6, failure mode 18).
 3. **Diff budget (deterministic, pre-model):** lockfiles excluded from semantic content but summarized; `MAX_FILES = 500`; `MAX_CHANGED_LINES = 25,000` (additions + deletions); `MAX_INPUT_BYTES = 800,000`. Token count is provider-observed only.
 4. **Lockfile handling.** Excluded from primary review; a **deterministic** dependency-change summary is included (same lockfile delta → identical summary text, so two workers reviewing the same head produce identical model input). Example: `package.json: lodash 4.17.21 → 4.17.22; lockfile: 13 packages changed, 1 transitive removed`.
@@ -301,7 +301,7 @@ Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth al
 
 ### 4.4 Testing & Verification Strategy (v6.4)
 
-Gates: no commit without the pre-commit suite (ruff, gitleaks, hygiene — §7.1 adjacent); no `terraform apply` without a green test run; acceptance criteria (§7.3 a–i) are automated integration tests against a deployed stack — the definition of done, not manual checks. Runtime code remains stdlib-only (§1.4); all test tooling lives in the dev dependency group.
+Gates: no commit without the installed pre-commit hooks (hygiene, ruff, gitleaks); no `terraform apply` without a green test run; acceptance criteria (§7.3 a–i) are automated integration tests against a deployed stack — the definition of done, not manual checks. Runtime code remains stdlib-only (§1.4); all test tooling lives in the dev dependency group.
 
 1. **Unit — pure logic, no I/O:** HMAC vectors (valid, tampered, missing header, malformed prefix), envelope schema cases (§2.1), 413 body-cap behavior, event/action gating, every §2.3.8 decision-table branch. Tests are organized by behavior and read top-to-bottom with minimal shared fixtures (DAMP over DRY).
 2. **State machine — deterministic interleavings:** establish / claim / fence / finalize scenarios for §6 failure modes 6–10, run against an in-memory DynamoDB stub.
