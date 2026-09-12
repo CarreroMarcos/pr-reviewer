@@ -54,7 +54,7 @@ class Jira:
 
 
 def parse_tasks(text: str, scope: str) -> list[dict]:
-    out = []
+    parsed = []
     seen: set[str] = set()
     for line in text.splitlines():
         m = TASK_RE.match(line.strip())
@@ -65,15 +65,13 @@ def parse_tasks(text: str, scope: str) -> list[dict]:
             sys.exit(f"duplicate {tid}")
         seen.add(tid)
         us_n = int(us) if us else None
-        if scope == "mvp" and us_n is not None and us_n != 1:
-            continue
         if " \u2014 verify:" in rest:
             summary, verify = rest.split(" \u2014 verify:", 1)
         elif " -- verify:" in rest:
             summary, verify = rest.split(" -- verify:", 1)
         else:
             summary, verify = rest, ""
-        out.append(
+        parsed.append(
             {
                 "id": tid,
                 "us": us_n,
@@ -82,6 +80,19 @@ def parse_tasks(text: str, scope: str) -> list[dict]:
                 "full": rest,
             }
         )
+    us2_min = min(
+        (int(t["id"][1:]) for t in parsed if t["us"] is not None and t["us"] >= 2),
+        default=None,
+    )
+    out = []
+    for t in parsed:
+        n = int(t["id"][1:])
+        if scope == "mvp":
+            if t["us"] is not None and t["us"] != 1:
+                continue
+            if t["us"] is None and us2_min is not None and n >= us2_min:
+                continue
+        out.append(t)
     if not out:
         sys.exit("no tasks parsed from tasks.md")
     return out
