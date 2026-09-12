@@ -2,7 +2,7 @@
 
 ## Autonomous Serverless PR Reviewer
 
-**Version:** 6.4 (Final — Implementation-Ready)
+**Version:** 6.6 (Final — Implementation-Ready)
 **Status:** Approved for Implementation
 **Owner:** Marcos Carrero
 **Region:** `us-west-2` (US West — Oregon)
@@ -116,7 +116,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 7. **Mark processed.** PutItem the delivery GUID with 7-day TTL — outliving GitHub's 3-day redelivery window by design.
 8. **Fast acknowledgment.** HTTP 202 within 250ms.
 
-**Secret hydration (v6.4):** webhook-secret fetched at cold start, cached warm with a 30-minute periodic refresh — mirroring §2.3.1 discipline. No SSM call is added to the 250 ms hot path, and a webhook-secret rotation converges across hot containers within 30 minutes.
+**Secret hydration (v6.4):** webhook-secret fetched at cold start, cached warm with a 30-minute periodic refresh — mirroring §2.3 item 1 discipline. No SSM call is added to the 250 ms hot path, and a webhook-secret rotation converges across hot containers within 30 minutes.
 
 **Response contract (canonical).** The response body is always empty; the status code is the entire contract. One consistent error strategy — no condition-specific bodies.
 
@@ -128,6 +128,8 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | GUID already processed | 200 | no-op (idempotent) |
 | HMAC verification failure | 401 | nothing enqueued |
 | Body exceeds 1 MiB | 413 | nothing enqueued; rejected before decode |
+| Missing/malformed signature or event headers | 401 | nothing enqueued |
+| HMAC-valid but body unparseable or payload fields schema-invalid | 200 | discarded, nothing enqueued — permanent failure; a 4xx would trigger pointless GitHub redelivery |
 | SQS `SendMessage` failure | 500 | delivery **not** marked (recoverable via redelivery) |
 | Admission ceiling exceeded | 429 | nothing enqueued; GitHub records a failed delivery |
 
@@ -137,15 +139,16 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 
 | Field | Type | Constraint |
 | :--- | :--- | :--- |
+| `envelope_version` | string | constant `v1` — additive evolution only (One-Version Rule) |
 | `event_type` | string | constant `pull_request` |
 | `action` | enum | `opened` \| `synchronize` \| `ready_for_review` |
-| `repo_full_name` | string | `owner/repo`, GitHub name charset |
-| `pr_number` | integer | > 0 |
+| `repo_full_name` | string | `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`, ≤ 128 chars |
+| `pr_number` | integer | > 0, ≤ 10⁹ |
 | `head_sha`, `base_sha` | string | 40-char lowercase hex |
-| `sender` | string | GitHub login |
-| `delivery_guid` | string | webhook delivery GUID |
+| `sender` | string | GitHub login charset, ≤ 64 chars |
+| `delivery_guid` | string | UUID, ≤ 64 chars |
 
-The worker **constructs** `diff_url` and `comments_url` from `repo_full_name` + `pr_number`. The ingress builds the envelope only from HMAC-verified, action-filtered payloads; the worker treats every SQS message as **untrusted input** and validates it against this schema before any use (redrive and injected messages can contain arbitrary bytes). Malformed or schema-violating messages are logged (IDs only, §5.4) and completed — non-retryable, same policy as permanent failures in §2.3.8.
+The worker **constructs** `diff_url` and `comments_url` from `repo_full_name` + `pr_number`. The ingress builds the envelope only from HMAC-verified, action-filtered payloads; the worker treats every SQS message as **untrusted input** and validates it against this schema before any use (redrive and injected messages can contain arbitrary bytes). Malformed or schema-violating messages are logged (IDs only, §5.4) and completed — non-retryable, same policy as permanent failures in §2.3 item 8. All GitHub-derived envelope fields are control-character-stripped before logging or prompt assembly.
 
 ### 2.2 SQS Work Queue — Durability Boundary
 
@@ -175,8 +178,8 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 2. **Diff retrieval.** Construct `https://api.github.com/repos/{repo}/pulls/{n}` endpoints from envelope identifiers; validate scheme/host/path if a payload URL must be used. Pin `X-GitHub-Api-Version: 2026-03-10` (current version; `2022-11-28` remains supported until March 10, 2028 and is the header-less default). Send an explicit `User-Agent` (GitHub may reject requests without one). `GET /repos/{repo}/pulls/{n}` responses are third-party data: validate shape (HTTP 200, `head.sha` is 40-hex) before the live-head fence consumes them; response-embedded URLs are never used for navigation (§6, failure mode 18).
 3. **Diff budget (deterministic, pre-model):** lockfiles excluded from semantic content but summarized; `MAX_FILES = 500`; `MAX_CHANGED_LINES = 25,000` (additions + deletions); `MAX_INPUT_BYTES = 800,000`. Token count is provider-observed only.
 4. **Lockfile handling.** Excluded from primary review; a **deterministic** dependency-change summary is included (same lockfile delta → identical summary text, so two workers reviewing the same head produce identical model input). Example: `package.json: lodash 4.17.21 → 4.17.22; lockfile: 13 packages changed, 1 transitive removed`.
-5. **Model inference.** Z.ai chat completions at temperature 0.2; model string and endpoint host from SSM.
-6. **Fenced publication.** See §3 — claim first, then live-head fence, then publish, then conditional finalize, in that exact order.
+5. **Model inference.** Z.ai chat completions at temperature 0.2; model string and endpoint host from SSM (endpoint validated at hydration: HTTPS scheme + host allow-list).
+6. **Fenced publication.** See §3 — claim, then live-head fence, then publish, then conditional finalize, in that exact order (following Establish + Review, §3.3 steps 1–2).
 7. **Comment structural validation (on the worker-assembled comment).** Canonical marker present (worker-injected, §2.8); bounded length; expected sections per the Model I/O contract (§2.7); no credential-like strings; no hidden HTML/script payloads; no control-plane directives.
 8. **Error classification, with the PATCH-404 decision table:**
 
@@ -188,6 +191,8 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | 429 with `Retry-After` or 403 secondary rate limit (per headers/body) | Transient throttling | Raise; adjust visibility per `Retry-After`; queue retries |
 | 5xx | Transitive provider error | Raise; queue retry to maxReceiveCount 5, then DLQ |
 | 401 | Credential expired/rotated | Invalidate cache, re-fetch SSM, retry once; then non-retryable |
+| LLM timeout / 429 / 5xx / structurally invalid output | Provider failure or unusable output | Raise for queue retry — the LLM call is side-effect-free, so queue retry is idempotent (no in-request retry: two 45 s reads cannot fit the 120 s budget); log `status=llm_error` with duration and token usage |
+| Assembled comment fails structural validation (§2.3 item 7) | Invalid output at the publish boundary | Non-retryable: complete and alert — invalid content is never published |
 
 **HTTP timeout policy:** GitHub connect 2s / read 10s; LLM connect 2s / read 45s. The Lambda timeout (120s) is a backstop.
 
@@ -200,11 +205,11 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | Item type 1 | `pk = delivery:{guid}` — TTL 7 days |
 | Item type 2 | `pk = review:{repo_full_name}#{pr_number}` — state record (§3.1) |
 
-**Capacity budget:** per review ≈ 2 WCU + 1.5–3 RCU (items ≤ 1 KB; writes bill per 1 KB increment); peak steady-state ≈ 1 WCU/s; worst-case burst ≤ 15 WCU/s at concurrency 5 — under the 25 ceiling.
+**Capacity budget:** per new-revision review ≈ 4 WCU + 1.5–3 RCU (delivery PutItem + establish + claim + finalize; items ≤ 1 KB so each write bills 1 WCU); the superseded-event path writes ≈ 2 WCU (delivery + `last_seen_sha`) and the GUID-dedup fast path writes 0; peak steady-state ≈ 1 WCU/s; worst-case burst ≤ 20 WCU/s at concurrency 5 (4 writes each) — under the 25 ceiling, with the reduced margin that justifies worker reserved concurrency 5.
 
 ### 2.5 SQS DLQ + Operator Redrive
 
-`pr-reviewer-dlq`, 14-day retention. Operator IAM role with the documented minimum set: `sqs:StartMessageMoveTask`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on the DLQ, plus `sqs:SendMessage` on the work queue — and the **source-queue redrive allow policy** naming the operator role. Redrive is a tested operational procedure, not an implicit capability.
+`pr-reviewer-dlq`, 14-day retention. Operator IAM role with the documented minimum set: `sqs:StartMessageMoveTask`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on the DLQ, plus `sqs:SendMessage` on the work queue — and the **source-queue redrive allow policy** naming the operator role. Redrive is a tested operational procedure, not an implicit capability. **Runbook (v6.6):** 1) inspect DLQ depth and sample messages for root cause; 2) deploy the fix and confirm it resolves the sampled cause; 3) `StartMessageMoveTask` back to the work queue; 4) verify the DLQ drains to zero and canonical comments converge (exactly one marker-bearing comment per affected PR); 5) log the drill. Exercised as acceptance criterion (j) (§7.3).
 
 ### 2.6 SSM Parameter Store
 
@@ -214,18 +219,23 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | `/pr-reviewer/webhook-secret` | SecureString | Ingress-only IAM |
 | `/pr-reviewer/glm-api-key` | SecureString | Worker-only IAM |
 | `/pr-reviewer/glm-model` | String | `glm-5.3-flash` |
+| `/pr-reviewer/glm-endpoint` | String | Provider base URL — HTTPS scheme + host allow-list enforced at hydration (§2.3 item 5) |
 
-Terraform defines IAM read policies only — no `aws_ssm_parameter` resources; no plaintext in state.
+Terraform defines IAM read policies only — no `aws_ssm_parameter` resources; no plaintext in state. SecureStrings use the AWS-managed `aws/ssm` KMS key (MVP; no CMK in the BOM) — SSM decrypts server-side via `WithDecryption`, so no direct `kms:Decrypt` grants are needed; migrating to a CMK requires adding `kms:Decrypt` scoped to that key (§5.1).
+
+**Rotation (v6.6):** PAT / GLM key — update SSM first, revoke the old credential last; warm containers converge within the 30-min TTL or immediately via 401-triggered re-fetch. Webhook secret — GitHub stores exactly one secret, so rotation necessarily 401s deliveries for up to the 30-min cache TTL; rotate in a maintenance window and recover missed deliveries via GitHub's 3-day redelivery.
+
+**Compromise runbook (v6.6):** revoke at the provider → overwrite the SSM value → force cache-bust (redeploy or version-bump; warm containers cannot be signalled directly) → verify the 401-recovery path (§2.3 item 8) → inspect the 7-day log groups for abuse lookback.
 
 ### 2.7 LLM — GLM-5.3-Flash
 
 320B/18B-active MoE, 1M-token context. Published rates ($0.15/M input, $0.03/M cached, $0.50/M output) vary by provider listing ($0.08–$0.15 input observed) — treat all cost figures as order-of-magnitude, configuration-driven values. Benchmarks (Terminal-Bench 2.1: 84.3; DeepSWE v1.1: 63.4) are vendor-reported. Typical review ≈ $0.002; 100K+10K tokens ≈ $0.02; budget-capped large review ≈ $0.02–0.04.
 
-**Model I/O contract (v6.4):** one versioned system prompt, maintained alongside the worker and exercised by the test suite (§4.4), that fixes the untrusted-data framing (§5.3), forbids tools, and mandates a bounded Markdown shape: `## Summary`; `## Findings` (each finding: severity, `file:line`, issue, suggested fix; count capped); `## Risk Notes`; "No significant issues found." is the defined empty-finding output. Output length is bounded by a worker-side max-output-tokens configuration parameter (never hard-coded, per §7.2). The model **never** emits the canonical marker: the worker injects it deterministically when assembling the comment (§2.8), so canonical identity cannot regress with model behavior.
+**Model I/O contract (v6.4):** one versioned system prompt, maintained alongside the worker and exercised by the test suite (§4.4), that fixes the untrusted-data framing (§5.3), forbids tools, and mandates a bounded Markdown shape: `## Summary`; `## Findings` (each finding: severity ∈ {`HIGH`, `MEDIUM`, `LOW`}, `path:LINE` location with LINE ≥ 1, issue, suggested fix; count ≤ `max_findings`, a configuration parameter defaulting to 20); `## Risk Notes`; "No significant issues found." is the defined empty-finding output. Findings never contain `@mentions`, external image URLs, or approval verdicts ("safe to merge" et al.) — §5.3 control-plane separation. Output length is bounded by the worker-side `max_output_tokens` configuration parameter (never hard-coded — same configuration-parameter rule as §7.2 pricing), and the system prompt carries a `prompt_version` identifier logged per review (§4.3). A configured canary substring from the system prompt is checked during structural validation (§2.3 item 7): output containing it is rejected non-retryably and alerted — a leaked prompt is broadcast to a public comment, so enforcement must be output-side. The model **never** emits the canonical marker: the worker injects it deterministically when assembling the comment (§2.8), so canonical identity cannot regress with model behavior.
 
 ### 2.8 Comment Strategy
 
-Single evolving PR conversation comment (Issues Comments API) bearing the canonical marker `<!-- pr-reviewer:canonical:v1:{repo_full_name}#{pr_number} -->`. The marker makes canonical identity survivable even if DynamoDB state is lost. The marker is **injected by the worker** when assembling the comment — never generated by the model — so canonical identity cannot regress with model behavior. Inline Reviews API comments: roadmap.
+Single evolving PR conversation comment (Issues Comments API) bearing the canonical marker `<!-- pr-reviewer:canonical:v1:{repo_full_name}#{pr_number} -->`. The marker makes canonical identity survivable even if DynamoDB state is lost. The marker is **injected by the worker** when assembling the comment — never generated by the model — so canonical identity cannot regress with model behavior. The marker is an internal convergence mechanism, not a public API: external tooling MUST NOT parse it; format changes are versioned in place (`v1`, `v2`, …). Inline Reviews API comments: roadmap.
 
 ---
 
@@ -247,12 +257,12 @@ Single evolving PR conversation comment (Issues Comments API) bearing the canoni
 }
 ```
 
-**Field contract:** stored `status` ∈ {`CLAIMED`, `ACTIVE`, `STALE`} — `ABSENT` is modeled by item absence, never stored (§3.2); `generation` ≥ 0 and monotone non-decreasing per key; `head_sha`/`last_seen_sha` 40-hex; `claim_until` epoch seconds; `comment_id` present only in `ACTIVE`; `pk` follows `review:{repo_full_name}#{pr_number}` exactly.
+**Field contract:** stored `status` ∈ {`CLAIMED`, `ACTIVE`} — `ABSENT` is modeled by item absence and `STALE` is derived (a `CLAIMED` record whose `claim_until` has passed is treated as stale); neither is ever written (§3.2); `generation` starts at 0 and is monotone non-decreasing per key; `head_sha`/`last_seen_sha` 40-hex; `claim_until` epoch seconds; `claim_owner` is the raw `delivery_guid`; `comment_id` is the GitHub int64 comment ID, present only in `ACTIVE`; `updated_at` is ISO-8601 UTC; `pk` follows `review:{repo_full_name}#{pr_number}` exactly.
 
 ### 3.2 Definitions and State Machine
 
 - **Current accepted revision:** the PR head SHA confirmed against GitHub's **live PR state** (via `GET /repos/{repo}/pulls/{n}`) and committed to the state record. SHAs are not orderable strings; the comparison function is **equality against the live PR head**, never SHA lexicographic or any other synthetic ordering.
-- **States:** `ABSENT → (conditional claim) → CLAIMED → (POST succeeds) → ACTIVE(comment_id)`; `CLAIMED → (lease expired) → STALE` (re-claimable).
+- **States:** `ABSENT → (establish) → CLAIMED → (POST succeeds) → ACTIVE`; next revision: `ACTIVE → (establish, generation + 1) → CLAIMED → ACTIVE`. `STALE` is not a stored state: a `CLAIMED` record with an expired lease is treated as stale and re-claimable (derived, §3.1).
 - **Claim lease: 180s**, decoupled from both the Lambda timeout (120s) and queue visibility (720s) — intentionally longer than the timeout to cover crash takeover. The lease is held only from claim through finalize (§3.3): review precedes the claim and is side-effect-free, so no lease exists during the LLM stage and no heartbeat is needed — the earlier "renew via heartbeat before the LLM stage" wording was an internal inconsistency and is removed (v6.4). Duplicate concurrent reviews waste bounded LLM spend; fencing prevents duplicate publication.
 
 ### 3.3 Fenced Publication Protocol (Exact Order)
@@ -267,13 +277,13 @@ Single evolving PR conversation comment (Issues Comments API) bearing the canoni
 3. **Claim (conditional):** `UpdateItem` with `ConditionExpression: head_sha = :reviewed AND generation = :gen AND (claim_until < :now OR attribute_not_exists(claim_owner))`.
 4. **Fence (live, after claim succeeds — never before):** fetch the PR's current head from GitHub and confirm it equals the reviewed SHA. Performed **immediately before** the PATCH/POST and **after** the claim, in this exact order, so no concurrent worker can interleave between fence and publish. Mismatch → discard as stale.
 5. **Publish:** external GitHub PATCH/POST.
-6. **Finalize (conditional):** same revision condition; failure means a newer accepted revision landed concurrently — log and reconcile rather than overwrite.
+6. **Finalize (conditional):** `ConditionExpression: head_sha = :reviewed AND generation = :gen` — revision only, the lease is not re-checked; failure means a newer accepted revision landed concurrently — log and reconcile rather than overwrite.
 
 The residual TOCTOU gap between step 4 and step 5 is acknowledged and bounded: it is closed by marker-based reconciliation, not denied.
 
 ### 3.4 Comment Reconciliation
 
-Exactly-one is a **convergence property**: on missing `comment_id`, 404 recovery, or lease takeover — list comments, find all bearing the marker; exactly one → adopt; multiple → deterministically select the lowest comment ID and delete extras; none → creation lease → POST → persist → re-check.
+Exactly-one is a **convergence property**: on missing `comment_id`, 404 recovery, or lease takeover — list comments (responses shape-validated and **fully paginated** before matching; an unparseable list is treated as the list-unreadable row of §2.3 item 8 — non-retryable), find all bearing the exact worker-injected marker string; exactly one → adopt; multiple → deterministically select the lowest comment ID and delete extras; none → creation lease → POST → persist → re-check. The **creation lease** is a conditional write on the review record requiring `attribute_not_exists(comment_id)` plus the claim condition of §3.3 step 3 — two concurrent first-posters cannot both POST; the loser re-runs reconciliation and adopts the winner's comment.
 
 ---
 
@@ -284,7 +294,7 @@ Exactly-one is a **convergence property**: on missing `comment_id`, 404 recovery
 | Service | Allowance (scoped) | Steady-State Usage |
 | :--- | :--- | :--- |
 | Lambda | 1M requests + 400,000 GB-s/month | 2 invocations, 1.5–3.75 GB-s per review |
-| DynamoDB | Always Free: 25 GB + 25 WCU/RCU provisioned | ~2 WCU + ~2 RCU per review; peak ≤ 15 WCU/s |
+| DynamoDB | Always Free: 25 GB + 25 WCU/RCU provisioned | ~4 WCU + ~2 RCU per new-revision review; burst ≤ 20 WCU/s (§2.4) |
 | SQS | 1M requests/month | 1 send + ~1 receive per review |
 | SSM Standard | $0, 40 TPS default | 4 parameters, batched |
 | CloudWatch | 5 GB | 7-day retention |
@@ -297,13 +307,13 @@ Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 120s. Per-
 
 ### 4.3 Observability
 
-Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`); week-one watch on Worker p95 vs. the 45s LLM read timeout.
+Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget. Kill switch (v6.6): set worker reserved concurrency to 0 (or disable the webhook) — spend stops immediately and queued work is retained.
 
 ### 4.4 Testing & Verification Strategy (v6.4)
 
 Gates: no commit without the installed pre-commit hooks (hygiene, ruff, gitleaks); no `terraform apply` without a green test run; acceptance criteria (§7.3 a–i) are automated integration tests against a deployed stack — the definition of done, not manual checks. Runtime code remains stdlib-only (§1.4); all test tooling lives in the dev dependency group.
 
-1. **Unit — pure logic, no I/O:** HMAC vectors (valid, tampered, missing header, malformed prefix), envelope schema cases (§2.1), 413 body-cap behavior, event/action gating, every §2.3.8 decision-table branch. Tests are organized by behavior and read top-to-bottom with minimal shared fixtures (DAMP over DRY).
+1. **Unit — pure logic, no I/O:** HMAC vectors (valid, tampered, missing header, malformed prefix), envelope schema cases (§2.1), 413 body-cap behavior, event/action gating, every §2.3 item 8 decision-table branch. Tests are organized by behavior and read top-to-bottom with minimal shared fixtures (DAMP over DRY).
 2. **State machine — deterministic interleavings:** establish / claim / fence / finalize scenarios for §6 failure modes 6–10, run against an in-memory DynamoDB stub.
 3. **Contracts:** committed signed-webhook fixtures (fixed secret + payload → fixed signature); GitHub/LLM HTTP responses stubbed in-process — no live external calls in tests. Handlers receive clients and clocks via injection points so tests stay parallel-safe and free of module-global state.
 
@@ -314,12 +324,20 @@ Gates: no commit without the installed pre-commit hooks (hygiene, ruff, gitleaks
 ### 5.1 IAM Roles (Three)
 
 ```text
-INGRESS ROLE:  logs; ssm:GetParameter (webhook-secret ARN);
-               sqs:SendMessage (work queue); dynamodb:GetItem, PutItem (state table)
+Trust policies (v6.6): both execution roles trust lambda.amazonaws.com, scoped with
+aws:SourceArn conditions; the operator role trusts a named SSO principal gated on MFA.
 
-WORKER ROLE:   logs; sqs:ReceiveMessage, DeleteMessage, GetQueueAttributes (work queue);
-               ssm:GetParameters (explicit ARNs: github-token, glm-api-key, glm-model —
-               no wildcard; the webhook secret is ingress-only per §2.6);
+INGRESS ROLE:  logs; ssm:GetParameter (webhook-secret ARN);
+               sqs:SendMessage (work queue); dynamodb:GetItem, PutItem on state table
+               restricted by condition dynamodb:LeadingKeys = ["delivery:*"] —
+               ingress can never touch review:* records
+
+WORKER ROLE:   logs; sqs:ReceiveMessage, DeleteMessage, GetQueueAttributes,
+               ChangeMessageVisibility (work queue — required by the §2.2
+               Retry-After path);
+               ssm:GetParameters (explicit ARNs: github-token, glm-api-key,
+               glm-model, glm-endpoint — no wildcard; the webhook secret is
+               ingress-only per §2.6);
                dynamodb:GetItem, PutItem, UpdateItem (state table)
 
 OPERATOR ROLE: sqs:StartMessageMoveTask, ReceiveMessage, DeleteMessage, GetQueueAttributes (DLQ);
@@ -329,7 +347,7 @@ OPERATOR ROLE: sqs:StartMessageMoveTask, ReceiveMessage, DeleteMessage, GetQueue
 
 ### 5.2 Ingress Threat Model
 
-Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded at the documented RPS ceiling with the 3-day manual redelivery window as the only recovery — stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction. Cost abuse (v6.4): PR floods — including fork PRs — convert directly into LLM spend, bounded by design to worker concurrency × per-review cost (§2.7), with 4-day queue retention shedding sustained backlog and queue-depth/DLQ alarms surfacing abnormal volume.
+Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded at the documented RPS ceiling with the 3-day manual redelivery window as the only recovery — stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction. Cost abuse (v6.4): PR floods — including fork PRs — convert directly into LLM spend, bounded by design to worker concurrency × per-review cost (§2.7), with 4-day queue retention shedding sustained backlog and queue-depth/DLQ alarms surfacing abnormal volume. Replay residual (v6.6): the GUID-dedup TTL (7 d) is the replay window; HMAC carries no timestamp, so a captured payload replayed after TTL expiry is accepted as new — stale-head replays are discarded by establish, but a current-head replay passes the fence and burns one bounded LLM review; accepted knowingly (bounded spend, no incorrect state).
 
 ### 5.3 AI Input Security
 
@@ -352,12 +370,12 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 5 | Admission-edge 429 loss | Ingress concurrency 25; boundary documented; 3-day redelivery is recovery |
 | 6 | Out-of-order webhook delivery | Establish gated on live GitHub head (defined comparison); fence after claim |
 | 7 | Read-then-PATCH stale write | Conditional claim/finalize; fence-after-claim ordering |
-| 8 | First-post race | Claim state machine, 180s renewable lease |
+| 8 | First-post race | Claim state machine, 180s fixed lease (claim→finalize, no renewal) |
 | 9 | Worker death mid-claim | Lease expiry + takeover |
 | 10 | Duplicate comments during recovery | Canonical marker + deterministic reconciliation |
 | 11 | Premature message redelivery | Visibility 720s; ChangeMessageVisibility for Retry-After |
 | 12 | Transient provider failures | maxReceiveCount 5, then DLQ |
-| 13 | PATCH 404 ambiguity | Explicit decision table (§2.3.8) |
+| 13 | PATCH 404 ambiguity | Explicit decision table (§2.3 item 8) |
 | 14 | DynamoDB throttling | Capacity derivation; concurrency 5; ≤ 1 KB items |
 | 15 | Oversized envelope | < 1 KB metadata-only |
 | 16 | Diff budget nondeterminism | Byte/line/file limits pre-model; deterministic lockfile summaries |
@@ -381,6 +399,8 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **Repository layout & packaging (v6.4):** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **both** deployment zips, and `lambda/ingress_handler.py` / `lambda/worker_handler.py` stay thin entry points. This is a shared contract, not an abstraction — no further layering until a third consumer exists (Rule of Three).
 
+**Local state guardrails (v6.6):** `terraform.tfstate` is gitignored, backed up encrypted, and single-operator (the local backend has no locking — never two concurrent applies). Lambda environment variables must never carry secrets: SSM-only is a constraint, not merely a current fact.
+
 ### 7.2 Configuration Baseline (v6.0 → v6.1 deltas)
 
 | Component | Value |
@@ -388,7 +408,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | Ingress reserved concurrency | 25 |
 | SQS visibility timeout | 720s |
 | maxReceiveCount | 5 |
-| Claim lease | 180s, renewable, decoupled |
+| Claim lease | 180s, fixed (claim→finalize, no renewal), decoupled |
 | API version pin | `2026-03-10` (concrete value; `2022-11-28` supported to March 10, 2028) |
 | Fencing comparison | Defined: first-write, idempotent-equality, or live-head confirmation — never SHA ordering |
 | 404 handling | Explicit decision table |
@@ -398,13 +418,17 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **v6.2 → v6.3 deltas (security hardening only, zero architectural change):** worker SSM scope narrowed from `/pr-reviewer/*` to three explicit parameters — closes webhook-secret over-exposure contradicting §2.6 (§5.1); 1 MiB request-body cap with 413, enforced pre-decode (§2.1); Function URL CORS explicitly disabled (§5.2); CI dependency audit added to roadmap (§7.4).
 
-**v6.3 → v6.4 deltas (senior-practice completions, zero architectural change):** lease/heartbeat inconsistency resolved — lease spans claim→finalize only; review is side-effect-free and lease-free (§3.2); Model I/O contract defined and canonical marker moved to worker-injection (§2.7, §2.3.7, §2.8); ingress secret hydration with 30-min refresh (§2.1); repository layout & packaging with single-source shared contract (§7.1); testing & verification strategy with acceptance-mapping and pre-apply gates (§4.4); PR-flood cost-abuse documented (§5.2, §6.25).
+**v6.3 → v6.4 deltas (senior-practice completions, zero architectural change):** lease/heartbeat inconsistency resolved — lease spans claim→finalize only; review is side-effect-free and lease-free (§3.2); Model I/O contract defined and canonical marker moved to worker-injection (§2.7, §2.3 item 7, §2.8); ingress secret hydration with 30-min refresh (§2.1); repository layout & packaging with single-source shared contract (§7.1); testing & verification strategy with acceptance-mapping and pre-apply gates (§4.4); PR-flood cost-abuse documented (§5.2, failure mode 25).
+
+**v6.4 → v6.5 deltas (principles-consistency pass):** worker credential cache restated as warm-container state behind an injectable accessor (§2.3 item 1 ↔ §4.4); §4.4 gate wording tightened.
+
+**v6.5 → v6.6 deltas (three-oracle reconciliation: consistency, contracts, security operations — zero architectural change):** DynamoDB write accounting corrected to ≈4 WCU per new-revision review, burst ≤ 20 WCU/s (§2.4, §4.1); lease "renewable" remnants removed everywhere (§3.2, failure mode 8, §7.2); `STALE` made derived-never-stored with the ACTIVE→CLAIMED transition made explicit (§3.1, §3.2); finalize and creation-lease conditions stated explicitly (§3.3, §3.4); reconciliation requires full pagination + exact-marker match (§3.4); envelope tightened with `envelope_version` and length bounds (§2.1); ingress rows added for signed-but-invalid bodies (§2.1); LLM error contract, output-validation disposition, prompt canary, and output prohibitions (§2.3 item 8, §2.7); `/pr-reviewer/glm-endpoint` parameter added — worker ARN list now four (§2.3 item 5, §2.6, §5.1); `ChangeMessageVisibility` added to worker role + trust policies + LeadingKeys restriction (§5.1); KMS key decision named, rotation and compromise runbooks (§2.6); replay residual documented (§5.2); DLQ redrive runbook + acceptance criterion (j) (§2.5, §7.3); alarms/paging + budget kill switch (§4.3); local-state guardrails (§7.1); marker declared non-public (§2.8); all dotted §2.3.x references normalized to §2.3 item N.
 
 ### 7.3 Deployment Sequence
 
 Unchanged: populate four SSM parameters → `terraform init && terraform apply` → register webhook (Pull requests only) → acceptance testing.
 
-**Acceptance criteria:** (a) delivery log 202 in seconds; (b) one canonical comment in 6–15s; (c) second push updates the same comment; (d) two rapid pushes leave only the latest head SHA reflected; (e) bad-signature webhook → 401, nothing enqueued; (f) DLQ empty on happy path; (g) artificially stale head SHA redriven into the queue must **not** mutate the canonical comment; (h) deleting the bot comment + new push must converge to exactly one new marker-bearing comment; (i) **concurrent workers on the same PR** (forced by temporarily lowering visibility or injecting duplicate messages) must still converge to a single comment with the correct head SHA.
+**Acceptance criteria:** (a) delivery log 202 in seconds; (b) one canonical comment in 6–15s; (c) second push updates the same comment; (d) two rapid pushes leave only the latest head SHA reflected; (e) bad-signature webhook → 401, nothing enqueued; (f) DLQ empty on happy path; (g) artificially stale head SHA redriven into the queue must **not** mutate the canonical comment; (h) deleting the bot comment + new push must converge to exactly one new marker-bearing comment; (i) **concurrent workers on the same PR** (forced by temporarily lowering visibility or injecting duplicate messages) must still converge to a single comment with the correct head SHA; (j) **redrive drill**: a DLQ message moved back to the work queue after a fix converges without duplicate comments (§2.5).
 
 ### 7.4 Production Roadmap
 
@@ -415,7 +439,7 @@ GitHub App installation tokens; inline review comments via Reviews API; expanded
 ## 8. Interview Talking Points
 
 - **Distributed-systems correctness:** SHA-authoritative fencing with a **defined** comparison function (live-head confirmation, never SHA ordering), conditional publication, and an honest convergence invariant.
-- **AWS configuration discipline:** the 6× visibility rule, decoupled renewable leases, capacity derivations from item sizes, admission-boundary loss analysis, concrete API version pinning.
+- **AWS configuration discipline:** the 6× visibility rule, decoupled fixed leases (claim→finalize, no renewal), capacity derivations from item sizes, admission-boundary loss analysis, concrete API version pinning.
 - **Security engineering:** full-string HMAC, event-type gating, three-role IAM including the operator-redrive permission chain, prompt-injection threat model with control-plane separation.
 - **Operational resilience:** classified error handling with an actionable 404 decision table, Retry-After-aware visibility extension, marker-based reconciliation, tested DLQ redrive.
 - **Cost engineering:** per-service scoped claims, capacity proofs, configuration-driven pricing assumptions.
