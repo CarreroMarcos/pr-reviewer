@@ -45,11 +45,13 @@ class Jira:
         if not url.startswith("https://"):
             raise ValueError("refusing non-https Jira URL")
         data = None if body is None else json.dumps(body).encode()
-        req = urllib.request.Request(
+        # S310: same https guard as above; req is only ever opened via urlopen below.
+        req = urllib.request.Request(  # noqa: S310
             url, data=data, headers=self.headers, method=method
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            # S310: scheme is enforced above (refuses non-https); Jira base is operator config.
+            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
@@ -108,9 +110,7 @@ def adf(paragraphs: list[str]) -> dict:
         p = p.replace("\x00", "").strip()
         if not p:
             continue
-        content.append(
-            {"type": "paragraph", "content": [{"type": "text", "text": p[:4000]}]}
-        )
+        content.append({"type": "paragraph", "content": [{"type": "text", "text": p[:4000]}]})
     if not content:
         content = [{"type": "paragraph", "content": [{"type": "text", "text": "."}]}]
     return {"type": "doc", "version": 1, "content": content}
@@ -133,9 +133,7 @@ def main() -> None:
     tasks = parse_tasks(TASKS_PATH.read_text(encoding="utf-8"), scope)
     repo = os.environ.get("GITHUB_REPOSITORY", "CarreroMarcos/pr-reviewer")
     sha = os.environ.get("GITHUB_SHA", "main")
-    spec_url = (
-        f"https://github.com/{repo}/blob/{sha}/specs/001-pr-reviewer/tasks.md"
-    )
+    spec_url = f"https://github.com/{repo}/blob/{sha}/specs/001-pr-reviewer/tasks.md"
     print(f"scope={scope} dry_run={dry} tasks={len(tasks)} project={key}")
 
     jira = Jira(base, email, token)
@@ -145,9 +143,7 @@ def main() -> None:
         sys.exit(f"custom field {FIELD_NAME!r} not found")
 
     project = jira.req("GET", f"/rest/api/3/project/{urllib.parse.quote(key)}")
-    types = jira.req(
-        "GET", "/rest/api/3/issuetype/project", query={"projectId": project["id"]}
-    )
+    types = jira.req("GET", "/rest/api/3/issuetype/project", query={"projectId": project["id"]})
     type_name = next(
         (
             n
@@ -177,9 +173,7 @@ def main() -> None:
             )
         hits = search.get("issues") or []
         if len(hits) > 1:
-            sys.exit(
-                f"duplicate Jira rows for {t['id']}: {[i['key'] for i in hits]}"
-            )
+            sys.exit(f"duplicate Jira rows for {t['id']}: {[i['key'] for i in hits]}")
         labels = ["spec-sync", t["id"].lower()]
         if t["us"] == 1:
             labels.append("us1")
