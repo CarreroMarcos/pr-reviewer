@@ -56,7 +56,10 @@ samconfig.toml
 .pip-cache/
 
 # ---- Local workspace dirs ----
+.agents/
 .opencode/
+opencode.json
+opencode.jsonc
 temp/
 .slim/
 
