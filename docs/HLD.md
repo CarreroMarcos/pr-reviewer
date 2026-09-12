@@ -2,7 +2,7 @@
 
 ## Autonomous Serverless PR Reviewer
 
-**Version:** 6.2 (Final — Implementation-Ready)
+**Version:** 6.3 (Final — Implementation-Ready)
 **Status:** Approved for Implementation
 **Owner:** Marcos Carrero
 **Region:** `us-west-2` (US West — Oregon)
@@ -107,7 +107,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 
 **Responsibilities (in strict order):**
 
-1. **Body normalization.** If `event["isBase64Encoded"]`, `base64.b64decode` first; verify HMAC over the decoded raw bytes — never parsed JSON.
+1. **Body normalization.** Reject bodies > 1 MiB with HTTP 413 **before** decoding — legitimate PR webhooks are metadata-only and far smaller; this bounds memory work on a public endpoint. Otherwise, if `event["isBase64Encoded"]`, `base64.b64decode` first; verify HMAC over the decoded raw bytes — never parsed JSON.
 2. **HMAC verification.** Constant-time compare of the complete `"sha256=" + hexdigest` string against `X-Hub-Signature-256` via `hmac.compare_digest`; case-insensitive header lookup. Failures: HTTP 401.
 3. **Event type validation.** `X-GitHub-Event == "pull_request"` before body interpretation; other signed events return 200 and are discarded.
 4. **Action filtering.** Allow-list `opened`, `synchronize`, `ready_for_review`; skip drafts. Others: HTTP 200, no enqueue.
@@ -125,6 +125,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | Action not in allow-list / draft PR | 200 | discarded, nothing enqueued |
 | GUID already processed | 200 | no-op (idempotent) |
 | HMAC verification failure | 401 | nothing enqueued |
+| Body exceeds 1 MiB | 413 | nothing enqueued; rejected before decode |
 | SQS `SendMessage` failure | 500 | delivery **not** marked (recoverable via redelivery) |
 | Admission ceiling exceeded | 429 | nothing enqueued; GitHub records a failed delivery |
 
@@ -305,7 +306,9 @@ INGRESS ROLE:  logs; ssm:GetParameter (webhook-secret ARN);
                sqs:SendMessage (work queue); dynamodb:GetItem, PutItem (state table)
 
 WORKER ROLE:   logs; sqs:ReceiveMessage, DeleteMessage, GetQueueAttributes (work queue);
-               ssm:GetParameters (/pr-reviewer/*); dynamodb:GetItem, PutItem, UpdateItem (state table)
+               ssm:GetParameters (explicit ARNs: github-token, glm-api-key, glm-model —
+               no wildcard; the webhook secret is ingress-only per §2.6);
+               dynamodb:GetItem, PutItem, UpdateItem (state table)
 
 OPERATOR ROLE: sqs:StartMessageMoveTask, ReceiveMessage, DeleteMessage, GetQueueAttributes (DLQ);
                sqs:SendMessage (work queue)
@@ -314,7 +317,7 @@ OPERATOR ROLE: sqs:StartMessageMoveTask, ReceiveMessage, DeleteMessage, GetQueue
 
 ### 5.2 Ingress Threat Model
 
-Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded at the documented RPS ceiling with the 3-day manual redelivery window as the only recovery — stated, not overclaimed.
+Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded at the documented RPS ceiling with the 3-day manual redelivery window as the only recovery — stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction.
 
 ### 5.3 AI Input Security
 
@@ -378,6 +381,8 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **v6.1 → v6.2 deltas (interface-contract clarifications only, zero architectural change):** canonical ingress response-contract table (§2.1); typed envelope schema with worker-side boundary validation (§2.1); `GET` response-shape validation before live-head fence (§2.3); state-record field contract incl. `ABSENT`-by-absence rule (§3.1).
 
+**v6.2 → v6.3 deltas (security hardening only, zero architectural change):** worker SSM scope narrowed from `/pr-reviewer/*` to three explicit parameters — closes webhook-secret over-exposure contradicting §2.6 (§5.1); 1 MiB request-body cap with 413, enforced pre-decode (§2.1); Function URL CORS explicitly disabled (§5.2); CI dependency audit added to roadmap (§7.4).
+
 ### 7.3 Deployment Sequence
 
 Unchanged: populate four SSM parameters → `terraform init && terraform apply` → register webhook (Pull requests only) → acceptance testing.
@@ -386,7 +391,7 @@ Unchanged: populate four SSM parameters → `terraform init && terraform apply` 
 
 ### 7.4 Production Roadmap
 
-GitHub App installation tokens; inline review comments via Reviews API; expanded alarms; S3 + DynamoDB state backend; CI smoke tests with synthetic signed webhooks.
+GitHub App installation tokens; inline review comments via Reviews API; expanded alarms; S3 + DynamoDB state backend; CI smoke tests with synthetic signed webhooks; automated dependency audit with lockfile refresh (`uv lock --upgrade` + vulnerability scan) in CI.
 
 ---
 
