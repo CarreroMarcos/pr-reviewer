@@ -3,9 +3,9 @@ name = "serverless-pr-reviewer"
 version = "0.1.0"
 description = "Autonomous serverless GitHub PR reviewer — Lambda + SQS + DynamoDB + Terraform (see docs/HLD.md)"
 readme = "docs/HLD.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
-# HLD §1.4: standard library only + boto3. Runtime dependencies stay minimal.
+# HLD §1.4: standard library only + boto3.
 dependencies = [
     "boto3>=1.40",
 ]
@@ -13,26 +13,38 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.2",
+    "pytest>=9.1.1,<10",
     "ruff>=0.16.7",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["lambda"]
+src = ["lambda", "tools"]
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # bugbear
-    "UP",  # pyupgrade
-    "S",   # bandit-style security (HLD §5 security model)
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "S",
+    "TID",
 ]
-# S101 assert is fine in tests; tighten per-module later if needed.
 ignore = []
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"requests".msg = "Runtime is stdlib + boto3 only (constitution II)."
+"httpx".msg = "Runtime is stdlib + boto3 only (constitution II)."
+"aiohttp".msg = "Runtime is stdlib + boto3 only (constitution II)."
+"openai".msg = "No extra LLM SDKs; use stdlib HTTPS to the configured endpoint."
+"anthropic".msg = "No extra LLM SDKs."
+"langchain".msg = "No extra LLM SDKs."
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

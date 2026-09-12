@@ -5,10 +5,10 @@ Personal serverless PR reviewer. Spec in git is the contract. Jira is the board.
 ## Commands
 
 ```bash
-uv sync --extra dev
-uv run pytest -q --tb=short
-uvx ruff check .
-uvx ruff format --check .
+uv sync --frozen --group dev
+uv run --frozen pytest -q --tb=short
+uv run --frozen ruff check .
+uv run --frozen ruff format --check .
 pre-commit run --all-files
 # only after terraform/ exists:
 terraform -chdir=terraform init -backend=false
@@ -17,6 +17,7 @@ terraform -chdir=terraform validate
 ```
 
 Never `terraform apply` from an agent session. Never commit secrets, `.env`, or `terraform.tfstate`.
+Never add runtime deps other than boto3. If pyproject.toml changes, run `uv lock` in the same change.
 
 ## Layout (do not invent folders)
 

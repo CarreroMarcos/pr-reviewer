@@ -16,20 +16,22 @@ jobs:
   python:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
+          version: "0.12.13"
           python-version: "3.12"
-      - name: Install
-        run: uv sync --extra dev
+          enable-cache: true
+      - name: Sync
+        run: uv sync --frozen --group dev
       - name: Ruff
         run: |
-          uvx ruff check .
-          uvx ruff format --check .
+          uv run --frozen ruff check .
+          uv run --frozen ruff format --check .
       - name: Pytest
         run: |
           if [ -d tests ]; then
-            uv run pytest -q --tb=short
+            uv run --frozen pytest -q --tb=short
           else
             echo "tests/ not present yet"
           fi
@@ -37,8 +39,8 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
       - name: fmt and validate
         run: |
           if ls terraform/*.tf >/dev/null 2>&1; then
