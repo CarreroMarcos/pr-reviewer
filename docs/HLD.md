@@ -2,7 +2,7 @@
 
 ## Autonomous Serverless PR Reviewer
 
-**Version:** 6.6 (Final — Implementation-Ready)
+**Version:** 6.7 (Final — Implementation-Ready)
 **Status:** Approved for Implementation
 **Owner:** Marcos Carrero
 **Region:** `us-west-2` (US West — Oregon)
@@ -161,7 +161,7 @@ The worker **constructs** `diff_url` and `comments_url` from `repo_full_name` + 
 | Event source mapping | `batch_size = 1` |
 | Redrive allow policy | Source-queue policy explicitly permitting the **operator role** (and the `StartMessageMoveTask` principal) — without this policy the documented redrive path fails, a common implementation foot-gun |
 
-On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibility` rather than relying on the fixed base timeout.
+On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibility` rather than relying on the fixed base timeout. Retry ownership (v6.7): the queue owns retries — the worker raises, visibility expiry redelivers, `maxReceiveCount 5` bounds total attempts; the only in-request retry is the single 401 credential re-fetch (§2.3 item 1).
 
 ### 2.3 Worker Lambda — Review Execution Engine
 
@@ -315,7 +315,8 @@ Gates: no commit without the installed pre-commit hooks (hygiene, ruff, gitleaks
 
 1. **Unit — pure logic, no I/O:** HMAC vectors (valid, tampered, missing header, malformed prefix), envelope schema cases (§2.1), 413 body-cap behavior, event/action gating, every §2.3 item 8 decision-table branch. Tests are organized by behavior and read top-to-bottom with minimal shared fixtures (DAMP over DRY).
 2. **State machine — deterministic interleavings:** establish / claim / fence / finalize scenarios for §6 failure modes 6–10, run against an in-memory DynamoDB stub.
-3. **Contracts:** committed signed-webhook fixtures (fixed secret + payload → fixed signature); GitHub/LLM HTTP responses stubbed in-process — no live external calls in tests. Handlers receive clients and clocks via injection points so tests stay parallel-safe and free of module-global state.
+3. **Contracts:** committed signed-webhook fixtures (fixed secret + payload → fixed signature); GitHub/LLM HTTP responses stubbed in-process — no live external calls in tests. Handlers receive clients and clocks via injection points so tests stay parallel-safe and free of module-global state. Injected clocks also exercise the time-based recovery paths: the 30-minute credential TTL refresh and rotation convergence (§2.1, §2.3 item 1).
+4. **Model evaluations (v6.7):** conventional tests pin deterministic machinery; review quality is load-bearing *model* behavior and gets a pinned evaluation set — representative diffs with known findings, prompt-injection attempts, oversized/truncated inputs — scored against a rubric (structural validity, finding faithfulness, prohibited-content absence). Rerun whenever `prompt_version` or the model string changes (§2.7): model behavior is a dependency and can drift independently of application code.
 
 ---
 
@@ -397,7 +398,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 `aws_lambda_function` ×2; `aws_lambda_function_url`; `aws_lambda_event_source_mapping` (batch 1); `aws_sqs_queue` ×2 + redrive policy (maxReceiveCount 5) + **redrive allow policy naming the operator role**; `aws_dynamodb_table` (provisioned 25/25); IAM roles ×3 with inline policies; `aws_cloudwatch_log_group` ×2 (7-day retention); DLQ-depth alarm; `archive_file` ×2. **Absent:** API Gateway, VPC, NAT, S3 backend (MVP), SSM parameter resources, Secrets Manager, EventBridge, Lambda async-invoke config.
 
-**Repository layout & packaging (v6.4):** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **both** deployment zips, and `lambda/ingress_handler.py` / `lambda/worker_handler.py` stay thin entry points. This is a shared contract, not an abstraction — no further layering until a third consumer exists (Rule of Three).
+**Repository layout & packaging (v6.4):** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **both** deployment zips, and `lambda/ingress_handler.py` / `lambda/worker_handler.py` stay thin entry points. This is a shared contract, not an abstraction — no further layering until a third consumer exists (Rule of Three). Security-sensitive helpers (log redaction, input sanitization) and behaviorally-identical logic (marker construction, envelope validation) are single-implemented here from the first duplication — one implementation is a security requirement, not a style choice. The validator returns a typed envelope (stdlib `dataclass`), and public handlers carry type annotations (stdlib `typing`).
 
 **Local state guardrails (v6.6):** `terraform.tfstate` is gitignored, backed up encrypted, and single-operator (the local backend has no locking — never two concurrent applies). Lambda environment variables must never carry secrets: SSM-only is a constraint, not merely a current fact.
 
@@ -424,9 +425,11 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **v6.5 → v6.6 deltas (three-oracle reconciliation: consistency, contracts, security operations — zero architectural change):** DynamoDB write accounting corrected to ≈4 WCU per new-revision review, burst ≤ 20 WCU/s (§2.4, §4.1); lease "renewable" remnants removed everywhere (§3.2, failure mode 8, §7.2); `STALE` made derived-never-stored with the ACTIVE→CLAIMED transition made explicit (§3.1, §3.2); finalize and creation-lease conditions stated explicitly (§3.3, §3.4); reconciliation requires full pagination + exact-marker match (§3.4); envelope tightened with `envelope_version` and length bounds (§2.1); ingress rows added for signed-but-invalid bodies (§2.1); LLM error contract, output-validation disposition, prompt canary, and output prohibitions (§2.3 item 8, §2.7); `/pr-reviewer/glm-endpoint` parameter added — worker ARN list now four (§2.3 item 5, §2.6, §5.1); `ChangeMessageVisibility` added to worker role + trust policies + LeadingKeys restriction (§5.1); KMS key decision named, rotation and compromise runbooks (§2.6); replay residual documented (§5.2); DLQ redrive runbook + acceptance criterion (j) (§2.5, §7.3); alarms/paging + budget kill switch (§4.3); local-state guardrails (§7.1); marker declared non-public (§2.8); all dotted §2.3.x references normalized to §2.3 item N.
 
+**v6.6 → v6.7 deltas (updated engineering-principles alignment: §9 agentic evaluations, §3 single-implementation scope, §5 retry ownership — zero architectural change):** pinned model-evaluation set with rerun-on-`prompt_version`/model-change rule added to the test strategy (§4.4 item 4); retry ownership stated — queue owns retries, single in-request 401 re-fetch (§2.2); time-based recovery paths (credential TTL, rotation convergence) exercised via injected clocks (§4.4 item 3); `lambda/common/` scope strengthened — security-sensitive and must-stay-identical helpers single-implemented, typed envelope adapter + handler annotations (§7.1); deployment provenance + rollback sentence, and SSM parameter count corrected four → five (§7.3).
+
 ### 7.3 Deployment Sequence
 
-Unchanged: populate four SSM parameters → `terraform init && terraform apply` → register webhook (Pull requests only) → acceptance testing.
+Unchanged: populate the five SSM parameters (§2.6) → `terraform init && terraform apply` → register webhook (Pull requests only) → acceptance testing. Apply from a clean, reviewed revision — the `archive_file` zips embed the source they were built from. Rollback is re-applying the previous revision: no data migrations exist, and comment state is fenced and converges.
 
 **Acceptance criteria:** (a) delivery log 202 in seconds; (b) one canonical comment in 6–15s; (c) second push updates the same comment; (d) two rapid pushes leave only the latest head SHA reflected; (e) bad-signature webhook → 401, nothing enqueued; (f) DLQ empty on happy path; (g) artificially stale head SHA redriven into the queue must **not** mutate the canonical comment; (h) deleting the bot comment + new push must converge to exactly one new marker-bearing comment; (i) **concurrent workers on the same PR** (forced by temporarily lowering visibility or injecting duplicate messages) must still converge to a single comment with the correct head SHA; (j) **redrive drill**: a DLQ message moved back to the work queue after a fix converges without duplicate comments (§2.5).
 
