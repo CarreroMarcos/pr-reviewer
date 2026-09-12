@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: uv sync --extra dev
+      - name: Ruff
+        run: |
+          uvx ruff check .
+          uvx ruff format --check .
+      - name: Pytest
+        run: |
+          if [ -d tests ]; then
+            uv run pytest -q --tb=short
+          else
+            echo "tests/ not present yet"
+          fi
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: fmt and validate
+        run: |
+          if ls terraform/*.tf >/dev/null 2>&1; then
+            terraform -chdir=terraform init -backend=false -input=false
+            terraform -chdir=terraform fmt -check
+            terraform -chdir=terraform validate
+          else
+            echo "no .tf files yet"
+          fi
