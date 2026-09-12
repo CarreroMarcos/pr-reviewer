@@ -1,0 +1,38 @@
+[project]
+name = "serverless-pr-reviewer"
+version = "0.1.0"
+description = "Autonomous serverless GitHub PR reviewer — Lambda + SQS + DynamoDB + Terraform (see docs/HLD.md)"
+readme = "docs/HLD.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+# HLD §1.4: standard library only + boto3. Runtime dependencies stay minimal.
+dependencies = [
+    "boto3>=1.40",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "ruff>=0.16.7",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["lambda"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "S",   # bandit-style security (HLD §5 security model)
+]
+# S101 assert is fine in tests; tighten per-module later if needed.
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
