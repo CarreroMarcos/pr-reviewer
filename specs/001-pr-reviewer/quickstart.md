@@ -33,7 +33,7 @@ Scenarios (a)–(j) are the HLD's acceptance criteria, retained verbatim in inte
 | **k** | Close a PR, push commits while closed (or not), reopen it | Reopen event acknowledged; review produced for the current head | **D1**; FR-008; Story 1 AC-3 |
 | **k2** | Apply a label / open an issue on the same repo | 200 discard; no review activity | FR-008 (non-triggers); Story 1 AC-4 |
 | **l** | Force a permanent-class failure (e.g., persistent assembled-content validation failure, or LLM 401 after re-fetch) | Alert + non-retryable completion; canonical comment shows the fixed failure notice with the head SHA within SC-006's final-attempt budget; no internal error details in the comment; log records `failure_notice_published=true` | **D2**; FR-019/FR-028; Story 5 AC-5/AC-2; SC-006 |
-| **l2** | Force a sustained transient provider outage through all 5 queue attempts | DLQ entry + alert; failure notice published during the final attempt (bounded by §2.2 queue timing — up to ~48 min from first enqueue); log `failure_notice_published=true` | **D2**; FR-017/FR-018; FR-028 |
+| **(l2)** | Force a sustained transient provider outage through all 5 queue attempts | DLQ entry + alert; failure notice published during the final attempt (bounded by §2.2 queue timing — up to ~48 min from first enqueue); log `failure_notice_published=true` | **D2**; FR-017/FR-018; FR-028 |
 | **m** | While a failure notice would publish, push a newer commit (notice's revision now stale) | Notice **not** published (`skipped-stale`); comment untouched | **D2**; FR-014/FR-028 fence |
 | **n** | After scenario (l) or (l2), resolve the cause and push a new commit | Comment reverts to normal review content; exactly one canonical comment throughout | **D2**; FR-004/FR-028; Story 5 AC-5 |
 

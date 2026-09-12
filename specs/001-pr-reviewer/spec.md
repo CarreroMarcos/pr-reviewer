@@ -202,8 +202,8 @@ contains no injected behavior, no secrets, and no merge verdict.
   treats the marker-bearing comment as canonical and replaces its content with the
   fresh review; identity persists, content is system-owned.
 - What happens when multiple duplicate comments somehow exist (e.g., after a failure
-  recovery)? Reconciliation deterministically keeps exactly one (the earliest created)
-  and removes the extras.
+  recovery)? Reconciliation deterministically keeps exactly one (the lowest comment
+  ID — the earliest created; HLD §3.4) and removes the extras.
 - What happens when a PR is closed or a branch is force-pushed mid-review? The
   revision-currency check fails and the in-flight review is discarded without
   publishing.

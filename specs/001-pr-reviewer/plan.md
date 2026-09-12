@@ -75,7 +75,10 @@ lambda/
 └── common/              # single source of truth: envelope schema/validator,
                          # marker builder, structured-log helpers (§7.1)
 terraform/               # HLD §7.1 BOM (λ×2, SQS×2, DynamoDB, IAM×3, alarms)
-tests/                   # §4.4 layers: unit / state-machine / contracts / model-evals
+prompts/                 # versioned system prompt (prompt_version id; HLD §2.7)
+docs/                    # operational runbooks (DLQ redrive, kill switch)
+tests/                   # §4.4 layers: unit / state-machine / contracts /
+                         # model-evals / integration
 ```
 
 **Structure Decision**: Single Terraform-managed AWS project with two Lambda handlers and one shared `lambda/common/` package, exactly per HLD §7.1 (Rule of Three: no further layering).
