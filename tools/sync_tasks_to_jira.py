@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+TASKS_PATH = Path("specs/001-pr-reviewer/tasks.md")
+FIELD_NAME = "Spec Task ID"
+TASK_RE = re.compile(r"^- \[[ xX]\] (T\d+)(?: \[P\])?(?: \[US(\d+)\])? (.+)$")
+
+
+def env(name: str) -> str:
+    v = os.environ.get(name, "").strip()
+    if not v:
+        sys.exit(f"missing env {name}")
+    return v.rstrip("/") if name == "JIRA_BASE_URL" else v
+
+
+def truthy(v: str | None) -> bool:
+    return str(v or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
+class Jira:
+    def __init__(self, base: str, email: str, token: str) -> None:
+        self.base = base
+        raw = base64.b64encode(f"{email}:{token}".encode()).decode()
+        self.headers = {
+            "Authorization": f"Basic {raw}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+    def req(self, method: str, path: str, body=None, query=None):
+        url = self.base + path
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, headers=self.headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", "replace")
+            raise SystemExit(f"Jira {method} {path} -> {e.code}: {err}") from e
+
+
+def parse_tasks(text: str, scope: str) -> list[dict]:
+    out = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        m = TASK_RE.match(line.strip())
+        if not m:
+            continue
+        tid, us, rest = m.group(1), m.group(2), m.group(3).strip()
+        if tid in seen:
+            sys.exit(f"duplicate {tid}")
+        seen.add(tid)
+        us_n = int(us) if us else None
+        if scope == "mvp" and us_n is not None and us_n != 1:
+            continue
+        if " \u2014 verify:" in rest:
+            summary, verify = rest.split(" \u2014 verify:", 1)
+        elif " -- verify:" in rest:
+            summary, verify = rest.split(" -- verify:", 1)
+        else:
+            summary, verify = rest, ""
+        out.append(
+            {
+                "id": tid,
+                "us": us_n,
+                "summary": summary.strip()[:240],
+                "verify": verify.strip(),
+                "full": rest,
+            }
+        )
+    if not out:
+        sys.exit("no tasks parsed from tasks.md")
+    return out
+
+
+def adf(paragraphs: list[str]) -> dict:
+    content = []
+    for p in paragraphs:
+        p = p.replace("\x00", "").strip()
+        if not p:
+            continue
+        content.append({"type": "paragraph", "content": [{"type": "text", "text": p[:4000]}]})
+    if not content:
+        content = [{"type": "paragraph", "content": [{"type": "text", "text": "."}]}]
+    return {"type": "doc", "version": 1, "content": content}
+
+
+def main() -> None:
+    base = env("JIRA_BASE_URL")
+    if not base.startswith("https://"):
+        sys.exit("JIRA_BASE_URL must start with https://")
+    key = env("JIRA_PROJECT_KEY")
+    email = env("JIRA_EMAIL")
+    token = env("JIRA_API_TOKEN")
+    dry = truthy(os.environ.get("DRY_RUN", "true"))
+    scope = (os.environ.get("SCOPE") or "mvp").strip().lower()
+    if scope not in {"mvp", "all"}:
+        sys.exit("SCOPE must be mvp or all")
+    if not TASKS_PATH.is_file():
+        sys.exit(f"missing {TASKS_PATH}")
+
+    tasks = parse_tasks(TASKS_PATH.read_text(encoding="utf-8"), scope)
+    repo = os.environ.get("GITHUB_REPOSITORY", "CarreroMarcos/pr-reviewer")
+    sha = os.environ.get("GITHUB_SHA", "main")
+    spec_url = f"https://github.com/{repo}/blob/{sha}/specs/001-pr-reviewer/tasks.md"
+    print(f"scope={scope} dry_run={dry} tasks={len(tasks)} project={key}")
+
+    jira = Jira(base, email, token)
+    fields = jira.req("GET", "/rest/api/3/field")
+    field_id = next((f["id"] for f in fields if f.get("name") == FIELD_NAME), None)
+    if not field_id:
+        sys.exit(f"custom field {FIELD_NAME!r} not found")
+
+    project = jira.req("GET", f"/rest/api/3/project/{urllib.parse.quote(key)}")
+    types = jira.req("GET", "/rest/api/3/issuetype/project", query={"projectId": project["id"]})
+    type_name = next(
+        (
+            n
+            for n in ("Story", "Task")
+            if any(t.get("name") == n and not t.get("subtask") for t in types)
+        ),
+        None,
+    )
+    if not type_name:
+        sys.exit(f"no Story/Task type in {key}")
+
+    created = updated = listed = 0
+    fid_num = field_id.replace("customfield_", "")
+    for t in tasks:
+        jql = f'project = "{key}" AND cf[{fid_num}] ~ "{t["id"]}"'
+        try:
+            search = jira.req(
+                "POST",
+                "/rest/api/3/search/jql",
+                body={"jql": jql, "maxResults": 5, "fields": ["key", "summary"]},
+            )
+        except SystemExit:
+            search = jira.req(
+                "GET",
+                "/rest/api/3/search",
+                query={"jql": jql, "fields": "key,summary", "maxResults": "5"},
+            )
+        hits = search.get("issues") or []
+        if len(hits) > 1:
+            sys.exit(f"duplicate Jira rows for {t['id']}: {[i['key'] for i in hits]}")
+        labels = ["spec-sync", t["id"].lower()]
+        if t["us"] == 1:
+            labels.append("us1")
+        if scope == "mvp":
+            labels.append("mvp")
+        desc = adf(
+            [
+                f"Spec task: {t['id']}",
+                f"Source: {spec_url}",
+                t["full"],
+                "Do not edit ACs here. Change git spec, then re-sync.",
+                "Agents may comment and transition Ready / In progress / In review only. Never Done. Never create tickets.",
+            ]
+        )
+        payload_fields = {
+            "summary": f"{t['id']}: {t['summary']}"[:255],
+            "description": desc,
+            field_id: t["id"],
+            "labels": labels,
+        }
+        if dry:
+            print(f"DRY {'UPDATE' if hits else 'CREATE'} {t['id']} {payload_fields['summary'][:90]}")
+            listed += 1
+            continue
+        if not hits:
+            created_issue = jira.req(
+                "POST",
+                "/rest/api/3/issue",
+                body={
+                    "fields": {
+                        **payload_fields,
+                        "project": {"key": key},
+                        "issuetype": {"name": type_name},
+                    }
+                },
+            )
+            print(f"CREATE {t['id']} -> {created_issue.get('key')}")
+            created += 1
+        else:
+            ikey = hits[0]["key"]
+            jira.req("PUT", f"/rest/api/3/issue/{ikey}", body={"fields": payload_fields})
+            print(f"UPDATE {t['id']} -> {ikey}")
+            updated += 1
+        time.sleep(0.35)
+    print(f"done created={created} updated={updated} dry_listed={listed}")
+
+
+if __name__ == "__main__":
+    main()
