@@ -92,7 +92,8 @@ class FakeConnection:
         return self.behavior.get("response", FakeResponse(200, completion_body()))
 
     def close(self):
-        pass
+        if self.behavior.get("raise_on_close"):
+            raise self.behavior["raise_on_close"]
 
 
 @pytest.fixture(autouse=True)
@@ -346,3 +347,121 @@ def test_module_surface():
     assert llm.CONNECT_TIMEOUT_S == 2
     assert llm.READ_TIMEOUT_S == 45
     assert issubclass(llm.LlmError, Exception)
+
+
+# --- retryability contract pin (boundary 6; T054/T051 wiring, test-side) --------
+# The client emits the error taxonomy; the queue/worker owns retry. Today
+# `bad_endpoint` (config/usage fault) and persistent `invalid_response`
+# surface as `LlmError` exactly like transient faults — T054/T051 own mapping
+# them to NON-retryable. These tests pin CURRENT emission so that flip is a
+# conscious diff. No production-behavior edits here.
+
+
+def test_empty_api_key_is_bad_endpoint_today():
+    with pytest.raises(LlmError) as exc_info:
+        invoke(api_key="")
+    assert exc_info.value.error_class == "bad_endpoint"
+
+
+def test_empty_model_is_bad_endpoint_today():
+    with pytest.raises(LlmError) as exc_info:
+        invoke(model="")
+    assert exc_info.value.error_class == "bad_endpoint"
+
+
+def test_non_string_endpoint_is_bad_endpoint_today():
+    with pytest.raises(LlmError) as exc_info:
+        invoke(endpoint=None)
+    assert exc_info.value.error_class == "bad_endpoint"
+
+
+def test_endpoint_without_host_is_bad_endpoint_today():
+    with pytest.raises(LlmError) as exc_info:
+        invoke(endpoint="https:///no-host-here")
+    assert exc_info.value.error_class == "bad_endpoint"
+
+
+def test_endpoint_query_string_reaches_request_path():
+    invoke(endpoint="https://llm.example.test/v1/chat/completions?api-version=2026-03")
+    _, request = last_request()
+    assert request["path"] == "/v1/chat/completions?api-version=2026-03"
+
+
+def test_non_dict_body_is_invalid_response_today():
+    body = json.dumps(["not", "a", "dict"]).encode()
+    factory = make_factory(behavior={"response": FakeResponse(200, body)})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "invalid_response"
+
+
+def test_choices_not_a_list_is_invalid_response_today():
+    body = json.dumps({"choices": {"message": {"content": COMPLETION_TEXT}}}).encode()
+    factory = make_factory(behavior={"response": FakeResponse(200, body)})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "invalid_response"
+
+
+def test_non_dict_message_is_invalid_response_today():
+    body = json.dumps({"choices": ["just-a-string"]}).encode()
+    factory = make_factory(behavior={"response": FakeResponse(200, body)})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "invalid_response"
+
+
+def test_non_string_content_is_invalid_response_today():
+    body = json.dumps({"choices": [{"message": {"content": 12345}}]}).encode()
+    factory = make_factory(behavior={"response": FakeResponse(200, body)})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "invalid_response"
+
+
+def test_non_dict_usage_defaults_tokens_to_zero():
+    body = json.dumps(
+        {
+            "choices": [{"message": {"role": "assistant", "content": COMPLETION_TEXT}}],
+            "usage": [120, 40, 160],
+        }
+    ).encode()
+    factory = make_factory(behavior={"response": FakeResponse(200, body)})
+    result = invoke(_connection_factory=factory)
+    assert (result.prompt_tokens, result.completion_tokens, result.total_tokens) == (0, 0, 0)
+
+
+def test_request_phase_timeout_is_timeout_today():
+    factory = make_factory(behavior={"raise_on_request": TimeoutError("read timed out")})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "timeout"
+
+
+def test_request_phase_os_error_is_connection_error_today():
+    factory = make_factory(behavior={"raise_on_request": OSError("reset")})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "connection_error"
+
+
+def test_factory_failure_is_connection_error_today():
+    def failing_factory(host, port, *, timeout):
+        raise OSError("factory down")
+
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=failing_factory)
+    assert exc_info.value.error_class == "connection_error"
+
+
+def test_http_400_carries_machine_readable_class():
+    factory = make_factory(behavior={"response": FakeResponse(400, b"bad request")})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "http_400"
+
+
+def test_close_failure_never_masks_success():
+    factory = make_factory(behavior={"raise_on_close": RuntimeError("close boom")})
+    result = invoke(_connection_factory=factory)
+    assert result.content == COMPLETION_TEXT

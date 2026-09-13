@@ -30,8 +30,8 @@ Interpretations (HLD silent — flagged, conservative readings):
      canonical list, so the set below (js/python/rust/go/ruby/php ecosystems
      + `requirements.txt`) is the contract until the HLD names one.
   4. `urlopen` takes a single timeout, so `TIMEOUT_SECONDS = 10` covers the
-     HLD GitHub read budget (10 s); the 2 s connect split is unexpressible
-     in stdlib and documented here rather than silently claimed.
+     HLD §2.3 GitHub read budget (10 s); the 2 s connect split is
+     unexpressible in stdlib and documented here rather than silently claimed.
   5. `/files` pagination uses constructed `?per_page=&page=` URLs only:
      following `Link`-header URLs would violate failure mode 18. Fetching
      stops at the first short page, at `MAX_FILES` accumulated entries, or
