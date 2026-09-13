@@ -55,13 +55,11 @@ Flagged interpretations for the review gate:
 * A superseded establish performs NO write (the record is left unchanged):
   `last_seen_sha` advances on the accepted (a)/(b)/(c) paths; recording it on
   rejected events is stale-path (T043) scope, not this executor's.
-* Stale `comment_id` carry-over: establish (c) is a SET-only builder write, so
-  a prior ACTIVE record's `comment_id` survives the ACTIVE → CLAIMED
-  transition (no builder emits REMOVE). This tensions HLD §3.1
-  ("`comment_id` ... present only in ACTIVE"); the executor never reads
-  `comment_id` and finalize overwrites it on success, but a fence-mismatch
-  discard leaves the stale value until the next finalize. Builder change is
-  out of scope (merged PR #7 contract) — human call.
+* Stale `comment_id` is cleared on re-establish: establish (c) emits
+  `REMOVE comment_id` (HLD §3.1 — `comment_id` is present only on ACTIVE
+  records), so the ACTIVE → CLAIMED transition leaves the record decodable
+  by `from_item`. The executor never reads `comment_id`; finalize sets it
+  on success.
 
 Pure stdlib, no I/O, no boto3 import.
 """

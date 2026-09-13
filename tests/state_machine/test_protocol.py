@@ -337,11 +337,9 @@ def test_fence_mismatch_discards_stale_without_publish():
     assert item["status"] == "CLAIMED"  # left claimed per §3.3 (no release write)
     assert item["head_sha"] == SHA_B
     assert item["generation"] == 5
-    # No builder emits REMOVE and the stub applies SET-merge only, so the
-    # establish (c) clears the prior ACTIVE record's comment_id (HLD 3.1:
-    # comment_id exists only on ACTIVE records), so the stored CLAIMED
-    # record stays decodable by from_item. The fence-mismatch invariant
-    # is no-publish.
+    # establish (c) emits REMOVE comment_id (HLD 3.1: comment_id is
+    # ACTIVE-only), so the stored CLAIMED record stays decodable by
+    # from_item. The fence-mismatch invariant is no-publish.
     assert "comment_id" not in item
     assert h.calls.count(("review",)) == 1
 
