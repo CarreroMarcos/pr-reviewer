@@ -10,6 +10,7 @@ import uuid
 from dataclasses import FrozenInstanceError
 
 import pytest
+
 from common.envelope import EnvelopeError, validate_envelope
 
 HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
