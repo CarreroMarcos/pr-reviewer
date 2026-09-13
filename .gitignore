@@ -63,6 +63,7 @@ opencode.jsonc
 temp/
 .slim/
 .slim/deepwork/
+.codegraph/
 
 # ---- Editors / OS ----
 .idea/
