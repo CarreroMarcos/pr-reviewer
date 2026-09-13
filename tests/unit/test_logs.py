@@ -1,0 +1,390 @@
+"""T015: log redaction + fixed field-set contract (HLD §5.4; FR-026; Constitution III).
+
+Payload-shaped inputs (envelope-like dicts, optionally carrying hostile extras
+such as Authorization headers, PAT shapes, secrets, raw payloads, diffs, or
+LLM request/response bodies) must yield emitted lines containing none of the
+forbidden substrings. Every emitted line carries exactly the fixed field set
+(IDs, SHAs, durations, token usage, status, error class) — the logger builds
+events from an allow-list of fields, so non-fixed content is structurally
+unemittable.
+"""
+
+import json
+import uuid
+
+import pytest
+
+from common.envelope import validate_envelope
+from common.logs import (
+    FIXED_FIELDS,
+    LogsError,
+    RedactionError,
+    assert_clean,
+    build_event,
+    emit,
+    event_from_envelope,
+)
+
+HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
+BASE_SHA = "fedcba9876543210fedcba9876543210fedcba98"
+REPO = "octo-org/hello-world"
+
+EXPECTED_FIELDS = frozenset(
+    {
+        "repo_full_name",
+        "pr_number",
+        "head_sha",
+        "delivery_guid",
+        "generation",
+        "duration_ms",
+        "token_usage",
+        "status",
+        "error_class",
+        "prompt_version",
+    }
+)
+
+FAKE_PAT = "ghp_" + "A" * 36  # noqa: S105 (fake fixture, not a credential)
+FAKE_FINE_PAT = "github_pat_" + "B" * 22  # noqa: S105 (fake fixture)
+FAKE_WEBHOOK_SECRET = "whsec-test-secret-value"  # noqa: S105 (fake fixture)
+FAKE_GLM_KEY = "glm-test-key-value"  # noqa: S105 (fake fixture)
+AUTH_VALUE = "Bearer " + FAKE_PAT  # noqa: S105 (fake header fixture)
+SIGNATURE_VALUE = "sha256=" + "d" * 64  # noqa: S105 (fake fixture)
+
+RAW_PAYLOAD = json.dumps(
+    {
+        "action": "opened",
+        "pull_request": {
+            "number": 42,
+            "head": {"sha": HEAD_SHA},
+            "title": "CANARY-PR-TITLE",
+        },
+        "repository": {"full_name": REPO},
+    }
+)
+DIFF_TEXT = (
+    "diff --git a/review.py b/review.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/review.py\n"
+    "+++ b/review.py\n"
+    "@@ -1,2 +1,3 @@\n"
+    " context\n"
+    "+CANARY-DIFF-LINE\n"
+)
+LLM_REQUEST = json.dumps(
+    {
+        "model": "glm-5.3-flash",
+        "messages": [{"role": "system", "content": "CANARY-SYSTEM-PROMPT-TEXT"}],
+    }
+)
+LLM_RESPONSE = json.dumps(
+    {"choices": [{"message": {"role": "assistant", "content": "CANARY-MODEL-COMPLETION"}}]}
+)
+
+HOSTILE_EXTRAS = {
+    "Authorization": AUTH_VALUE,
+    "authorization": AUTH_VALUE,
+    "github_token": FAKE_PAT,
+    "fine_grained_pat": FAKE_FINE_PAT,
+    "webhook_secret": FAKE_WEBHOOK_SECRET,
+    "glm_api_key": FAKE_GLM_KEY,
+    "X-Hub-Signature-256": SIGNATURE_VALUE,
+    "raw_payload": RAW_PAYLOAD,
+    "body": RAW_PAYLOAD,
+    "diff": DIFF_TEXT,
+    "llm_request": LLM_REQUEST,
+    "llm_response": LLM_RESPONSE,
+}
+
+# Every hostile token that must never appear in any emitted log line (FR-026).
+FORBIDDEN = [
+    "Authorization",
+    "authorization",
+    "Bearer",
+    "bearer",
+    "ghp_",
+    "github_pat_",
+    FAKE_WEBHOOK_SECRET,
+    FAKE_GLM_KEY,
+    "X-Hub-Signature-256",
+    "x-hub-signature",
+    "sha256=",
+    "diff --git",
+    "@@",
+    '"pull_request":',
+    '"repository":',
+    '"messages":',
+    '"choices":',
+    "CANARY-PR-TITLE",
+    "CANARY-DIFF-LINE",
+    "CANARY-SYSTEM-PROMPT-TEXT",
+    "CANARY-MODEL-COMPLETION",
+]
+
+
+def _envelope(**overrides):
+    payload = {
+        "envelope_version": "v1",
+        "event_type": "pull_request",
+        "action": "opened",
+        "repo_full_name": REPO,
+        "pr_number": 42,
+        "head_sha": HEAD_SHA,
+        "base_sha": BASE_SHA,
+        "sender": "octocat",
+        "delivery_guid": str(uuid.uuid4()),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _metrics(**overrides):
+    metrics = {"duration_ms": 1234, "token_usage": 5678, "status": "ok"}
+    metrics.update(overrides)
+    return metrics
+
+
+def _emit_lines(payload, **metrics):
+    lines = []
+    event = event_from_envelope(payload, **_metrics(**metrics))
+    emit(lines.append, event)
+    return lines
+
+
+def _assert_no_forbidden(lines):
+    assert lines, "expected at least one emitted line"
+    blob = "\n".join(lines)
+    for token in FORBIDDEN:
+        assert token not in blob, f"forbidden substring in logs: {token!r}"
+
+
+# --- fixed field set -------------------------------------------------------
+
+
+def test_fixed_field_set_is_pinned():
+    assert FIXED_FIELDS == EXPECTED_FIELDS
+
+
+def test_build_event_carries_exactly_fixed_fields():
+    event = build_event(
+        repo_full_name=REPO,
+        pr_number=42,
+        head_sha=HEAD_SHA,
+        delivery_guid=str(uuid.uuid4()),
+        **_metrics(),
+    )
+    assert set(event) == FIXED_FIELDS
+    assert event["repo_full_name"] == REPO
+    assert event["pr_number"] == 42
+    assert event["head_sha"] == HEAD_SHA
+    assert event["duration_ms"] == 1234
+    assert event["token_usage"] == 5678
+    assert event["status"] == "ok"
+    assert event["error_class"] is None
+    assert event["generation"] is None
+    assert event["prompt_version"] is None
+
+
+def test_build_event_carries_optional_fields():
+    event = build_event(
+        repo_full_name=REPO,
+        pr_number=42,
+        head_sha=HEAD_SHA,
+        delivery_guid=str(uuid.uuid4()),
+        duration_ms=9000,
+        token_usage=120001,
+        status="llm_error",
+        error_class="TimeoutError",
+        generation=3,
+        prompt_version="v3",
+    )
+    assert set(event) == FIXED_FIELDS
+    assert event["error_class"] == "TimeoutError"
+    assert event["generation"] == 3
+    assert event["prompt_version"] == "v3"
+
+
+def test_emit_writes_single_json_line_with_fixed_keys():
+    lines = []
+    event = build_event(
+        repo_full_name=REPO,
+        pr_number=42,
+        head_sha=HEAD_SHA,
+        delivery_guid=str(uuid.uuid4()),
+        **_metrics(),
+    )
+    emit(lines.append, event)
+    assert len(lines) == 1
+    assert lines[0].endswith("\n")
+    assert lines[0].count("\n") == 1
+    assert set(json.loads(lines[0])) == set(FIXED_FIELDS)
+
+
+def test_build_event_rejects_unknown_fields():
+    kwargs = {
+        "repo_full_name": REPO,
+        "pr_number": 42,
+        "head_sha": HEAD_SHA,
+        "delivery_guid": str(uuid.uuid4()),
+        "duration_ms": 1,
+        "token_usage": 2,
+        "status": "ok",
+        "diff": DIFF_TEXT,
+    }
+    with pytest.raises(TypeError):
+        build_event(**kwargs)
+
+
+def test_emit_rejects_non_fixed_event_shape():
+    lines = []
+    event = build_event(
+        repo_full_name=REPO,
+        pr_number=42,
+        head_sha=HEAD_SHA,
+        delivery_guid=str(uuid.uuid4()),
+        **_metrics(),
+    )
+    event["diff"] = DIFF_TEXT
+    with pytest.raises(LogsError) as excinfo:
+        emit(lines.append, event)
+    assert excinfo.value.field == "event"
+    assert excinfo.value.reason == "bad_fields"
+    assert lines == []
+
+
+# --- forbidden-substring matrix (FR-026) -----------------------------------
+
+
+@pytest.mark.parametrize("key", sorted(HOSTILE_EXTRAS))
+def test_hostile_extra_key_never_emitted(key):
+    payload = _envelope()
+    payload[key] = HOSTILE_EXTRAS[key]
+    _assert_no_forbidden(_emit_lines(payload))
+
+
+def test_full_hostile_envelope_never_emitted():
+    payload = _envelope()
+    payload.update(HOSTILE_EXTRAS)
+    lines = _emit_lines(payload)
+    _assert_no_forbidden(lines)
+    assert set(json.loads(lines[0])) == set(FIXED_FIELDS)
+
+
+def test_event_from_envelope_accepts_validated_envelope_object():
+    envelope = validate_envelope(_envelope())
+    lines = _emit_lines(envelope)
+    _assert_no_forbidden(lines)
+    assert json.loads(lines[0])["pr_number"] == 42
+
+
+def test_control_characters_never_reach_output():
+    payload = _envelope()
+    payload["X-Trace"] = "line1\r\nline2 injected"
+    lines = _emit_lines(payload)
+    _assert_no_forbidden(lines)
+    assert "\r" not in lines[0]
+    assert lines[0].count("\n") == 1
+
+
+# --- redaction guard --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Authorization: Bearer ghp_" + "A" * 36,
+        "bearer token here",
+        "X-Hub-Signature-256: sha256=" + "d" * 64,
+        "key=ghp_" + "A" * 36,
+        "github_pat_" + "B" * 22,
+        "diff --git a/f b/f",
+        "@@ -1,2 +1,3 @@",
+    ],
+)
+def test_guard_rejects_forbidden_text(text):
+    with pytest.raises(RedactionError):
+        assert_clean(text)
+
+
+def test_guard_passes_clean_text():
+    assert assert_clean("repo=octo-org/hello-world status=ok") is None
+
+
+def test_secret_smuggled_in_identifier_trips_guard():
+    payload = _envelope(repo_full_name="octo-org/" + FAKE_PAT)
+    with pytest.raises(RedactionError):
+        event_from_envelope(payload, **_metrics())
+
+
+def test_emit_scans_final_serialized_line():
+    lines = []
+    event = build_event(
+        repo_full_name=REPO,
+        pr_number=42,
+        head_sha=HEAD_SHA,
+        delivery_guid=str(uuid.uuid4()),
+        **_metrics(),
+    )
+    tampered = dict(event)
+    tampered["status"] = "bearer"
+    with pytest.raises(RedactionError):
+        emit(lines.append, tampered)
+    assert lines == []
+
+
+# --- typed rejections -------------------------------------------------------
+
+
+def test_malformed_envelope_rejected_with_typed_error():
+    with pytest.raises(LogsError) as excinfo:
+        event_from_envelope({"bogus": True}, **_metrics())
+    assert excinfo.value.field == "envelope_version"
+    assert excinfo.value.reason == "missing"
+
+    with pytest.raises(LogsError) as excinfo:
+        event_from_envelope("not-a-dict", **_metrics())
+    assert excinfo.value.field == "envelope"
+    assert excinfo.value.reason == "not_object"
+
+
+@pytest.mark.parametrize(
+    ("override", "field", "reason"),
+    [
+        ({"repo_full_name": "owneronly"}, "repo_full_name", "bad_repo"),
+        ({"pr_number": 0}, "pr_number", "bad_pr_number"),
+        ({"head_sha": "A" * 40}, "head_sha", "bad_sha"),
+        ({"delivery_guid": "not-a-uuid"}, "delivery_guid", "bad_guid"),
+    ],
+)
+def test_bad_identifiers_rejected(override, field, reason):
+    with pytest.raises(LogsError) as excinfo:
+        event_from_envelope(_envelope(**override), **_metrics())
+    assert excinfo.value.field == field
+    assert excinfo.value.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field", "reason"),
+    [
+        ({"status": ""}, "status", "bad_status"),
+        ({"status": "HAS SPACE"}, "status", "bad_status"),
+        ({"status": "ok\n"}, "status", "bad_status"),
+        ({"status": "x" * 65}, "status", "bad_status"),
+        ({"duration_ms": -1}, "duration_ms", "bad_duration"),
+        ({"duration_ms": True}, "duration_ms", "bad_duration"),
+        ({"duration_ms": "5"}, "duration_ms", "bad_duration"),
+        ({"token_usage": -1}, "token_usage", "bad_token_usage"),
+        ({"generation": -1}, "generation", "bad_generation"),
+        ({"error_class": ""}, "error_class", "bad_error_class"),
+    ],
+)
+def test_bad_metrics_rejected(kwargs, field, reason):
+    with pytest.raises(LogsError) as excinfo:
+        event_from_envelope(_envelope(), **_metrics(**kwargs))
+    assert excinfo.value.field == field
+    assert excinfo.value.reason == reason
+
+
+def test_error_types_are_value_errors():
+    assert issubclass(LogsError, ValueError)
+    assert issubclass(RedactionError, ValueError)
