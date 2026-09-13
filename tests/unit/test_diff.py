@@ -11,7 +11,9 @@ collection fails with ImportError until T031 implements it.
 """
 
 import inspect
+import io
 import json
+from urllib.error import HTTPError, URLError
 
 from common import diff
 
@@ -478,3 +480,82 @@ def test_empty_first_page_yields_empty_review_content():
     assert result.files == ()
     assert result.truncated is False
     assert result.lockfile_summary == diff.EMPTY_LOCKFILE_SUMMARY
+
+
+# --- F4: _default_transport keeps every urlopen failure inside DiffError -----
+# Timeout / URLError / OSError-class → RETRYABLE transport_error (status
+# None) so the worker raises for the queue; HTTPError → http_error with the
+# status attached so the worker applies the item-8 status table. The live
+# `urlopen` is swapped per-test (never network); style matches this file
+# (try/except pins, no pytest import).
+
+
+def run_default_transport(urlopen_double):
+    original = diff.urlopen
+    diff.urlopen = urlopen_double
+    try:
+        diff._default_transport("https://api.github.com/repos/o/r/pulls/1", {})
+    except diff.DiffError as exc:
+        return exc
+    else:
+        raise AssertionError("expected DiffError")
+    finally:
+        diff.urlopen = original
+
+
+def test_default_transport_wraps_timeout_as_retryable():
+    def boom(request, timeout=None):
+        raise TimeoutError("timed out")
+
+    exc = run_default_transport(boom)
+    assert exc.reason == "transport_error"
+    assert exc.status is None
+    assert isinstance(exc, ValueError)
+
+
+def test_default_transport_wraps_url_error_as_retryable():
+    def boom(request, timeout=None):
+        raise URLError("dns failure")
+
+    exc = run_default_transport(boom)
+    assert exc.reason == "transport_error"
+    assert exc.status is None
+
+
+def test_default_transport_wraps_os_error_as_retryable():
+    def boom(request, timeout=None):
+        raise ConnectionRefusedError("refused")
+
+    exc = run_default_transport(boom)
+    assert exc.reason == "transport_error"
+    assert exc.status is None
+
+
+def test_default_transport_maps_http_error_to_status_taxonomy():
+    def boom(request, timeout=None):
+        raise HTTPError(
+            "https://api.github.com/repos/o/r/pulls/1",
+            503,
+            "unavailable",
+            {},
+            io.BytesIO(b"boom"),
+        )
+
+    exc = run_default_transport(boom)
+    assert exc.reason == "http_error"
+    assert exc.status == 503
+
+
+def test_default_transport_maps_http_404_to_status_taxonomy():
+    def boom(request, timeout=None):
+        raise HTTPError(
+            "https://api.github.com/repos/o/r/pulls/1",
+            404,
+            "not found",
+            {},
+            io.BytesIO(b"{}"),
+        )
+
+    exc = run_default_transport(boom)
+    assert exc.reason == "http_error"
+    assert exc.status == 404
