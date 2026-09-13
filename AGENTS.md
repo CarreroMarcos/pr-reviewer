@@ -28,7 +28,8 @@ Runtime: Python 3.12 stdlib + `boto3` only. No model tools.
 ## Jira (MCP)
 
 Allowed tools: search, get issue, list transitions, add comment, transition.
-Forbidden: create issue, edit summary/description/ACs, delete, Done, Cancelled (human only).
+Forbidden: create issue, edit summary/description/ACs, delete, Cancelled (human only).
+Done is agent-settable only through the Oracle review gate (below) — never directly.
 
 Jira description is a pointer. Source of truth is `specs/001-pr-reviewer/tasks.md` + spec/HLD.
 
@@ -36,11 +37,11 @@ Statuses in this space (names must match; the first column is **To Do**, not Rea
 
 | Event | Comment? | Transition |
 | --- | --- | --- |
-| Starting a task | Yes, once | To Do → In progress |
-| PR opened | Yes, with URL | In progress → In review |
-| Need a decision / AC change | Yes, question only | In progress → Needs input |
-| Human answered, resume | Yes, one line | Needs input → In progress |
-| Merged | No | Human sets Done |
+| Starting a task | Yes, once | To Do → In Progress |
+| PR opened | Yes, with URL | In Progress → In Review |
+| Need a decision / AC change | Yes, question only | In Progress → Needs input |
+| Human answered, resume | Yes, one line | Needs input → In Progress |
+| Oracle gate passed (merged) | Yes, one line: verdict + short sha | In Review → Done |
 
 Comment only at those events. No progress spam, no pasting diffs or secrets, no rewriting the story in a comment.
 
@@ -67,19 +68,34 @@ Next work JQL:
 project = SPR AND labels = spec-sync AND status = "To Do" ORDER BY key ASC
 ```
 
-One ticket in **In progress** at a time. Start at SPR-1 / T001.
+One ticket in **In Progress** at a time. Start at SPR-1 / T001.
 
 ## One ticket, one PR
 
 1. Next To Do story via JQL. Read `tasks.md` for that T-id (not the Jira body).
-2. Comment + To Do → In progress.
+2. Comment + To Do → In Progress.
 3. Branch `SPR-n/t00x-short-slug`. Implement only that task. Run its `verify:`.
 4. PR title `SPR-n: T00x …`. Fill the PR template.
-5. Comment PR URL + verify result. In progress → In review.
-6. Stop. Do not merge. Do not Done.
+5. Comment PR URL + verify result. In Progress → In Review.
+6. Stop. The Oracle gate owns In Review (below).
 
 If the AC/HLD is wrong: Needs input, stop. Spec change is a git PR first.
 
-## After merge (human)
+## Oracle review gate (In Review → merge → Done)
 
-Squash-merge when CI is green. Then Jira **Done**. Next ticket.
+After step 6, dispatch an Oracle review with a bounded brief: the single T-id text
+from `tasks.md`, the PR diff, real verify evidence + CI status, and the Jira trail.
+Oracle reviews exactly four things — nothing more:
+
+1. Scope discipline — the diff contains only what that T-id requires.
+2. Spec/HLD/AC conformance for that task.
+3. Verify honesty — claimed evidence matches real output and CI.
+4. Jira hygiene — right comment at the right event, legal transitions, no direct Done.
+
+Verdicts and actions:
+
+- **APPROVE** → squash-merge when CI is green; comment `Oracle: APPROVE. Merged <short sha>.`; In Review → Done; start the next ticket via JQL.
+- **CHANGES_REQUESTED** → fix on the same branch, push, re-dispatch the gate. Do not merge.
+- **Spec/HLD conflict** → Needs input, stop. Human decides; spec change is a git PR first.
+
+Never merge without Oracle APPROVE + green CI. Done is set only through the gate.
