@@ -399,3 +399,6 @@ def test_establish_confirm_increments_generation():
     assert values[":next_gen"] == 42
     assert values[":head"] == HEAD_B
     assert "generation = :next_gen" in update
+    # HLD 3.1: comment_id is ACTIVE-only, so establish (c) must clear it
+    # when a previously-ACTIVE record returns to CLAIMED.
+    assert update.endswith("REMOVE comment_id")
