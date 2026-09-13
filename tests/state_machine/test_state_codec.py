@@ -13,6 +13,7 @@ machine-readable `field`/`reason`, mirroring `common.envelope.EnvelopeError`.
 """
 
 import pytest
+
 from common.state import (
     CLAIM_LEASE_SECONDS,
     DELIVERY_TTL_SECONDS,
@@ -239,9 +240,13 @@ def test_reject_active_missing_comment_id():
     _rejected(item, "comment_id", "missing_comment_id")
 
 
-@pytest.mark.parametrize("comment_id", ["987654", 98.0, True, False, None, 0, -5, 2**63])
+@pytest.mark.parametrize("comment_id", ["987654", 98.0, True, False, 0, -5, 2**63])
 def test_reject_bad_comment_id(comment_id):
     _rejected(_active(comment_id=comment_id), "comment_id", "bad_comment_id")
+
+
+def test_reject_active_explicit_null_comment_id():
+    _rejected(_active(comment_id=None), "comment_id", "missing_comment_id")
 
 
 # --- updated_at ------------------------------------------------------------
