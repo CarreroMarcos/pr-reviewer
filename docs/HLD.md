@@ -100,7 +100,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 
 | Attribute | Specification |
 | :--- | :--- |
-| Runtime / Handler | Python 3.12 / `ingress_handler.lambda_handler` |
+| Runtime / Handler | Python 3.12 / `ingress_handler.handler` |
 | Timeout / Memory | 5s / 128 MB |
 | Reserved concurrency | 25 (~250 RPS Function URL ceiling; reserved concurrency is free) |
 | Trigger | Lambda Function URL, `AuthType: NONE` |
@@ -167,7 +167,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 
 | Attribute | Specification |
 | :--- | :--- |
-| Runtime / Handler | Python 3.12 / `worker_handler.lambda_handler` |
+| Runtime / Handler | Python 3.12 / `worker_handler.handler` |
 | Timeout / Memory | 120s / 256 MB |
 | Reserved concurrency | 5 |
 | Trigger | SQS event source mapping (no public exposure) |
