@@ -7,7 +7,9 @@
 # (pk = delivery:{guid}) carry a 7-day expiry written by the merged state
 # codec (lambda/common/state.py: build_delivery_item, attribute "ttl").
 # Without table-side TTL enabled, those expiry markers never fire and
-# delivery rows accumulate unbounded. `ttl` is declared N (epoch seconds).
+# delivery rows accumulate unbounded. The `ttl` spec block needs NO
+# AttributeDefinition — DynamoDB rejects non-key attribute definitions
+# at CreateTable (Gate 3 F1).
 
 resource "aws_dynamodb_table" "state" {
   name           = "pr-reviewer-state"
@@ -19,11 +21,6 @@ resource "aws_dynamodb_table" "state" {
   attribute {
     name = "pk"
     type = "S"
-  }
-
-  attribute {
-    name = "ttl"
-    type = "N"
   }
 
   ttl {

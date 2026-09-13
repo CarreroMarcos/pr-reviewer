@@ -16,7 +16,8 @@ data "archive_file" "ingress" {
 
   excludes = [
     "worker_handler.py",
-    "__pycache__",
+    "**/__pycache__",
+    "*.pyc",
   ]
 }
 
@@ -27,7 +28,8 @@ data "archive_file" "worker" {
 
   excludes = [
     "ingress_handler.py",
-    "__pycache__",
+    "**/__pycache__",
+    "*.pyc",
   ]
 }
 
