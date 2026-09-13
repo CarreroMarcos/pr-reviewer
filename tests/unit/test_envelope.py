@@ -223,3 +223,30 @@ def test_missing_required_field(field):
 @pytest.mark.parametrize("payload", [["not", "a", "dict"], "string", None, 42])
 def test_non_object_payload(payload):
     _rejected(payload, "envelope", "not_object")
+
+
+# --- newline anchoring ($ vs \Z) -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field_kwargs", "field", "reason"),
+    [
+        ({"repo_full_name": "octo-org/hello-world\n"}, "repo_full_name", "bad_repo"),
+        ({"head_sha": "a" * 40 + "\n"}, "head_sha", "bad_sha"),
+        ({"sender": "octocat\n"}, "sender", "bad_sender"),
+    ],
+)
+def test_trailing_newline_rejected(field_kwargs, field, reason):
+    """Python `$` also matches before a trailing newline, so `$`-anchored
+    regexes admitted single-trailing-newline variants of validated identity
+    fields. Anchors are `\\Z` (exact end) — found by the SPR-15 logs lane's
+    redaction-guard work (logs.py anchors with \\Z for the same reason)."""
+    _rejected(_valid(**field_kwargs), field, reason)
+
+
+def test_trailing_newline_guid_rejected():
+    _rejected(
+        _valid(delivery_guid=str(uuid.uuid4()) + "\n"),
+        "delivery_guid",
+        "bad_guid",
+    )

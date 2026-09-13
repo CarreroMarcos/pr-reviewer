@@ -23,12 +23,14 @@ MAX_PR_NUMBER = 10**9
 MAX_SENDER_LENGTH = 64
 MAX_GUID_LENGTH = 64
 
-_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_SENDER_RE = re.compile(r"^[A-Za-z0-9-]+$")
+# Anchors are \Z, not $: Python $ also matches before a trailing newline,
+# which would admit single-newline variants of validated identity fields.
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
+_SENDER_RE = re.compile(r"^[A-Za-z0-9-]+\Z")
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
-    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z"
 )
 
 
