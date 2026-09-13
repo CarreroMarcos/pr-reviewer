@@ -403,3 +403,35 @@ def test_duplicate_delivery_publishes_once():
     assert second.kind == OutcomeKind.DISCARDED_CLAIM_HELD
     assert sum(1 for entry in h.calls if entry[0] == "publish") == 1
     assert h.table.items[PK]["comment_id"] == COMMENT_ID
+
+
+def test_claim_failure_after_concurrent_move_discards_stale():
+    """Adversarial: a concurrent writer moves head+generation between establish
+    and claim → the claim guard fails and the re-read shows moved → discard
+    as stale; publish never runs; the newer record is left intact."""
+    h = Harness(live_shas=[SHA_A])
+    _seed(h.table, head=SHA_A, gen=2, comment=111)
+
+    def review_then_land():
+        _seed(h.table, head=SHA_C, gen=6, owner=GUID_OTHER, status="CLAIMED")
+        h.calls.append(("review",))
+        return h.review_body
+
+    outcome = h.run(incoming_sha=SHA_A, review=review_then_land)
+    assert outcome.kind == OutcomeKind.DISCARDED_STALE
+    assert not any(entry[0] == "publish" for entry in h.calls)
+    assert h.table.items[PK]["head_sha"] == SHA_C
+    assert h.table.items[PK]["generation"] == 6
+
+
+def test_claim_succeeds_when_owner_absent():
+    """Adversarial shape: a legacy record carrying no claim_owner/claim_until
+    satisfies the `attribute_not_exists(claim_owner)` OR-branch → the claim
+    succeeds and the lease is granted to the caller."""
+    h = Harness(live_shas=[SHA_A])
+    _seed(h.table, head=SHA_A, gen=2, comment=111)
+    del h.table.items[PK]["claim_owner"]
+    del h.table.items[PK]["claim_until"]
+    outcome = h.run(incoming_sha=SHA_A)
+    assert outcome.kind == OutcomeKind.PUBLISHED
+    assert h.table.items[PK]["claim_owner"] == GUID_1
