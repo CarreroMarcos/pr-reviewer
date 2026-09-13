@@ -13,6 +13,8 @@ import json
 import uuid
 
 import pytest
+
+from common.envelope import validate_envelope
 from common.logs import (
     FIXED_FIELDS,
     LogsError,
@@ -22,8 +24,6 @@ from common.logs import (
     emit,
     event_from_envelope,
 )
-
-from common.envelope import validate_envelope
 
 HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 BASE_SHA = "fedcba9876543210fedcba9876543210fedcba98"
@@ -279,7 +279,7 @@ def test_event_from_envelope_accepts_validated_envelope_object():
 
 def test_control_characters_never_reach_output():
     payload = _envelope()
-    payload["sender"] = "octo\r\ncat"
+    payload["X-Trace"] = "line1\r\nline2 injected"
     lines = _emit_lines(payload)
     _assert_no_forbidden(lines)
     assert "\r" not in lines[0]
@@ -338,7 +338,13 @@ def test_emit_scans_final_serialized_line():
 def test_malformed_envelope_rejected_with_typed_error():
     with pytest.raises(LogsError) as excinfo:
         event_from_envelope({"bogus": True}, **_metrics())
+    assert excinfo.value.field == "envelope_version"
+    assert excinfo.value.reason == "missing"
+
+    with pytest.raises(LogsError) as excinfo:
+        event_from_envelope("not-a-dict", **_metrics())
     assert excinfo.value.field == "envelope"
+    assert excinfo.value.reason == "not_object"
 
 
 @pytest.mark.parametrize(
