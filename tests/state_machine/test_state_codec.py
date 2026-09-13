@@ -210,6 +210,13 @@ def test_base_sha_shape_reference():
     assert len(BASE) == 40
 
 
+@pytest.mark.parametrize("field", ["head_sha", "last_seen_sha"])
+def test_reject_sha_with_trailing_newline(field):
+    # `$` matches before a trailing newline; only `\Z` anchors the true end.
+    # A 40-hex SHA smuggling `\n` must not validate (batch-2 carry-forward).
+    _rejected(_claimed(**{field: "a" * 40 + "\n"}), field, "bad_sha")
+
+
 # --- claim_until / claim_owner ---------------------------------------------
 
 
@@ -291,6 +298,12 @@ def test_reject_malformed_pk(pk):
 @pytest.mark.parametrize("pk", [None, 123])
 def test_reject_non_string_pk(pk):
     _rejected(_claimed(pk=pk), "pk", "bad_pk")
+
+
+def test_reject_pk_with_trailing_newline():
+    # Same `$`-vs-`\Z` hole as the SHA patterns: a pk smuggling `\n`
+    # must not validate (batch-2 carry-forward).
+    _rejected(_claimed(pk="review:octo-org/hello-world#42\n"), "pk", "bad_pk")
 
 
 @pytest.mark.parametrize("item", [None, "string", ["list"], 123])

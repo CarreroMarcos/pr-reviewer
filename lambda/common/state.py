@@ -37,8 +37,8 @@ INT64_MAX = 2**63 - 1
 # `status` is a DynamoDB reserved word: expression builders alias it as `#st`.
 EXPRESSION_ATTRIBUTE_NAMES = {"#st": "status"}
 
-_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_PK_RE = re.compile(r"^review:[^#]+#[0-9]+$")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
+_PK_RE = re.compile(r"^review:[^#]+#[0-9]+\Z")
 
 ExprTriple = tuple[str, str, dict[str, Any]]
 
