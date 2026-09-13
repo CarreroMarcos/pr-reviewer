@@ -6,9 +6,9 @@ Fails with ModuleNotFoundError until T019 implements `common.validate`.
 """
 
 import pytest
-from common.validate import CANARY_SUBSTRING, validate_comment
 
 from common.marker import build_marker
+from common.validate import CANARY_SUBSTRING, validate_comment
 
 REPO = "octo-org/hello-world"
 PR = 9
