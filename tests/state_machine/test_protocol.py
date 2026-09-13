@@ -38,9 +38,9 @@ fetches, and review/fence/publish fakes sharing one call log. No sleeps.
 
 import copy
 
-from common.protocol import OutcomeKind, run_review
 from dynamodb_stub import InMemoryTable
 
+from common.protocol import OutcomeKind, run_review
 from common.state import (
     CLAIM_LEASE_SECONDS,
     EXPRESSION_ATTRIBUTE_NAMES,
@@ -221,7 +221,15 @@ def test_establish_retry_same_sha_converges():
     """Step 1c guard race: a concurrent writer lands the SAME SHA (expired lease)
     → our (c) write fails the generation guard → re-read → converge via (b)."""
 
+    landed: list = []
+
     def concurrent_writer(_sha):
+        # One concurrent landing: the Harness fence hook fires on every live
+        # fetch (establish-confirm fetch AND the step-4 fence), but the modeled
+        # writer lands once — a second firing would be a second writer.
+        if landed:
+            return
+        landed.append(_sha)
         _seed(
             h.table,
             head=SHA_B,
@@ -306,7 +314,10 @@ def test_fence_after_claim_before_publish():
     assert outcome.kind == OutcomeKind.PUBLISHED
     review_idx = h.calls.index(("review",))
     claim_idx = _claim_update_index(h.calls)
-    fence_idx = next(i for i, entry in enumerate(h.calls) if entry[0] == "fence")
+    # The step-4 fence: the first fence strictly AFTER the claim (an earlier
+    # fence entry is the establish-(c) live-confirm fetch, cf. the
+    # "confirm fetch only" assertion in test_superseded_event_leaves_record).
+    fence_idx = next(i for i, entry in enumerate(h.calls) if entry[0] == "fence" and i > claim_idx)
     publish_idx = next(i for i, entry in enumerate(h.calls) if entry[0] == "publish")
     updates_after_publish = [i for i in _update_indices(h.calls) if i > publish_idx]
     assert review_idx < claim_idx < fence_idx < publish_idx
@@ -326,7 +337,11 @@ def test_fence_mismatch_discards_stale_without_publish():
     assert item["status"] == "CLAIMED"  # left claimed per §3.3 (no release write)
     assert item["head_sha"] == SHA_B
     assert item["generation"] == 5
-    assert "comment_id" not in item
+    # No builder emits REMOVE and the stub applies SET-merge only, so the
+    # prior ACTIVE record's comment_id carries over untouched (never
+    # overwritten, never cleared — tensions HLD §3.1 "present only in ACTIVE";
+    # flagged for the gate). The fence-mismatch invariant is no-publish.
+    assert item.get("comment_id") == 111
     assert h.calls.count(("review",)) == 1
 
 
