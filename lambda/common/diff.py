@@ -43,7 +43,11 @@ seam, so tests never hit the network. Secret values never appear in
 
 Error semantics for the worker's §2.3 item 8 classification: `http_error`
 (non-200, `status` attached) and `bad_shape`/`bad_sha` are the fetch-side
-signals; retry-vs-complete is decided by the worker, not here.
+signals; `transport_error` (`status` None) is the live-transport signal —
+`_default_transport` maps `HTTPError` → `http_error` (status attached) and
+timeout / `URLError` / `OSError`-class → RETRYABLE `transport_error`, so no
+`urlopen` exception ever escapes this taxonomy. Retry-vs-complete is
+decided by the worker, not here.
 """
 
 from __future__ import annotations
@@ -53,6 +57,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 GITHUB_API_BASE = "https://api.github.com"
@@ -98,10 +103,17 @@ MAX_PR_NUMBER = 10**9
 class DiffError(ValueError):
     """Typed diff rejection: `field` names the offending field
     (`repo_full_name`, `pr_number`, `head.sha`, `response`, `files`,
-    `pr` for HTTP status), `reason` is a machine-readable code
+    `pr` for HTTP status, `request` for transport-level failures raised by
+    `_default_transport`), `reason` is a machine-readable code
     (`bad_repo`, `bad_pr_number`, `bad_shape`, `bad_sha`, `http_error`,
-    `bad_page`), and `status` carries the HTTP status for `http_error`
-    (else `None`). Never carries secret values."""
+    `bad_page`, `transport_error`), and `status` carries the HTTP status
+    for `http_error` (else `None`). Never carries secret values.
+
+    Retry contract for the worker (HLD §2.3 item 8): `transport_error`
+    (timeout / URLError / OSError-class from `urlopen`) is RETRYABLE — the
+    worker lets it propagate for SQS redelivery. `http_error` retryability
+    depends on status (429/5xx retry; 401/403/404 complete) and is decided
+    at the worker boundary, not here."""
 
     def __init__(self, field_name: str, reason: str, status: int | None = None) -> None:
         self.field = field_name
@@ -198,13 +210,30 @@ def _request_headers(github_token: str) -> dict[str, str]:
 
 
 def _default_transport(url: str, headers: Mapping[str, str]) -> HttpResponse:
+    """Live `urlopen` transport (F4: every `urlopen` failure stays inside the
+    `DiffError` taxonomy — nothing escapes it).
+
+    * `HTTPError` (a `URLError` subclass carrying the status) → `http_error`
+      with `status` attached, so the worker can apply the item-8
+      status table (429/5xx retry; 401/403/404 complete).
+    * `TimeoutError` / `URLError` / `OSError`-class (DNS, refused, reset,
+      TLS, socket timeout — `TimeoutError` is matched first only so the
+      mapping reads explicitly; it is an `OSError` subclass) →
+      RETRYABLE `DiffError("request", "transport_error")` with `status`
+      None, so the worker raises for the queue.
+    """
     request = Request(url, headers=dict(headers))  # noqa: S310 (https allow-listed base)
-    with urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
-        return HttpResponse(
-            status=response.status,
-            body=response.read(),
-            headers=dict(response.headers.items()),
-        )
+    try:
+        with urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
+            return HttpResponse(
+                status=response.status,
+                body=response.read(),
+                headers=dict(response.headers.items()),
+            )
+    except HTTPError as exc:
+        raise DiffError("request", "http_error", status=exc.code) from exc
+    except (TimeoutError, URLError, OSError) as exc:
+        raise DiffError("request", "transport_error") from exc
 
 
 def _check_head_sha(payload: Any) -> str:
@@ -228,7 +257,8 @@ def fetch_pr_head_sha(
 
     Raises `DiffError`: `bad_repo`/`bad_pr_number` before any I/O,
     `http_error` (`status` attached) on non-200, `bad_shape` on unparseable
-    bodies, `bad_sha` when `head.sha` is not 40-hex.
+    bodies, `bad_sha` when `head.sha` is not 40-hex, RETRYABLE
+    `transport_error` on timeout/DNS/refused/reset/TLS failures.
     """
     url = build_pr_url(repo_full_name, pr_number)
     transport = _transport if _transport is not None else _default_transport
@@ -321,7 +351,8 @@ def fetch_diff(
     lockfiles into the deterministic summary, and budget the review content.
 
     Raises `DiffError` with the same field/reason contract as
-    `fetch_pr_head_sha` (plus `bad_shape` for malformed `/files` bodies).
+    `fetch_pr_head_sha` (plus `bad_shape` for malformed `/files` bodies and
+    RETRYABLE `transport_error` for live-transport failures).
     """
     transport = _transport if _transport is not None else _default_transport
     head_sha = fetch_pr_head_sha(
