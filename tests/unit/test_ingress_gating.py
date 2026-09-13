@@ -308,3 +308,82 @@ def test_sqs_failure_returns_500_without_marking():
     assert response == {"statusCode": 500, "body": ""}
     assert f"delivery:{GUID_NEW}" not in table.items  # never mark undelivered
     assert table.put_calls == []
+
+
+# --- QA-A red (F1): hostile envelope shapes discard with 200, never raise ---
+
+
+def _signed_hostile_event(payload):
+    """Sign the exact hostile bytes: HMAC-valid but schema-hostile delivery."""
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    return make_event(raw, sign(raw))
+
+
+def test_unhashable_action_discarded():
+    # Given an HMAC-valid payload whose action is unhashable (list)
+    payload = make_payload()
+    payload["action"] = ["opened"]
+    # When ingress handles it Then 200 discard, nothing enqueued or marked
+    table, sqs = FakeTable(), FakeSQS()
+    response = handler(
+        _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
+    )
+    assert response == {"statusCode": 200, "body": ""}
+    assert sqs.calls == []
+    assert table.put_calls == []
+
+
+def test_string_repository_discarded():
+    # Given an HMAC-valid payload with a string where the repository object belongs
+    payload = make_payload()
+    payload["repository"] = "evil-string"
+    # When ingress handles it Then 200 discard, nothing enqueued or marked
+    table, sqs = FakeTable(), FakeSQS()
+    response = handler(
+        _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
+    )
+    assert response == {"statusCode": 200, "body": ""}
+    assert sqs.calls == []
+    assert table.put_calls == []
+
+
+def test_string_sender_discarded():
+    # Given an HMAC-valid payload with a string where the sender object belongs
+    payload = make_payload()
+    payload["sender"] = "octocat"
+    # When ingress handles it Then 200 discard, nothing enqueued or marked
+    table, sqs = FakeTable(), FakeSQS()
+    response = handler(
+        _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
+    )
+    assert response == {"statusCode": 200, "body": ""}
+    assert sqs.calls == []
+    assert table.put_calls == []
+
+
+def test_string_head_discarded():
+    # Given an HMAC-valid payload with a string where the head object belongs
+    payload = make_payload()
+    payload["pull_request"]["head"] = HEAD_SHA
+    # When ingress handles it Then 200 discard, nothing enqueued or marked
+    table, sqs = FakeTable(), FakeSQS()
+    response = handler(
+        _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
+    )
+    assert response == {"statusCode": 200, "body": ""}
+    assert sqs.calls == []
+    assert table.put_calls == []
+
+
+def test_list_base_discarded():
+    # Given an HMAC-valid payload with a list where the base object belongs
+    payload = make_payload()
+    payload["pull_request"]["base"] = [BASE_SHA]
+    # When ingress handles it Then 200 discard, nothing enqueued or marked
+    table, sqs = FakeTable(), FakeSQS()
+    response = handler(
+        _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
+    )
+    assert response == {"statusCode": 200, "body": ""}
+    assert sqs.calls == []
+    assert table.put_calls == []

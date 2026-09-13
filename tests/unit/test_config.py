@@ -209,3 +209,19 @@ def test_no_secrets_in_repr_or_errors():
     assert GITHUB_TOKEN_VALUE not in str(excinfo.value)
     assert WEBHOOK_SECRET_VALUE not in str(excinfo.value)
     assert GLM_API_KEY_VALUE not in str(excinfo.value)
+
+
+# --- QA-A red (F2a): subset parameter_names raise typed ConfigError ----------
+
+
+def test_subset_parameter_names_raise_typed_missing():
+    # Given a provider fetching only a subset of the HLD §2.6 surface
+    ssm = FakeSSM({GITHUB_TOKEN: GITHUB_TOKEN_VALUE})
+    provider = ConfigProvider(
+        ssm.get_parameters, clock=FakeClock(), parameter_names=(GITHUB_TOKEN,)
+    )
+    # When hydrating Then a typed ConfigError, never a bare KeyError
+    with pytest.raises(ConfigError) as excinfo:
+        provider.get()
+    assert excinfo.value.field == "webhook_secret"
+    assert excinfo.value.reason == "missing"
