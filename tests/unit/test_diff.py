@@ -301,3 +301,180 @@ def test_fetch_diff_returns_validated_head_sha():
     assert result.head_sha == HEAD_SHA
     assert len(result.head_sha) == 40
     int(result.head_sha, 16)  # lowercase hex parses
+
+
+# --- identifier/page validation (before any I/O) --------------------------------
+
+
+def test_files_url_rejects_bad_page_before_network():
+    for bad in (0, -1, "1", True, None):
+        try:
+            diff.build_pr_files_url(REPO, PR_NUMBER, page=bad)
+        except diff.DiffError as exc:
+            assert exc.reason == "bad_page", bad
+        else:
+            raise AssertionError(f"expected DiffError for page={bad!r}")
+
+
+def test_files_url_rejects_bad_per_page_before_network():
+    for bad in (0, -5, "100", False, None):
+        try:
+            diff.build_pr_files_url(REPO, PR_NUMBER, per_page=bad)
+        except diff.DiffError as exc:
+            assert exc.reason == "bad_page", bad
+        else:
+            raise AssertionError(f"expected DiffError for per_page={bad!r}")
+
+
+# --- /files shape validation (fail closed) --------------------------------------
+
+
+def test_files_non_list_body_rejected():
+    url = diff.build_pr_url(REPO, PR_NUMBER)
+    files_url = diff.build_pr_files_url(REPO, PR_NUMBER)
+    transport = FakeTransport(
+        {
+            url: (200, meta_body()),
+            files_url: (200, json.dumps({"files": []}).encode("utf-8")),
+        }
+    )
+    try:
+        diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+    except diff.DiffError as exc:
+        assert exc.field == "files"
+        assert exc.reason == "bad_shape"
+    else:
+        raise AssertionError("expected DiffError")
+
+
+def test_files_non_dict_entry_rejected():
+    try:
+        diff.parse_files(["not-a-dict"])
+    except diff.DiffError as exc:
+        assert exc.field == "files"
+        assert exc.reason == "bad_shape"
+    else:
+        raise AssertionError("expected DiffError")
+
+
+def test_files_blank_filename_rejected():
+    for bad_entry in (
+        file_entry(""),
+        {"additions": 1, "deletions": 0, "patch": "x"},
+        file_entry("ok.py", additions=True),
+        file_entry("ok.py", deletions=-1),
+        file_entry("ok.py", patch=None),
+    ):
+        try:
+            diff.parse_files([bad_entry])
+        except diff.DiffError as exc:
+            assert exc.field == "files", bad_entry
+            assert exc.reason == "bad_shape", bad_entry
+        else:
+            raise AssertionError(f"expected DiffError for {bad_entry!r}")
+
+
+def test_meta_non_dict_body_rejected():
+    url = diff.build_pr_url(REPO, PR_NUMBER)
+    transport = FakeTransport({url: (200, json.dumps(["not", "a", "dict"]).encode())})
+    try:
+        diff.fetch_pr_head_sha(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+    except diff.DiffError as exc:
+        assert exc.field == "response"
+        assert exc.reason == "bad_shape"
+    else:
+        raise AssertionError("expected DiffError")
+
+
+def test_files_http_error_carries_status():
+    url = diff.build_pr_url(REPO, PR_NUMBER)
+    files_url = diff.build_pr_files_url(REPO, PR_NUMBER)
+    transport = FakeTransport({url: (200, meta_body()), files_url: (500, b"boom")})
+    try:
+        diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+    except diff.DiffError as exc:
+        assert exc.field == "files"
+        assert exc.reason == "http_error"
+        assert exc.status == 500
+    else:
+        raise AssertionError("expected DiffError")
+
+
+def test_files_non_json_body_rejected():
+    url = diff.build_pr_url(REPO, PR_NUMBER)
+    files_url = diff.build_pr_files_url(REPO, PR_NUMBER)
+    transport = FakeTransport({url: (200, meta_body()), files_url: (200, b"<html>nope")})
+    try:
+        diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+    except diff.DiffError as exc:
+        assert exc.field == "files"
+        assert exc.reason == "bad_shape"
+    else:
+        raise AssertionError("expected DiffError")
+
+
+# --- pagination (constructed URLs only; failure mode 18) ------------------------
+# Pages accumulate in constructed-`?per_page=&page=` order and assemble
+# deterministically (sorted-filename budget + sorted lockfile summary), so the
+# same pages always yield byte-identical review content. `Link` headers are
+# never followed: response-embedded URLs are not navigation.
+
+
+def multi_page_routes(page_one, page_two):
+    return {
+        diff.build_pr_url(REPO, PR_NUMBER): (200, meta_body()),
+        diff.build_pr_files_url(REPO, PR_NUMBER, page=1): (200, files_body(page_one)),
+        diff.build_pr_files_url(REPO, PR_NUMBER, page=2): (200, files_body(page_two)),
+    }
+
+
+def test_multi_page_accumulation_is_deterministic():
+    page_one = [file_entry(f"src/file{i:03d}.py") for i in range(diff.FILES_PER_PAGE)]
+    page_two = [file_entry("src/top.py"), file_entry("uv.lock", additions=9, deletions=1)]
+    routes = multi_page_routes(page_one, page_two)
+    first = diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=FakeTransport(routes))
+    second = diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=FakeTransport(routes))
+    assert len(first.files) == diff.FILES_PER_PAGE + 1
+    assert [f.filename for f in first.files] == sorted(f.filename for f in first.files)
+    assert "uv.lock" in first.lockfile_summary
+    assert "src/top.py" in {f.filename for f in first.files}
+    assert first == second
+
+
+def test_pagination_uses_constructed_urls_only_never_link_headers():
+    evil_link = '<https://evil.example/c2>; rel="next", <https://evil.example/c3>; rel="last"'
+    page_one = [file_entry(f"src/file{i:03d}.py") for i in range(diff.FILES_PER_PAGE)]
+    page_two = [file_entry("src/tail.py")]
+    routes = multi_page_routes(page_one, page_two)
+
+    class LinkTransport(FakeTransport):
+        def __call__(self, url, headers):
+            response = super().__call__(url, headers)
+            return diff.HttpResponse(
+                status=response.status, body=response.body, headers={"Link": evil_link}
+            )
+
+    transport = LinkTransport(routes)
+    result = diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+    assert "src/tail.py" in {f.filename for f in result.files}
+    for call in transport.calls:
+        assert "evil.example" not in call["url"]
+        assert call["url"].startswith("https://api.github.com/")
+
+
+def test_short_first_page_stops_pagination():
+    entries = [file_entry("src/only.py")]
+    transport = FakeTransport(budget_routes(entries))
+    result = diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+    assert result.truncated is False
+    assert [f.filename for f in result.files] == ["src/only.py"]
+    files_calls = [c for c in transport.calls if "/files" in c["url"]]
+    assert len(files_calls) == 1
+
+
+def test_empty_first_page_yields_empty_review_content():
+    transport = FakeTransport(budget_routes([]))
+    result = diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+    assert result.files == ()
+    assert result.truncated is False
+    assert result.lockfile_summary == diff.EMPTY_LOCKFILE_SUMMARY

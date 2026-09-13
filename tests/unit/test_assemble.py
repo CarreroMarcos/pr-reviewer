@@ -198,3 +198,57 @@ def test_no_publish_ready_content_returned_on_refusal():
         seen.append(exc)
     assert len(seen) == 1
     assert seen[0].verdict.ok is False
+
+
+# --- marker-spoof propagation (boundary 7: no self-referential publish) -------
+
+
+def test_spoofed_model_content_refuses_publication_with_marker_spoofed():
+    spoofed = review_body() + f"\n{build_marker(REPO, PR)}\n"
+    with pytest.raises(assemble.AssembleError) as exc_info:
+        build(body=spoofed)
+    assert exc_info.value.verdict.ok is False
+    assert "marker_spoofed" in exc_info.value.verdict.reasons
+
+
+def test_cross_repo_spoof_in_model_content_refuses_publication():
+    spoofed = review_body() + f"\n{build_marker('evil-org/evil', 666)}\n"
+    with pytest.raises(assemble.AssembleError) as exc_info:
+        build(body=spoofed)
+    assert exc_info.value.verdict.ok is False
+    assert "marker_spoofed" in exc_info.value.verdict.reasons
+
+
+# --- AssembleError contract (boundary 7; T034 wiring, test-side pin) -----------
+# Per the HLD §2.3 item 8 validation row, assembled-comment refusal is the
+# complete-and-alert (non-retryable) class: `AssembleError` is a `ValueError`
+# carrying the failing verdict — never a transient/queue-retry signal. The
+# worker (T034/T054) owns the wiring; these tests pin the emission side so
+# any reclassification is a conscious diff.
+
+
+def test_assemble_error_is_value_error_not_transient():
+    from common.diff import DiffError
+    from common.llm import LlmError
+
+    assert issubclass(assemble.AssembleError, ValueError)
+    assert not issubclass(assemble.AssembleError, LlmError)
+    assert assemble.AssembleError is not DiffError
+
+
+def test_assemble_error_carries_verdict_and_codes_in_message():
+    with pytest.raises(assemble.AssembleError) as exc_info:
+        build(body="plain text without marker or sections")
+    exc = exc_info.value
+    assert isinstance(exc, ValueError)
+    assert exc.verdict.ok is False
+    assert isinstance(exc.verdict.reasons, tuple)
+    assert "missing_sections" in exc.verdict.reasons
+    assert "missing_sections" in str(exc)
+
+
+def test_whitespace_refusal_is_non_retryable_validation_failure():
+    with pytest.raises(assemble.AssembleError) as exc_info:
+        build(body="   \n  ")
+    assert exc_info.value.verdict.ok is False
+    assert "missing_sections" in exc_info.value.verdict.reasons
