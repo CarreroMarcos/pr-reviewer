@@ -8,6 +8,7 @@ injected — the config module never constructs clients itself.
 """
 
 import pytest
+
 from common.config import TTL_SECONDS, ConfigError, ConfigProvider
 
 GITHUB_TOKEN = "/pr-reviewer/github-token"  # noqa: S105 (SSM path, not a credential)
