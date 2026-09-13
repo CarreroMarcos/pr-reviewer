@@ -5,6 +5,7 @@ The marker is assembled by worker code only; the model never emits it. Exact for
 """
 
 import pytest
+
 from common.marker import build_marker
 
 
