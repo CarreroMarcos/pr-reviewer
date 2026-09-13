@@ -99,3 +99,18 @@ Verdicts and actions:
 - **Spec/HLD conflict** → Needs input, stop. Human decides; spec change is a git PR first.
 
 Never merge without Oracle APPROVE + green CI. Done is set only through the gate.
+
+## Delivery loop policies
+
+- **P1 — evidence-only closure:** a verify-only ticket needing zero real delta
+  closes with an evidence comment (verbatim verify command + result + policy
+  name) and **no PR**. Never manufacture a diff to justify a PR.
+- **P2 — pair PRs:** a test-first creator task whose `verify:` demands FAIL
+  ships in the same PR as its implementation task. Title/comments carry both
+  ticket IDs; each ticket keeps its own start comment + In Progress; both get
+  the PR comment; both Done at merge.
+- **Gate briefs:** compose every Oracle gate from the mandatory template in
+  `docs/gate-brief.md` — adversarial stance, four-dimension contract, evidence
+  table, per-ticket verdicts, attempt N of 3.
+- **PR body edits:** `gh pr edit` fails on this repo (Projects-classic
+  GraphQL). Use `gh api repos/CarreroMarcos/pr-reviewer/pulls/N -X PATCH -f body=...`.
