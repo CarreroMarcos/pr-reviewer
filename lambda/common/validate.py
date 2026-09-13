@@ -10,9 +10,10 @@ order, and prohibited content plus the prompt canary are absent.
 Returns a typed `ValidationVerdict` with machine-readable reason codes.
 Invalid content is never published (§2.3 item 8: non-retryable, alert).
 
-Reason codes: `missing_marker`, `over_length`, `missing_sections`,
-`too_many_findings`, `credential_like`, `hidden_html`, `control_directive`,
-`canary_leaked`, `mention`, `external_media`, `approval_verdict`.
+Reason codes: `missing_marker`, `marker_spoofed`, `not_text`, `over_length`,
+`missing_sections`, `too_many_findings`, `credential_like`, `hidden_html`,
+`control_directive`, `canary_leaked`, `mention`, `external_media`,
+`approval_verdict`.
 
 Pure stdlib, no I/O.
 """
@@ -87,6 +88,14 @@ _MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?
 _IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\(\s*https?://", re.IGNORECASE)
 _IMG_TAG_RE = re.compile(r"<img\b", re.IGNORECASE)
 
+# Marker-spoof tripwire (§9: model output is untrusted): the worker injects
+# exactly one canonical marker, so any further `pr-reviewer:canonical`
+# string is model-emitted spoof. Matching is case-insensitive over
+# invisible-char-stripped text, so case/zero-width/whitespace evasions and
+# truncated prefixes carrying the core are refused, not laundered.
+_INVISIBLE_RE = re.compile("[\u200b\u200c\u200d\ufeff\u00ad]")
+_MARKER_SPOOF_RE = re.compile(r"pr-reviewer\s*:\s*canonical", re.IGNORECASE)
+
 _APPROVAL_PHRASES = (
     "safe to merge",
     "ready to merge",
@@ -140,6 +149,12 @@ def validate_comment(
 
     if marker not in content:
         reasons.append("missing_marker")
+
+    # Exactly one legitimate occurrence is excused (the worker-injected
+    # marker); anything marker-shaped left in the remainder is spoof.
+    remainder = content.replace(marker, "", 1)
+    if _MARKER_SPOOF_RE.search(_INVISIBLE_RE.sub("", remainder)):
+        reasons.append("marker_spoofed")
 
     if len(content) > max_length:
         reasons.append("over_length")

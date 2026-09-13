@@ -19,7 +19,8 @@ Interpretations (HLD silent — flagged, conservative readings):
      (FR-013); the note wording is gate-safe (no prohibited phrases).
   2. Empty/whitespace model content is refused (`missing_sections` from the
      gate), not published with a generated skeleton: empty inference output
-     is structurally invalid output, which §2.3 item 8 sends to queue retry —
+     is structurally invalid output, which the §2.3 item 8 validation row
+     completes non-retryably (alert) —
      publishing a system-written "clean" comment would mislead maintainers
      with a false clean bill. The §2.7 sentinel ("No significant issues
      found.") is the model's defined empty-finding output and passes through
