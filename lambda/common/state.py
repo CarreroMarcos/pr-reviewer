@@ -251,12 +251,15 @@ def build_establish_confirm(
     head fetch that the incoming SHA is the PR's current head (HLD §3.3
     step 1c) — `generation` increments. The write is guarded on
     `generation = :expected_gen` so two concurrent establishes cannot both
-    increment from the same base; the loser re-reads and retries."""
+    increment from the same base; the loser re-reads and retries.
+    `REMOVE comment_id` keeps HLD 3.1's invariant — comment_id exists only
+    on ACTIVE records, so the ACTIVE -> CLAIMED transition clears it (a
+    no-op when the attribute is absent)."""
     next_gen = expected_generation + 1
     update = (
         "SET head_sha = :head, last_seen_sha = :head, generation = :next_gen, "
         "#st = :status, claim_owner = :owner, claim_until = :until, "
-        "updated_at = :updated_at"
+        "updated_at = :updated_at REMOVE comment_id"
     )
     condition = "generation = :expected_gen"
     values: dict[str, Any] = {

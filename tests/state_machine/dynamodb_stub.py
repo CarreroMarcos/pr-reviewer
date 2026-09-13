@@ -111,15 +111,23 @@ def _apply_update(
     names: dict[str, str],
     values: dict[str, Any],
 ) -> dict[str, Any]:
-    """Tiny `SET attr = :val[, ...]` applier for the five builder shapes."""
+    """Tiny `SET attr = :val[, ...][ REMOVE attr[, ...]]` applier for the
+    builder shapes (REMOVE of a non-existent attribute is a no-op, as in
+    real DynamoDB)."""
     if not update.startswith("SET "):
         raise ValueError(f"unsupported update expression: {update!r}")
+    set_part, remove_sep, remove_part = update[4:].partition(" REMOVE ")
     item = dict(current) if current is not None else {"pk": pk}
-    for clause in update[4:].split(", "):
+    for clause in set_part.split(", "):
         attr, sep, placeholder = clause.partition(" = ")
         if not sep or not placeholder.startswith(":"):
             raise ValueError(f"unsupported update clause: {clause!r}")
         if placeholder not in values:
             raise ValueError(f"missing value for {placeholder!r}")
         item[names.get(attr, attr)] = values[placeholder]
+    if remove_sep:
+        for attr in remove_part.split(", "):
+            if not attr or " = " in attr:
+                raise ValueError(f"unsupported remove clause: {attr!r}")
+            item.pop(names.get(attr, attr), None)
     return item
