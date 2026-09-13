@@ -10,6 +10,16 @@ dependencies = [
     "boto3>=1.40",
 ]
 
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+# Runtime deploys as Lambda zips (terraform archive_file); this config exists
+# so `pip install -e '.[dev]'` (T002 verify) works in dev. lambda/common is the
+# only real package; tools/ is scripts, not an import package.
+[tool.setuptools]
+packages = ["lambda.common"]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.2",
