@@ -30,6 +30,7 @@ Runtime: Python 3.12 stdlib + `boto3` only. No model tools.
 Allowed tools: search, get issue, list transitions, add comment, transition.
 Forbidden: create issue, edit summary/description/ACs, delete, Cancelled (human only).
 Done is agent-settable only through the Oracle review gate (below) — never directly.
+Call mechanics (discover/executeRead wrapping, response shapes, resume after failure): `docs/process/jira-mcp-recipes.md`.
 
 Jira description is a pointer. Source of truth is `specs/001-pr-reviewer/tasks.md` + spec/HLD.
 
@@ -110,7 +111,10 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   ticket IDs; each ticket keeps its own start comment + In Progress; both get
   the PR comment; both Done at merge.
 - **Gate briefs:** compose every Oracle gate from the mandatory template in
-  `docs/gate-brief.md` — adversarial stance, four-dimension contract, evidence
-  table, per-ticket verdicts, attempt N of 3.
+  `docs/process/gate-brief.md` — adversarial stance, four-dimension
+  contract, evidence table, per-ticket verdicts, attempt N of 3.
+- **Batch orchestration:** running several tickets at once — phases, parallel
+  fixer lanes, batch state file, hang recovery — follows
+  `docs/process/batch-loop.md`.
 - **PR body edits:** `gh pr edit` fails on this repo (Projects-classic
   GraphQL). Use `gh api repos/CarreroMarcos/pr-reviewer/pulls/N -X PATCH -f body=...`.
