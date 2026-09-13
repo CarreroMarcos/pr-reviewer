@@ -162,7 +162,7 @@ def build_envelope_body(payload: Any, delivery_guid: str) -> str | None:
     if not isinstance(payload, dict):
         return None
     action = payload.get("action")
-    if action not in ALLOWED_ACTIONS:
+    if not isinstance(action, str) or action not in ALLOWED_ACTIONS:
         return None
     pull_request = payload.get("pull_request")
     if not isinstance(pull_request, dict):
@@ -170,10 +170,18 @@ def build_envelope_body(payload: Any, delivery_guid: str) -> str | None:
     if pull_request.get("draft") is True:
         return None
     try:
-        repository = payload.get("repository") or {}
-        head = pull_request.get("head") or {}
-        base = pull_request.get("base") or {}
-        sender = payload.get("sender") or {}
+        repository = payload.get("repository")
+        if not isinstance(repository, dict):
+            repository = {}
+        head = pull_request.get("head")
+        if not isinstance(head, dict):
+            head = {}
+        base = pull_request.get("base")
+        if not isinstance(base, dict):
+            base = {}
+        sender = payload.get("sender")
+        if not isinstance(sender, dict):
+            sender = {}
         pr_number = pull_request.get("number", payload.get("number"))
         candidate = {
             "envelope_version": "v1",
