@@ -267,3 +267,28 @@ def test_ingress_uses_singular_get_parameter():
     assert response == {"statusCode": 202, "body": ""}
     assert len(ssm.calls) == 1
     assert ssm.calls[0] == {"Name": FIXED_SECRET_NAME, "WithDecryption": True}
+
+
+# --- QA-A: boundary-1 header handling (end-to-end) -----------------------------
+
+
+def test_whitespace_padded_signature_rejected_end_to_end():
+    """A valid signature padded with whitespace → 401: the gate never strips."""
+    raw = canonical_bytes(make_payload("opened"))
+    table, sqs = fresh_doubles()
+    event = make_event(raw, " " + EXPECTED_SIGNATURES["opened"] + " ")
+    response = handler(event, None, _table=table, _sqs=sqs, _secret=FIXED_SECRET)
+    assert response == {"statusCode": 401, "body": ""}
+    assert sqs.calls == []
+    assert table.put_calls == []
+
+
+def test_empty_hex_suffix_rejected_end_to_end():
+    """A bare `sha256=` prefix with no hex → 401, nothing enqueued, nothing marked."""
+    raw = canonical_bytes(make_payload("opened"))
+    table, sqs = fresh_doubles()
+    event = make_event(raw, "sha256=")
+    response = handler(event, None, _table=table, _sqs=sqs, _secret=FIXED_SECRET)
+    assert response == {"statusCode": 401, "body": ""}
+    assert sqs.calls == []
+    assert table.put_calls == []

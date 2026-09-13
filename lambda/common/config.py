@@ -136,6 +136,9 @@ class ConfigProvider:
             if not isinstance(value, str) or not value.strip():
                 raise ConfigError(field, "empty")
             values[field] = value
+        for field in ("github_token", "webhook_secret", "glm_api_key", "glm_model", "glm_endpoint"):
+            if field not in values:
+                raise ConfigError(field, "missing")
         self._check_endpoint(values["glm_endpoint"])
         return AppConfig(
             github_token=values["github_token"],

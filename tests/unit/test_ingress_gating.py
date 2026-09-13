@@ -10,7 +10,17 @@ import base64
 import json
 
 import ingress_handler
-from ingress_handler import MAX_BODY_BYTES, handler, verify_signature
+import ingress_handler as ingress_module
+from ingress_handler import (
+    MAX_BODY_BYTES,
+    build_envelope_body,
+    get_header,
+    get_webhook_secret,
+    handler,
+    normalize_body,
+    reset_secret_cache,
+    verify_signature,
+)
 
 FIXED_SECRET = "unit-test-secret-not-a-credential"  # noqa: S105 (dummy fixture)
 
@@ -387,3 +397,318 @@ def test_list_base_discarded():
     assert response == {"statusCode": 200, "body": ""}
     assert sqs.calls == []
     assert table.put_calls == []
+
+
+# --- QA-A: header handling ---------------------------------------------------
+
+
+def test_get_header_rejects_non_dict_headers():
+    # Given a non-dict headers shape Then lookup yields nothing
+    assert get_header(["X-GitHub-Event"], "x-github-event") is None
+    assert get_header(None, "x-github-event") is None
+
+
+def test_get_header_rejects_non_string_value():
+    # Given a numeric header value Then lookup yields nothing (→ 401 downstream)
+    assert get_header({"X-GitHub-Event": 123}, "x-github-event") is None
+
+
+def test_non_string_signature_rejected():
+    # Given non-string signature shapes Then verification fails closed
+    raw = raw_of(make_payload())
+    assert verify_signature(FIXED_SECRET, raw, 12345) is False
+    assert verify_signature(FIXED_SECRET, raw, ["sha256=" + "0" * 64]) is False
+
+
+def test_empty_hex_suffix_rejected():
+    # Given a bare prefix with no hex Then verification fails closed
+    assert verify_signature(FIXED_SECRET, raw_of(make_payload()), "sha256=") is False
+
+
+def test_whitespace_padded_signature_rejected():
+    # Given a valid signature padded with whitespace Then it fails closed:
+    # the gate never strips — exact full-string match or 401.
+    raw = raw_of(make_payload())
+    assert verify_signature(FIXED_SECRET, raw, " " + sign(raw) + " ") is False
+
+
+def test_bytes_secret_verifies():
+    # Given a bytes webhook secret Then the bytes path verifies a matching signature
+    import hashlib
+    import hmac as hmac_module
+
+    raw = raw_of(make_payload())
+    expected = "sha256=" + hmac_module.new(b"bytes-key", raw, hashlib.sha256).hexdigest()
+    assert verify_signature(b"bytes-key", raw, expected) is True
+    assert verify_signature(b"other-key", raw, expected) is False
+
+
+# --- QA-A: body normalization ------------------------------------------------
+
+
+def test_non_string_body_treated_as_empty():
+    # Given a non-string wire body Then normalization yields empty bytes (→ 401, never crash)
+    assert normalize_body({"body": 12345, "headers": {}}) == b""
+
+
+def test_non_numeric_content_length_ignored():
+    # Given garbage Content-Length with a valid signed delivery
+    # When ingress handles it Then the wire gate decides: 202 accepted
+    raw = raw_of(make_payload())
+    event = make_event(raw, sign(raw), headers_extra={"Content-Length": "not-a-number"})
+    response, _, sqs = invoke(event)
+    assert response == {"statusCode": 202, "body": ""}
+    assert len(sqs.calls) == 1
+
+
+def test_content_length_within_bound_proceeds():
+    # Given an honest Content-Length under the cap Then the delivery proceeds
+    raw = raw_of(make_payload())
+    event = make_event(raw, sign(raw), headers_extra={"Content-Length": str(len(raw))})
+    response, _, sqs = invoke(event)
+    assert response == {"statusCode": 202, "body": ""}
+    assert len(sqs.calls) == 1
+
+
+def test_valid_base64_body_accepted():
+    # Given a base64-flagged delivery of valid signed bytes Then 202 with one enqueue
+    import base64 as base64_module
+
+    raw = raw_of(make_payload())
+    event = make_event(raw, sign(raw))
+    event["body"] = base64_module.b64encode(raw).decode()
+    event["isBase64Encoded"] = True
+    response, table, sqs = invoke(event)
+    assert response == {"statusCode": 202, "body": ""}
+    assert len(sqs.calls) == 1
+    assert f"delivery:{GUID_NEW}" in table.items
+
+
+def test_invalid_base64_body_rejected_as_unauthenticated():
+    # Given undecodable wire bytes Then authenticity is unestablishable → 401, nothing touched
+    event = make_event(b"!!!-not-base64-!!!", "sha256=" + "0" * 64)
+    event["isBase64Encoded"] = True
+    table, sqs = FakeTable(), FakeSQS()
+    response = handler(event, None, _table=table, _sqs=sqs, _secret=FIXED_SECRET)
+    assert response == {"statusCode": 401, "body": ""}
+    assert table.get_calls == []
+    assert sqs.calls == []
+
+
+# --- QA-A: envelope-body extraction ------------------------------------------
+
+
+def test_non_object_payload_yields_no_envelope():
+    # Given non-dict payload shapes Then no envelope (→ 200 downstream)
+    assert build_envelope_body(["opened"], GUID_NEW) is None
+    assert build_envelope_body("opened", GUID_NEW) is None
+    assert build_envelope_body(None, GUID_NEW) is None
+
+
+def test_envelope_invalid_payload_yields_no_envelope():
+    # Given a well-shaped dict that fails envelope validation (no repository)
+    # Then no envelope (→ 200 downstream)
+    payload = make_payload()
+    del payload["repository"]
+    assert build_envelope_body(payload, GUID_NEW) is None
+
+
+# --- QA-A: secret cache (cold fetch, warm hit, TTL, reset) -------------------
+
+
+class FakeSecretSSM:
+    """Singular `get_parameter` double counting fetches."""
+
+    def __init__(self, secret):
+        self.secret = secret
+        self.calls = []
+
+    def get_parameter(self, Name, WithDecryption=False):  # noqa: N803 (boto3 shape)
+        self.calls.append({"Name": Name, "WithDecryption": WithDecryption})
+        return {"Parameter": {"Value": self.secret}}
+
+
+def test_webhook_secret_cached_warm_within_ttl():
+    # Given a cold fetch at t0 Then access inside 30 minutes reuses it without refetch
+    reset_secret_cache()
+    try:
+        ssm = FakeSecretSSM(FIXED_SECRET)
+        assert get_webhook_secret(ssm, now=1_000_000.0) == FIXED_SECRET
+        assert get_webhook_secret(ssm, now=1_000_000.0 + 29 * 60) == FIXED_SECRET
+        assert len(ssm.calls) == 1
+    finally:
+        reset_secret_cache()
+
+
+def test_webhook_secret_refetched_at_ttl_boundary():
+    # Given a cold fetch at t0 Then access exactly at the TTL refetches (expiry is >=)
+    reset_secret_cache()
+    try:
+        ssm = FakeSecretSSM(FIXED_SECRET)
+        assert get_webhook_secret(ssm, now=1_000_000.0) == FIXED_SECRET
+        assert get_webhook_secret(ssm, now=1_000_000.0 + 30 * 60) == FIXED_SECRET
+        assert len(ssm.calls) == 2
+    finally:
+        reset_secret_cache()
+
+
+def test_reset_secret_cache_drops_warm_value():
+    # Given a warm cache Then reset forces the next access to fetch again
+    reset_secret_cache()
+    try:
+        ssm = FakeSecretSSM(FIXED_SECRET)
+        get_webhook_secret(ssm, now=1_000_000.0)
+        reset_secret_cache()
+        get_webhook_secret(ssm, now=1_000_000.0 + 1)
+        assert len(ssm.calls) == 2
+    finally:
+        reset_secret_cache()
+
+
+# --- QA-A: downstream failure mapping ----------------------------------------
+
+
+class ExplodingSSM:
+    def get_parameter(self, Name, WithDecryption=False):  # noqa: N803 (boto3 shape)
+        raise RuntimeError("ssm unavailable")
+
+
+def test_ssm_failure_returns_500():
+    # Given an SSM outage during secret hydration Then 500, nothing enqueued or marked
+    raw = raw_of(make_payload())
+    table, sqs = FakeTable(), FakeSQS()
+    response = handler(
+        make_event(raw, sign(raw)), None, _ssm=ExplodingSSM(), _table=table, _sqs=sqs
+    )
+    assert response == {"statusCode": 500, "body": ""}
+    assert sqs.calls == []
+    assert table.put_calls == []
+
+
+class ExplodingTable(FakeTable):
+    def __init__(self, fail_get=False, fail_put=False):
+        super().__init__()
+        self.fail_get = fail_get
+        self.fail_put = fail_put
+
+    def get_item(self, Key):  # noqa: N803 (boto3 shape)
+        if self.fail_get:
+            raise RuntimeError("dynamodb unavailable")
+        return super().get_item(Key)
+
+    def put_item(self, Item):  # noqa: N803 (boto3 shape)
+        if self.fail_put:
+            raise RuntimeError("dynamodb unavailable")
+        return super().put_item(Item)
+
+
+def test_dedup_read_failure_returns_500():
+    # Given a DynamoDB outage on the dedup read Then 500, nothing enqueued
+    raw = raw_of(make_payload())
+    table, sqs = ExplodingTable(fail_get=True), FakeSQS()
+    response = handler(
+        make_event(raw, sign(raw)), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
+    )
+    assert response == {"statusCode": 500, "body": ""}
+    assert sqs.calls == []
+
+
+def test_mark_processed_failure_returns_500():
+    # Given enqueue succeeded but the mark fails Then 500 (delivery retries later)
+    raw = raw_of(make_payload())
+    table, sqs = ExplodingTable(fail_put=True), FakeSQS()
+    response = handler(
+        make_event(raw, sign(raw)), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
+    )
+    assert response == {"statusCode": 500, "body": ""}
+    assert len(sqs.calls) == 1
+    assert f"delivery:{GUID_NEW}" not in table.items
+
+
+# --- QA-A: production wiring (zero-injection path, boto3 doubled) ------------
+
+
+def _production_wiring(monkeypatch, secret=FIXED_SECRET, fail_ssm=False):
+    """Double the boto3 module surface the handler's lazy wiring touches."""
+    import boto3
+
+    ssm = FakeSecretSSM(secret)
+    table, sqs = FakeTable(), FakeSQS()
+
+    def fake_client(service, *args, **kwargs):
+        if fail_ssm and service == "ssm":
+            raise RuntimeError("ssm unavailable")
+        assert service in ("ssm", "sqs"), service
+        return ssm if service == "ssm" else sqs
+
+    class FakeResource:
+        def Table(self, name):  # noqa: N803 (boto3 shape)
+            assert name
+            return table
+
+    monkeypatch.setattr(boto3, "client", fake_client)
+    monkeypatch.setattr(boto3, "resource", lambda service, *a, **k: FakeResource())
+    return ssm, table, sqs
+
+
+def test_production_wiring_accepts_signed_delivery(monkeypatch):
+    # Given zero injections (the deployed path) Then SSM→HMAC→dedup→SQS→mark yields 202
+    reset_secret_cache()
+    try:
+        ssm, table, sqs = _production_wiring(monkeypatch)
+        raw = raw_of(make_payload())
+        response = ingress_module.handler(make_event(raw, sign(raw)), None)
+        assert response == {"statusCode": 202, "body": ""}
+        assert len(ssm.calls) == 1
+        assert len(sqs.calls) == 1
+        assert f"delivery:{GUID_NEW}" in table.items
+    finally:
+        reset_secret_cache()
+
+
+def test_production_ssm_outage_returns_500(monkeypatch):
+    # Given zero injections with SSM down Then 500 before any state touch
+    reset_secret_cache()
+    try:
+        _, table, sqs = _production_wiring(monkeypatch, fail_ssm=True)
+        raw = raw_of(make_payload())
+        response = ingress_module.handler(make_event(raw, sign(raw)), None)
+        assert response == {"statusCode": 500, "body": ""}
+        assert sqs.calls == []
+        assert table.put_calls == []
+    finally:
+        reset_secret_cache()
+
+
+def test_injected_table_with_doubled_sqs_client(monkeypatch):
+    # Given an injected table but no SQS client Then the lazy SQS wiring fills the gap → 202
+    import boto3
+
+    sqs = FakeSQS()
+    monkeypatch.setattr(boto3, "client", lambda service, *a, **k: sqs)
+    raw = raw_of(make_payload())
+    response = handler(make_event(raw, sign(raw)), None, _table=FakeTable(), _secret=FIXED_SECRET)
+    assert response == {"statusCode": 202, "body": ""}
+    assert len(sqs.calls) == 1
+
+
+def test_injected_sqs_with_doubled_table_resource(monkeypatch):
+    # Given an injected SQS client but no table Then the lazy table wiring fills the gap → 202
+    import boto3
+
+    table = FakeTable()
+    sqs = FakeSQS()
+
+    class FakeResource:
+        def Table(self, name):  # noqa: N803 (boto3 shape)
+            assert name
+            return table
+
+    monkeypatch.setattr(boto3, "resource", lambda service, *a, **k: FakeResource())
+    raw = raw_of(make_payload())
+    response = handler(
+        make_event(raw, sign(raw)), None, _table=None, _sqs=sqs, _secret=FIXED_SECRET
+    )
+    assert response == {"statusCode": 202, "body": ""}
+    assert len(sqs.calls) == 1
+    assert f"delivery:{GUID_NEW}" in table.items

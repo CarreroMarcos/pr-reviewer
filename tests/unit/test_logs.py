@@ -388,3 +388,163 @@ def test_bad_metrics_rejected(kwargs, field, reason):
 def test_error_types_are_value_errors():
     assert issubclass(LogsError, ValueError)
     assert issubclass(RedactionError, ValueError)
+
+
+# --- QA-A: build_event validation (every cleaner, public seam) ----------------
+
+
+def _valid_kwargs(**overrides):
+    kwargs = {
+        "repo_full_name": REPO,
+        "pr_number": 42,
+        "head_sha": HEAD_SHA,
+        "delivery_guid": str(uuid.uuid4()),
+        "duration_ms": 1234,
+        "token_usage": 5678,
+        "status": "ok",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_build_event_rejects_non_string_repo():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(repo_full_name=123))
+    assert excinfo.value.field == "repo_full_name"
+    assert excinfo.value.reason == "bad_repo"
+
+
+def test_build_event_rejects_overlong_repo():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(repo_full_name="a/" + "b" * 127))
+    assert excinfo.value.field == "repo_full_name"
+    assert excinfo.value.reason == "bad_repo"
+
+
+def test_build_event_rejects_unicode_homoglyph_repo():
+    # Given a Cyrillic-о lookalike owner Then rejected: the charset is ASCII-only
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(repo_full_name="оcto-org/hello-world"))
+    assert excinfo.value.field == "repo_full_name"
+    assert excinfo.value.reason == "bad_repo"
+
+
+def test_build_event_rejects_bad_pr_number():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(pr_number=0))
+    assert excinfo.value.field == "pr_number"
+    assert excinfo.value.reason == "bad_pr_number"
+
+
+def test_build_event_rejects_non_string_sha():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(head_sha=1234567890))
+    assert excinfo.value.field == "head_sha"
+    assert excinfo.value.reason == "bad_sha"
+
+
+def test_build_event_rejects_malformed_sha():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(head_sha="A" * 40))
+    assert excinfo.value.field == "head_sha"
+    assert excinfo.value.reason == "bad_sha"
+
+
+def test_build_event_rejects_non_string_guid():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(delivery_guid=123))
+    assert excinfo.value.field == "delivery_guid"
+    assert excinfo.value.reason == "bad_guid"
+
+
+def test_build_event_rejects_malformed_guid():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(delivery_guid="not-a-uuid"))
+    assert excinfo.value.field == "delivery_guid"
+    assert excinfo.value.reason == "bad_guid"
+
+
+def test_build_event_accepts_uppercase_guid():
+    # Given an uppercase-hex GUID Then accepted (identifier formats allow A-F)
+    guid = str(uuid.uuid4()).upper()
+    assert build_event(**_valid_kwargs(delivery_guid=guid))["delivery_guid"] == guid
+
+
+def test_build_event_rejects_non_string_prompt_version():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(prompt_version=123))
+    assert excinfo.value.field == "prompt_version"
+    assert excinfo.value.reason == "bad_prompt_version"
+
+
+@pytest.mark.parametrize("version", ["", "v" * 65])
+def test_build_event_rejects_empty_and_overlong_prompt_version(version):
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(prompt_version=version))
+    assert excinfo.value.field == "prompt_version"
+    assert excinfo.value.reason == "bad_prompt_version"
+
+
+def test_build_event_rejects_true_generation():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(generation=True))
+    assert excinfo.value.field == "generation"
+    assert excinfo.value.reason == "bad_generation"
+
+
+def test_build_event_rejects_overlong_error_class():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(error_class="E" * 129))
+    assert excinfo.value.field == "error_class"
+    assert excinfo.value.reason == "bad_error_class"
+
+
+# --- QA-A: redaction under hostile field shapes --------------------------------
+
+
+def test_pat_smuggled_in_error_class_trips_guard():
+    # Given a PAT-shaped error class Then the guard refuses instead of emitting
+    with pytest.raises(RedactionError):
+        build_event(**_valid_kwargs(error_class="ghp_" + "A" * 36))
+
+
+def test_bearer_smuggled_in_status_trips_guard():
+    # Given a bearer-shaped status Then the guard refuses instead of emitting
+    with pytest.raises(RedactionError):
+        build_event(**_valid_kwargs(status="bearer_token"))
+
+
+def test_bearer_smuggled_in_prompt_version_trips_guard():
+    # Given a bearer-shaped prompt version Then the guard refuses instead of emitting
+    with pytest.raises(RedactionError):
+        build_event(**_valid_kwargs(prompt_version="Bearer abc123"))
+
+
+def test_nested_hostile_extras_never_emitted():
+    # Given hostile extras nested inside dict/list values Then nothing leaks: extras are never read
+    payload = _envelope()
+    payload["nested"] = {"Authorization": AUTH_VALUE, "diff": DIFF_TEXT}
+    payload["items"] = [AUTH_VALUE, DIFF_TEXT, LLM_REQUEST]
+    _assert_no_forbidden(_emit_lines(payload))
+
+
+def test_emit_rejects_non_dict_event():
+    lines = []
+    with pytest.raises(LogsError) as excinfo:
+        emit(lines.append, "not-an-event")
+    assert excinfo.value.field == "event"
+    assert excinfo.value.reason == "not_object"
+    assert lines == []
+
+
+def test_emit_rejects_non_string_keys():
+    lines = []
+    event = build_event(**_valid_kwargs())
+    tampered = dict(event)
+    del tampered["status"]
+    tampered[7] = "ok"
+    with pytest.raises(LogsError) as excinfo:
+        emit(lines.append, tampered)
+    assert excinfo.value.field == "event"
+    assert excinfo.value.reason == "bad_fields"
+    assert lines == []

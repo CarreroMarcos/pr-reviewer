@@ -250,3 +250,35 @@ def test_trailing_newline_guid_rejected():
         "delivery_guid",
         "bad_guid",
     )
+
+
+# --- QA-A: additive evolution + hostile shapes ---------------------------------
+
+
+def test_extra_fields_ignored():
+    """Unknown extra fields (hostile or future) never affect validation."""
+    envelope = validate_envelope(
+        _valid(
+            Authorization="Bearer hunter2",
+            nested={"Authorization": "Bearer hunter2"},
+            future_flag=True,
+        )
+    )
+    assert envelope.action == "opened"
+    assert envelope.pr_number == 42
+
+
+def test_unicode_homoglyph_repo_rejected():
+    """A Cyrillic-о lookalike owner is outside the ASCII-only charset."""
+    _rejected(_valid(repo_full_name="оcto-org/hello-world"), "repo_full_name", "bad_repo")
+
+
+def test_uppercase_guid_accepted():
+    """Uppercase-hex GUIDs are valid identifiers (the shape authority allows A-F)."""
+    guid = str(uuid.uuid4()).upper()
+    assert validate_envelope(_valid(delivery_guid=guid)).delivery_guid == guid
+
+
+def test_bare_hex_guid_without_hyphens_rejected():
+    """32 straight hex chars are not the hyphenated delivery-GUID shape."""
+    _rejected(_valid(delivery_guid="a" * 32), "delivery_guid", "bad_guid")
