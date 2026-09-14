@@ -99,7 +99,7 @@ class FakeTable:
         self.updates.append(ConditionExpression)
         current = self.items.get(pk)
         values = ExpressionAttributeValues or {}
-        if not self._holds(ConditionExpression, current, values):
+        if not _holds(ConditionExpression, current, values):
             raise ConditionalCheckFailed(f"condition not met: {ConditionExpression} (pk={pk})")
         item = dict(current) if current is not None else {"pk": pk}
         names = ExpressionAttributeNames or {}
