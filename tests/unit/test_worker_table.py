@@ -11,6 +11,8 @@ the §5.4 outcome event's json.dumps rejected the Decimal generation
 
 from decimal import Decimal
 
+import pytest
+
 from common.envelope import Envelope
 from worker_handler import _BotoTable, _make_publish
 
@@ -52,6 +54,13 @@ def test_get_item_normalizes_decimal_numbers_to_int() -> None:
 def test_get_item_absent_returns_none() -> None:
     table = _BotoTable(_FakeBotoTable(None))
     assert table.get_item("review:org/repo#7") is None
+
+
+def test_get_item_non_integral_decimal_raises() -> None:
+    item = _stored_item()
+    item["generation"] = Decimal("1.5")
+    with pytest.raises(ValueError, match="generation"):
+        _BotoTable(_FakeBotoTable(item)).get_item("review:org/repo#7")
 
 
 class _FakeCreds:

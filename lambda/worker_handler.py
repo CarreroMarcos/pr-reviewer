@@ -112,6 +112,15 @@ class GitHubError(Exception):
         super().__init__(f"github request failed: {error_class}")
 
 
+def _normalize_number(key: str, value: Any) -> Any:
+    """Normalize a DynamoDB Decimal to int; loud failure on fractions."""
+    if not isinstance(value, Decimal):
+        return value
+    if value != value.to_integral_value():
+        raise ValueError(f"non-integral Decimal for field {key!r}: {value!r}")
+    return int(value)
+
+
 class _BotoTable:
     """Thin boto3 wrapper exposing the `common.protocol` table port.
 
@@ -134,9 +143,7 @@ class _BotoTable:
         # the §5.4 event's json.dumps both fail on Decimal — surfaced live
         # by the T035 acceptance run (every ride POSTed a fresh comment
         # instead of PATCHing the stored one).
-        return {
-            key: int(value) if isinstance(value, Decimal) else value for key, value in item.items()
-        }
+        return {key: _normalize_number(key, value) for key, value in item.items()}
 
     def update_item(self, **kwargs: Any) -> dict[str, Any]:
         from common.protocol import ConditionalCheckFailed

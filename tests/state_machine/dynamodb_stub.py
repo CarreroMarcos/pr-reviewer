@@ -66,7 +66,11 @@ class InMemoryTable:
         ExpressionAttributeNames: dict[str, str] | None = None,
         ExpressionAttributeValues: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Evaluate the condition, then apply the update (boto3 kwarg subset)."""
+        """Evaluate the condition, then apply the update (boto3 kwarg subset).
+
+        Note: the unused-names/values check covers UpdateExpression +
+        ConditionExpression only, not KeyConditionExpression.
+        """
         pk = Key["pk"]
         # Real DynamoDB rejects declared-but-unused expression names/values
         # (ValidationException) — the stub must fail the same way or a

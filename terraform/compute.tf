@@ -34,6 +34,9 @@ data "archive_file" "worker" {
 
   # lambda/ modules enumerated at plan time (auto-includes new modules;
   # the ingress handler stays out of the worker artifact).
+  # Invariant: the runtime layout law is Python stdlib+boto3 only, so
+  # non-.py files are excluded from the zip by design ("**/*.py"); adding
+  # a new file type requires revisiting this pattern.
   dynamic "source" {
     for_each = {
       for f in fileset("${path.module}/../lambda", "**/*.py") : f => f
