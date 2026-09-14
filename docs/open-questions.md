@@ -94,3 +94,12 @@ temperature 0.2 vs 0 (determinism vs exploration).
   actually see past the cap, and does the ~1 K-char completion cap make
   comments too shallow for big diffs?
 - Non-English PRs and non-code files: behavior untested.
+- **PT timestamp in bot comments** (Mars, 2026-09-14): every reviewer comment
+  should carry a Pacific-time stamp so Mars can see when it was posted. NOT
+  yet implemented — the canonical comment format is spec-pinned (moto ride
+  pins it), so the change needs a deliberate spec-conformant edit + a live
+  redeploy to matter. Design constraint: zero new runtime deps (AGENTS law),
+  so `zoneinfo` needs verified tzdata availability in the Lambda runtime
+  (unverified) or a hand-rolled PST/PDT offset table; also pick format +
+  placement (footer line vs header) and whether the stamp is UTC alongside.
+  Decide at next pre-deploy pass.

@@ -50,10 +50,12 @@ Statuses in this space (names must match; the first column is **To Do**, not Rea
 
 Comment only at those events. No progress spam, no pasting diffs or secrets, no rewriting the story in a comment.
 
+Every agent-posted Jira comment begins with a Pacific-time stamp — `[YYYY-MM-DD HH:MM PT]` (America/Los_Angeles, DST-aware) — so Mars can see at a glance when the edit/post happened.
+
 Comment shape:
 
 ```text
-Started T001 on SPR-1/t001-scaffold.
+[2026-09-13 23:55 PT] Started T001 on SPR-1/t001-scaffold.
 ```
 
 ```text
