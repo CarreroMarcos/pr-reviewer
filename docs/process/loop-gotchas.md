@@ -59,7 +59,27 @@ with a repro from an actual run.
   then fmt/validate; export session creds per AGENTS.md if validate demands
   them. Never `apply`, never commit `.terraform/` or state.
 
-## 7. Log fields are contract surface — clean or reject
+## 7. Squash-merging a stacked parent closes the stacked child PR
+
+- Symptom: child PR #41 (stacked on parent #38's branch) vanished from the
+  merge queue: when #38 squash-merged with `--delete-branch`, GitHub closed
+  #41 (its base branch ceased to exist). The child then could NOT be
+  reopened ("could not open pull request" — base gone) and could NOT be
+  retargeted while closed ("cannot change the base branch of a closed pull
+  request"). Its head froze at the pre-rebase sha, and — because closed
+  PRs don't run pull_request workflows — the rebased branch's push
+  triggered no CI. Deadlock: reopen needs a live base; base change needs an
+  open PR.
+- Rule: never leave a stacked child open across the parent's squash-merge.
+  Either (a) drop `--delete-branch` on the parent merge and delete the base
+  only after the child is merged/retargeted, (b) re-PR the child against
+  main BEFORE merging the parent, or (c) accept closure and immediately
+  re-issue a fresh PR from the same branch (what happened here: #41 → #43,
+  same content, Gate-6-approved). Detect fast: after any stacked-parent
+  merge, `gh pr view <child> --json state,baseRefName` — expect the surprise
+  before planning around it.
+
+## 8. Log fields are contract surface — clean or reject
 
 - Symptom: a new structured-log field without a cleaner silently passes
   junk to CloudWatch (and Gate 5's GitHub-401 probe caught the inverse: a
