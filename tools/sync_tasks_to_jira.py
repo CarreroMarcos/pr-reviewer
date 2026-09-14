@@ -98,6 +98,9 @@ def parse_tasks(text: str, scope: str) -> list[dict]:
                 continue
             if t["us"] is None and us2_min is not None and n >= us2_min:
                 continue
+        elif scope.startswith("us") and scope[2:].isdigit():
+            if t["us"] != int(scope[2:]):
+                continue
         out.append(t)
     if not out:
         sys.exit("no tasks parsed from tasks.md")
@@ -125,8 +128,8 @@ def main() -> None:
     token = env("JIRA_API_TOKEN")
     dry = truthy(os.environ.get("DRY_RUN", "true"))
     scope = (os.environ.get("SCOPE") or "mvp").strip().lower()
-    if scope not in {"mvp", "all"}:
-        sys.exit("SCOPE must be mvp or all")
+    if scope not in {"mvp", "all", "us2", "us3", "us4", "us5"}:
+        sys.exit("SCOPE must be one of: mvp, us2, us3, us4, us5, all")
     if not TASKS_PATH.is_file():
         sys.exit(f"missing {TASKS_PATH}")
 
@@ -175,8 +178,8 @@ def main() -> None:
         if len(hits) > 1:
             sys.exit(f"duplicate Jira rows for {t['id']}: {[i['key'] for i in hits]}")
         labels = ["spec-sync", t["id"].lower()]
-        if t["us"] == 1:
-            labels.append("us1")
+        if t["us"] is not None:
+            labels.append(f"us{t['us']}")
         if scope == "mvp":
             labels.append("mvp")
         desc = adf(
