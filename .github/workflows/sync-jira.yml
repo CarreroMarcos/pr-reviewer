@@ -13,10 +13,16 @@ on:
         type: boolean
         default: true
       scope:
-        description: mvp = setup/foundational + US1; all = every task
+        description: >-
+          mvp = setup/foundational + US1; us2..us5 = only that user story's
+          [USn] tasks; all = every task (never as default)
         type: choice
         options:
           - mvp
+          - us2
+          - us3
+          - us4
+          - us5
           - all
         default: mvp
 
