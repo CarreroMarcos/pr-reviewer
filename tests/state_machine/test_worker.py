@@ -329,6 +329,7 @@ def test_first_delivery_posts_and_finalizes():
     assert line["status"] == "published"
     assert line["generation"] == 0
     assert line["token_usage"] == 15
+    assert line["stale_discarded"] is False  # nothing stale discarded on this path
 
 
 def test_new_revision_posts_pending_reconcile():
@@ -377,14 +378,20 @@ def test_concurrent_different_owner_discards_claim_held():
 
 def test_superseded_sha_discards_without_publish():
     """Incoming SHA is neither last_seen nor live → superseded; the review
-    stage never runs (no LLM connection), nothing is published."""
+    stage never runs (no LLM connection), nothing is published. The ONLY
+    state change is the US3.AC1 observation (`last_seen_sha` advances to
+    the incoming SHA); everything else is byte-identical."""
     h = Harness(meta=[(200, SHA_A)])
     before = _seed(h.table, head=SHA_A, gen=3, comment=111)
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["discarded_superseded"]}
     assert h.llm_conns == []
     assert h.github.calls == []
-    assert h.table.items[PK] == before
+    item = h.table.items[PK]
+    assert item["last_seen_sha"] == SHA_B
+    assert {k: v for k, v in item.items() if k != "last_seen_sha"} == {
+        k: v for k, v in before.items() if k != "last_seen_sha"
+    }
 
 
 def test_fence_mismatch_discards_stale():

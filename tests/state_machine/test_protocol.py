@@ -21,7 +21,9 @@ Mapping (§3.3 step / failure mode → test):
 * step 4 fence mismatch → `test_fence_mismatch_discards_stale_without_publish`
 * step 6 finalize success → `test_finalize_success_sets_active_with_comment_id`
 * step 6 finalize conflict → `test_finalize_conflict_never_overwrites_newer`
-* superseded/stale ⇒ discard, never overwrite → `test_superseded_event_leaves_record`
+* superseded/stale ⇒ discard, never overwrite (superseded still records
+  the `last_seen_sha` observation, US3.AC1) →
+  `test_superseded_event_leaves_record`
 * mode 6 out-of-order delivery → `test_superseded_event_leaves_record`,
   `test_establish_retry_different_sha_discards_superseded`
 * mode 7 read-then-PATCH stale write → `test_fence_mismatch_discards_stale_without_publish`,
@@ -251,7 +253,9 @@ def test_establish_retry_same_sha_converges():
 
 def test_establish_retry_different_sha_discards_superseded():
     """Step 1c guard race: a concurrent writer lands a DIFFERENT SHA C (live now C)
-    → retry re-confirms → incoming B is not live → discard as superseded."""
+    → retry re-confirms → incoming B is not live → discard as superseded.
+    The retry's observation write advances `last_seen_sha` to B on the
+    writer's record; nothing else moves."""
 
     def concurrent_writer(_sha):
         _seed(h.table, head=SHA_C, gen=6, owner=GUID_OTHER, status="CLAIMED")
@@ -262,7 +266,11 @@ def test_establish_retry_different_sha_discards_superseded():
     expected = _seed(probe, head=SHA_C, gen=6, owner=GUID_OTHER, status="CLAIMED")
     outcome = h.run(incoming_sha=SHA_B)
     assert outcome.kind == OutcomeKind.DISCARDED_SUPERSEDED
-    assert h.table.items[PK] == expected  # writer's record only; our run wrote nothing
+    item = h.table.items[PK]
+    assert item["last_seen_sha"] == SHA_B  # observation recorded (US3.AC1)
+    assert {k: v for k, v in item.items() if k != "last_seen_sha"} == {
+        k: v for k, v in expected.items() if k != "last_seen_sha"
+    }
     assert ("review",) not in h.calls  # establish failed before review
     assert not any(entry[0] == "publish" for entry in h.calls)
 
@@ -396,12 +404,18 @@ def test_finalize_conflict_never_overwrites_newer():
 
 def test_superseded_event_leaves_record():
     """Mode 6: incoming SHA is neither last_seen nor the live head → not
-    established; the stored record is unchanged; no review, no publish."""
+    established; no review, no publish. The ONLY write is the US3.AC1
+    observation: `last_seen_sha` advances to the incoming SHA; head,
+    generation, lease, and comment are byte-identical."""
     h = Harness(live_shas=[SHA_A])
     before = _seed(h.table, head=SHA_A, gen=3, comment=111)
     outcome = h.run(incoming_sha=SHA_B)
     assert outcome.kind == OutcomeKind.DISCARDED_SUPERSEDED
-    assert h.table.items[PK] == before
+    item = h.table.items[PK]
+    assert item["last_seen_sha"] == SHA_B
+    assert {k: v for k, v in item.items() if k != "last_seen_sha"} == {
+        k: v for k, v in before.items() if k != "last_seen_sha"
+    }
     assert ("review",) not in h.calls
     assert not any(entry[0] == "publish" for entry in h.calls)
     assert sum(1 for entry in h.calls if entry[0] == "fence") == 1  # confirm fetch only

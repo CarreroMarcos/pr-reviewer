@@ -371,3 +371,16 @@ def build_clear_comment_expressions(
         ":dead": dead_comment_id,
     }
     return update, condition, values
+
+
+def build_advance_last_seen_expressions(*, incoming_sha: str) -> ExprTriple:
+    """Superseded-event observation (HLD §3.3 step 1; US3.AC1): record the
+    most recently observed webhook SHA regardless of acceptance. Advances
+    ONLY `last_seen_sha` — head, generation, lease, and comment are
+    untouched — guarded on record existence, so the observation can never
+    create or resurrect a record (records are never deleted; the guard
+    keeps the write strictly non-creative under races)."""
+    update = "SET last_seen_sha = :seen"
+    condition = "attribute_exists(pk)"
+    values: dict[str, Any] = {":seen": incoming_sha}
+    return update, condition, values
