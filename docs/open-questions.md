@@ -103,3 +103,25 @@ temperature 0.2 vs 0 (determinism vs exploration).
   (unverified) or a hand-rolled PST/PDT offset table; also pick format +
   placement (footer line vs header) and whether the stamp is UTC alongside.
   Decide at next pre-deploy pass.
+- **(b) equality-path head gate** (Gate-3 F2 → Gate-4 A3c, 2026-09-14):
+  repeat delivery of an already-superseded SHA takes the HLD §3.3 (b)
+  equality fast-path, which returns the STORED head — so the run performs a
+  FULL redundant review + PATCH (pinned as reality by
+  `test_repeat_stale_sha_after_observation`; Gate 4 verified, bounded:
+  rare duplicates, maxReceiveCount cap, content-converged). Proposed fix:
+  gate (b) on `incoming == stored head_sha` so repeat-stale discards cheaply
+  instead of re-publishing. Gate-4 ruled this a SPEC-SEMANTIC change
+  (redefines the accepted meaning of `last_seen_sha` equality) → Needs-input,
+  NOT implementable without your ruling + a tasks.md/HLD edit first. Related
+  residual: a stale observe landing after a newer accept leaves
+  `last_seen_sha` behind the head (HLD-mandated "record regardless"), so the
+  next redelivery of the current head spuriously takes (c) — one wasted
+  review, converge-correct; the (b)-gate would close this too.
+- **True-concurrency test harness** (Gate-5 G1, 2026-09-14): all "concurrent"
+  state-machine tests are sequential back-to-back runs on a shared table;
+  genuine in-flight overlap (both runs past establish before either claims)
+  is only modeled via foreign-lease seeding, and the equality guard's
+  CCF-retry path is the sole interleaving pin. A real interleaved harness
+  (deterministic scheduler over scripted step boundaries) is a bigger
+  investment than any current AC demands; US4.AC2/T050 cover the deploy-side.
+  Decide whether to invest or keep the seed-based model.
