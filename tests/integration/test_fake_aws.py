@@ -236,20 +236,41 @@ def _llm_factory(body: bytes = _completion_body()) -> Any:
 
 
 class FakeGitHub:
-    """Issues-Comments double: records (method, url, parsed body)."""
+    """Issues-Comments double: records (method, url, parsed body).
 
-    def __init__(self, *, post_id: int = POST_ID) -> None:
+    T040: stateful comment list so the reconcile path runs faithfully — GET
+    returns the current list, POST appends, PATCH refreshes the stored body,
+    DELETE removes. `script` ordered overrides fire first (e.g. a one-shot
+    PATCH 404 modeling a comment deleted on GitHub)."""
+
+    def __init__(self, *, post_id: int = POST_ID, script: list | None = None) -> None:
         self._post_id = post_id
+        self._script = list(script) if script else []
+        self.comments: list[dict[str, Any]] = []
         self.calls: list[dict[str, Any]] = []
 
     def __call__(
         self, method: str, url: str, headers: dict[str, str], body: bytes
     ) -> tuple[int, bytes]:
-        self.calls.append({"method": method, "url": url, "body": json.loads(body)})
+        parsed = json.loads(body) if body else None
+        self.calls.append({"method": method, "url": url, "body": parsed})
+        if self._script:
+            return self._script.pop(0)
+        if method == "GET":
+            return 200, json.dumps(self.comments).encode()
         if method == "POST":
+            self.comments.append({"id": self._post_id, "body": parsed["body"]})
             return 201, json.dumps({"id": self._post_id}).encode()
         comment_id = int(url.rsplit("/", 1)[-1])
-        return 200, json.dumps({"id": comment_id}).encode()
+        if method == "PATCH":
+            for comment in self.comments:
+                if comment["id"] == comment_id:
+                    comment["body"] = parsed["body"]
+            return 200, json.dumps({"id": comment_id}).encode()
+        if method == "DELETE":
+            self.comments = [c for c in self.comments if c["id"] != comment_id]
+            return 204, b""
+        raise AssertionError(f"unexpected GitHub method: {method}")
 
     def methods(self) -> list[str]:
         return [call["method"] for call in self.calls]
@@ -372,8 +393,8 @@ def test_a_happy_ride_ingress_to_finalize(stack: SimpleNamespace) -> None:
 
     result, github, _sink = _worker(stack, envelope, diff=FakeDiffTransport(meta=[(200, SHA_B)]))
     assert result == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["POST"]
-    post = github.calls[0]
+    assert github.methods() == ["GET", "POST", "GET"]  # T040: list → lease-POST → re-check
+    post = next(call for call in github.calls if call["method"] == "POST")
     assert post["url"].endswith(f"/repos/{REPO}/issues/{pr_number}/comments")
     marker = build_marker(REPO, pr_number)
     assert post["body"]["body"].count(marker) == 1
@@ -438,8 +459,8 @@ def test_c_same_sha_rereview_after_finalize_patches(stack: SimpleNamespace) -> N
         github=github,
     )
     assert replay == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["POST", "PATCH"]
-    assert github.calls[1]["url"].endswith(f"/issues/comments/{POST_ID}")
+    assert github.methods() == ["GET", "POST", "GET", "PATCH"]
+    assert github.calls[3]["url"].endswith(f"/issues/comments/{POST_ID}")
     item = stack.table.get_item(Key={"pk": review_pk(REPO, pr_number)})["Item"]
     assert item["status"] == "ACTIVE"
     assert int(item["comment_id"]) == POST_ID
@@ -569,3 +590,39 @@ def test_g_work_queue_redrive_policy(stack: SimpleNamespace) -> None:
     policy = json.loads(attrs["RedrivePolicy"])
     assert policy["deadLetterTargetArn"] == stack.dlq_arn
     assert policy["maxReceiveCount"] in ("5", 5)
+
+
+def test_h_patch_404_recovers_via_creation_lease(stack: SimpleNamespace) -> None:
+    """The stored comment was deleted on GitHub: PATCH → 404, list shows no
+    marker comment, creation lease → POST → persist → re-check. Exactly one
+    canonical comment exists afterwards, and the record points at the new
+    id. Moto evaluates the creation-lease condition with its real DynamoDB
+    expression parser — this ride pins the T039 condition string beyond
+    what the hand-written state-machine stub can."""
+    pr_number = 108
+    pk = review_pk(REPO, pr_number)
+    stack.table.put_item(
+        Item={
+            "pk": pk,
+            "status": "ACTIVE",
+            "generation": 2,
+            "head_sha": SHA_B,
+            "last_seen_sha": SHA_B,
+            "comment_id": 555,
+            "updated_at": UPDATED_AT,
+        }
+    )
+    github = FakeGitHub(script=[(404, b"{}")])  # the stored comment is gone
+    result, github, _sink = _worker(
+        stack,
+        _envelope(pr_number, SHA_B, GUID_1),
+        diff=FakeDiffTransport(meta=[(200, SHA_B)]),
+        github=github,
+    )
+    assert result == {"ok": True, "results": ["published"]}
+    assert github.methods() == ["PATCH", "GET", "POST", "GET"]
+    assert len(github.comments) == 1
+    assert github.comments[0]["body"].count(build_marker(REPO, pr_number)) == 1
+    item = stack.table.get_item(Key={"pk": pk})["Item"]
+    assert int(item["comment_id"]) == POST_ID
+    assert item["status"] == "ACTIVE"

@@ -346,3 +346,28 @@ def build_finalize_expressions(
         ":updated_at": updated_at,
     }
     return update, condition, values
+
+
+def build_clear_comment_expressions(
+    *,
+    head_sha: str,
+    generation: int,
+    dead_comment_id: int,
+) -> ExprTriple:
+    """Clear a proven-dead `comment_id` (HLD §2.3 item 8 PATCH-404 row).
+
+    Guarded on the exact dead id at our revision: only the id the worker
+    just saw 404 is removed — a concurrently persisted winner id never
+    matches `:dead`, so recovery can never un-persist a newer comment.
+    The record is briefly an id-less ACTIVE until the recovery persists
+    the replacement before the publish port returns; no production reader
+    decodes the record mid-flight (all production reads use raw dicts).
+    """
+    update = "REMOVE comment_id"
+    condition = "head_sha = :reviewed AND generation = :gen AND comment_id = :dead"
+    values: dict[str, Any] = {
+        ":reviewed": head_sha,
+        ":gen": generation,
+        ":dead": dead_comment_id,
+    }
+    return update, condition, values

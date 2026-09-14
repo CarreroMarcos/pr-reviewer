@@ -12,7 +12,8 @@ Mapping (pipeline stage / ruling → test):
 * hydrate (T014) → `test_config_error_completes`
 * establish → diff → LLM → assemble+gate → claim → fence → publish →
   finalize → `test_first_delivery_posts_and_finalizes`
-* POST-when-absent / PATCH-when-present (Mars ruling 1) →
+* POST-when-absent / PATCH-when-present (Mars ruling 1) → now via
+  reconcile (T040): absent → GET list → creation lease → POST → re-check;
   `test_first_delivery_posts_and_finalizes`,
   `test_new_revision_posts_pending_reconcile`,
   `test_same_revision_replay_patches_same_comment_never_reposts`
@@ -31,7 +32,9 @@ Mapping (pipeline stage / ruling → test):
   row (`test_assemble_refused_completes`, `test_llm_timeout_raises…`,
   `test_llm_invalid_output_raises…`, `test_diff_transport_error_raises…`,
   `test_diff_403_completes`, `test_github_post_500_raises…`,
-  `test_github_patch_404_completes_without_recovery`)
+  `test_github_patch_404_with_unreadable_list_completes` — the PATCH-404
+  decision table itself is pinned by
+  `tests/unit/test_patch404_table.py`)
 * log hygiene (HLD §5.4) → `test_log_event_carries_fixed_fields_only`
 
 All tests are deterministic: fixed clock (`NOW`), scripted transports, no
@@ -216,7 +219,12 @@ class FakeLLMConnection:
 class FakeGitHub:
     """Issues-Comments double: records (method, url, parsed body); default
     routes POST → 201 and PATCH → 200 echoing the URL id; `script` overrides
-    per call in order; `on_write` fires before each reply (finalize-race)."""
+    per call in order; `on_write` fires before each reply (finalize-race).
+
+    T040: the publish port also lists (GET → 200 empty list by default, so
+    first-post flows take the creation-lease branch) and deletes (DELETE →
+    204). Scripted sequences cover the PATCH-404 decision table; the
+    table itself is pinned by `tests/unit/test_patch404_table.py`."""
 
     def __init__(self, *, post_id=POST_ID, script=None, on_write=None):
         self._post_id = post_id
@@ -225,7 +233,11 @@ class FakeGitHub:
         self.calls = []
 
     def __call__(self, method, url, headers, body):
-        call = {"method": method, "url": url, "body": json.loads(body)}
+        call = {"method": method, "url": url}
+        try:
+            call["body"] = json.loads(body) if body else None
+        except ValueError:
+            call["body"] = None
         self.calls.append(call)
         if self._on_write is not None:
             self._on_write(call)
@@ -233,6 +245,10 @@ class FakeGitHub:
             return self._script.pop(0)
         if method == "POST":
             return 201, json.dumps({"id": self._post_id}).encode()
+        if method == "GET":
+            return 200, b"[]"
+        if method == "DELETE":
+            return 204, b""
         comment_id = int(url.rsplit("/", 1)[-1])
         return 200, json.dumps({"id": comment_id}).encode()
 
@@ -297,12 +313,13 @@ def _seed(table, *, head, seen=None, gen=0, owner=GUID_1, until=NOW + 100, comme
 
 
 def test_first_delivery_posts_and_finalizes():
-    """Empty table → POST (no comment_id yet) → ACTIVE with the new id."""
+    """Empty table → reconcile: GET list (empty) → creation lease → POST →
+    persist → re-check → ACTIVE with the new id."""
     h = Harness(meta=[(200, SHA_B)])
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["published"]}
-    assert h.github.methods() == ["POST"]
-    assert h.github.calls[0]["url"].endswith(f"/repos/{REPO}/issues/{PR_NUMBER}/comments")
+    assert h.github.methods() == ["GET", "POST", "GET"]
+    assert h.github.calls[1]["url"].endswith(f"/repos/{REPO}/issues/{PR_NUMBER}/comments")
     item = h.table.items[PK]
     assert item["status"] == "ACTIVE"
     assert item["head_sha"] == SHA_B
@@ -315,13 +332,14 @@ def test_first_delivery_posts_and_finalizes():
 
 
 def test_new_revision_posts_pending_reconcile():
-    """New SHA clears comment_id at establish (c) → POST; convergence is
-    T039 reconcile scope, but the POST shape itself is pinned here."""
+    """New SHA clears comment_id at establish (c) → reconcile finds no
+    marker comment → lease → POST; convergence of pre-existing marker
+    comments is T039 reconcile scope, pinned in test_reconcile.py."""
     h = Harness(meta=[(200, SHA_B), (200, SHA_B)])
     _seed(h.table, head=SHA_A, gen=5, comment=111)
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["published"]}
-    assert h.github.methods() == ["POST"]
+    assert h.github.methods() == ["GET", "POST", "GET"]
     assert h.table.items[PK]["comment_id"] == POST_ID
     assert h.table.items[PK]["generation"] == 6
 
@@ -335,8 +353,8 @@ def test_same_revision_replay_patches_same_comment_never_reposts():
     assert first == {"ok": True, "results": ["published"]}
     second = h.run(envelope(sha=SHA_B))
     assert second == {"ok": True, "results": ["published"]}
-    assert h.github.methods() == ["POST", "PATCH"]
-    assert h.github.calls[1]["url"].endswith(f"/issues/comments/{POST_ID}")
+    assert h.github.methods() == ["GET", "POST", "GET", "PATCH"]
+    assert h.github.calls[3]["url"].endswith(f"/issues/comments/{POST_ID}")
     assert h.table.items[PK]["comment_id"] == POST_ID
 
 
@@ -389,7 +407,9 @@ def test_finalize_conflict_completes_without_retry():
     landed = {}
 
     def concurrent_landing(call):
-        if not landed:
+        # The modeled race lands between publish (POST) and finalize: the
+        # reconcile list GETs that precede the POST must not trigger it.
+        if not landed and call["method"] == "POST":
             landed["moved"] = True
             _seed(h.table, head=SHA_C, gen=6, owner=GUID_OTHER)
 
@@ -465,7 +485,7 @@ def test_llm_401_refreshes_once_then_publishes():
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["published"]}
     assert len(h.ssm.calls) == 2
-    assert h.github.methods() == ["POST"]
+    assert h.github.methods() == ["GET", "POST", "GET"]
 
 
 def test_llm_401_twice_completes():
@@ -554,8 +574,10 @@ def test_diff_403_completes():
 
 
 def test_github_post_500_raises_for_queue_retry():
-    """Transient GitHub 5xx on POST → raise; nothing finalized."""
-    h = Harness(meta=[(200, SHA_B)], github=FakeGitHub(script=[(500, b"boom")]))
+    """Transient GitHub 5xx on POST → raise; nothing finalized. The script
+    leads with the reconcile list GET (200 empty) so the 500 lands on the
+    lease-POST, preserving the pre-T040 row semantics."""
+    h = Harness(meta=[(200, SHA_B)], github=FakeGitHub(script=[(200, b"[]"), (500, b"boom")]))
     with pytest.raises(GitHubError) as exc_info:
         h.run(envelope(sha=SHA_B))
     assert exc_info.value.status == 500
@@ -564,15 +586,18 @@ def test_github_post_500_raises_for_queue_retry():
     assert line["status"] == "retry_queued"
 
 
-def test_github_patch_404_completes_without_recovery():
-    """PATCH 404 recovery (adopt/create via reconcile) is T040 scope: here
-    the row completes non-retryably with no POST fallback and no raise."""
-    h = Harness(meta=[(200, SHA_B)], github=FakeGitHub(script=[(404, b"{}")]))
+def test_github_patch_404_with_unreadable_list_completes():
+    """PATCH 404 recovery runs the item-8 decision table (T040): the stored
+    id is proven dead, so it is cleared first; then the list GET is 403
+    (lost access — the list-unreadable row), so the run completes
+    non-retryably with nothing persisted. Marker-found and lease-POST rows
+    are pinned by `tests/unit/test_patch404_table.py`."""
+    h = Harness(meta=[(200, SHA_B)], github=FakeGitHub(script=[(404, b"{}"), (403, b"{}")]))
     _seed(h.table, head=SHA_B, gen=2, comment=555)
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["discarded_error"]}
-    assert h.github.methods() == ["PATCH"]
-    assert h.table.items[PK]["comment_id"] == 555
+    assert h.github.methods() == ["PATCH", "GET"]
+    assert "comment_id" not in h.table.items[PK]  # dead id cleared; next run converges
 
 
 # --- boundary table pin (HLD §2.3 item 8, T034 scope) ---

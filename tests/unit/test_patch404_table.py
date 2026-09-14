@@ -135,9 +135,7 @@ class ScriptedGitHub:
 
     def patch_bodies(self):
         return [
-            json.loads(call["body"].decode())
-            for call in self.calls
-            if call["method"] == "PATCH"
+            json.loads(call["body"].decode()) for call in self.calls if call["method"] == "PATCH"
         ]
 
 
@@ -258,7 +256,14 @@ def test_patch_404_with_migrated_marker_comment_adopts_lowest_and_reconciles():
     github = ScriptedGitHub(
         [
             (404, b"{}"),  # PATCH 555 (deleted on GitHub)
-            (200, _list_body(_comment(111, "plain"), _comment(EXTRA_ID, "x " + MARKER), _comment(ADOPTED_ID, "old " + MARKER))),  # GET list
+            (
+                200,
+                _list_body(
+                    _comment(111, "plain"),
+                    _comment(EXTRA_ID, "x " + MARKER),
+                    _comment(ADOPTED_ID, "old " + MARKER),
+                ),
+            ),  # GET list
             (200, json.dumps({"id": ADOPTED_ID}).encode()),  # PATCH 777
             (204, b""),  # DELETE 999
         ]

@@ -18,15 +18,26 @@ from worker_handler import _BotoTable, _make_publish
 
 
 class _FakeBotoTable:
-    """boto3 Table double: `get_item(Key=...)` returning raw DynamoDB shapes."""
+    """boto3 Table double: `get_item(Key=...)` returning raw DynamoDB shapes;
+    `update_item` records conditions and applies `:comment` values (the
+    reconcile adopt/lease persist path — condition strictness is pinned by
+    the state-machine tier, not here)."""
 
     def __init__(self, item: dict | None) -> None:
         self._item = item
         self.keys: list[dict] = []
+        self.updates: list = []
 
     def get_item(self, *, Key: dict) -> dict:
         self.keys.append(Key)
         return {"Item": dict(self._item)} if self._item is not None else {}
+
+    def update_item(self, **kwargs) -> dict:
+        self.updates.append(kwargs.get("ConditionExpression"))
+        values = kwargs.get("ExpressionAttributeValues") or {}
+        if self._item is not None and ":comment" in values:
+            self._item["comment_id"] = values[":comment"]
+        return {"Attributes": dict(self._item) if self._item is not None else {}}
 
 
 def _stored_item() -> dict:
@@ -91,6 +102,8 @@ def test_publish_patches_stored_comment() -> None:
 
     def transport(method: str, url: str, headers: dict, body: bytes):
         calls.append((method, url))
+        if method == "GET":
+            return 200, b"[]"
         return 200, b'{"id": 5658256138}'
 
     publish = _make_publish(
@@ -98,6 +111,8 @@ def test_publish_patches_stored_comment() -> None:
         creds=_FakeCreds(),
         table=_BotoTable(_FakeBotoTable(_stored_item())),
         pk="review:org/repo#7",
+        owner="guid-1",
+        clock=lambda: 1_750_000_000,
         github_transport=transport,
     )
     assert publish("## Summary") == 5658256138
@@ -106,10 +121,14 @@ def test_publish_patches_stored_comment() -> None:
 
 
 def test_publish_posts_when_comment_id_absent() -> None:
+    """No stored id → reconcile: GET list (empty) → creation lease (no
+    record write needed — nothing stored yet) → POST → re-check."""
     calls: list[tuple[str, str]] = []
 
     def transport(method: str, url: str, headers: dict, body: bytes):
         calls.append((method, url))
+        if method == "GET":
+            return 200, b"[]"
         return 201, b'{"id": 42}'
 
     publish = _make_publish(
@@ -117,8 +136,11 @@ def test_publish_posts_when_comment_id_absent() -> None:
         creds=_FakeCreds(),
         table=_BotoTable(_FakeBotoTable(None)),
         pk="review:org/repo#7",
+        owner="guid-1",
+        clock=lambda: 1_750_000_000,
         github_transport=transport,
     )
     assert publish("## Summary") == 42
-    assert calls[0][0] == "POST"
-    assert calls[0][1].endswith("/issues/7/comments")
+    assert [method for method, _ in calls] == ["GET", "POST", "GET"]
+    assert calls[1][0] == "POST"
+    assert calls[1][1].endswith("/issues/7/comments")
