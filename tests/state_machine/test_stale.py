@@ -283,6 +283,41 @@ def test_successive_stale_events_keep_recording_latest_observation():
     assert item["comment_id"] == STORED_ID
 
 
+class FlakyObserveTable:
+    """InMemoryTable wrapper failing the `last_seen_sha` advance with a
+    throttle-shaped fault (anything but `ConditionalCheckFailed`)."""
+
+    def __init__(self, table):
+        self._table = table
+
+    def get_item(self, pk):
+        return self._table.get_item(pk)
+
+    def update_item(self, **kwargs):
+        if kwargs.get("UpdateExpression") == "SET last_seen_sha = :seen":
+            raise RuntimeError("throttled")
+        return self._table.update_item(**kwargs)
+
+
+def test_observe_throttle_still_discards_without_review_or_publish():
+    """Gate-3 F3: the observation is best-effort, never correctness. A
+    throttle/transport fault on the advance write warns and discards —
+    review stays skipped, nothing is published, no Lambda error, no retry
+    (propagating would convert discards into DLQ entries under throttle
+    storms). Only `ConditionalCheckFailed` rejoins the retry loop."""
+    inner = InMemoryTable()
+    _seed(inner, head=SHA_B, gen=3, comment=STORED_ID)
+    h = Harness(meta=[(200, SHA_B)], table=FlakyObserveTable(inner))
+    assert h.run(SHA_A, GUID_B) == {"ok": True, "results": ["discarded_superseded"]}
+    assert h.llm_conns == []
+    assert h.github.calls == []
+    assert inner.items[PK]["last_seen_sha"] == SHA_B  # observation lost, rest intact
+    assert inner.items[PK]["head_sha"] == SHA_B
+    (line,) = h.log_lines()
+    assert line["status"] == "discarded_superseded"
+    assert line["stale_discarded"] is True
+
+
 # --- clause B: fence mismatch aborts before any GitHub write ---
 
 

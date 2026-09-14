@@ -68,6 +68,7 @@ Flagged interpretations for the review gate:
 Pure stdlib, no I/O, no boto3 import.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -85,6 +86,8 @@ from common.state import (
     build_finalize_expressions,
     expression_names,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ESTABLISH_ATTEMPTS = 3
 
@@ -276,17 +279,30 @@ def _observe_superseded(pk: str, incoming_sha: str, seen_at_read: Any, table: An
     concurrent last_seen/head move raises `ConditionalCheckFailed` and the
     establish loop retries on a fresh base and re-routes — the observation
     is never forced over a newer record, and `last_seen_sha` can never be
-    dragged backward off the (b) idempotent path."""
+    dragged backward off the (b) idempotent path.
+
+    Fault semantics (Gate-3 F3): the observation is a metric, never
+    correctness. `ConditionalCheckFailed` propagates (the loop retries —
+    correctness path); any OTHER fault (throttle/transport) is caught, a
+    coded warning is logged via the module logger (codebase warning
+    mechanism, cf. `common.llm`), and the caller proceeds to the
+    superseded discard — review stays skipped, no publish, no retry storm
+    under throttle (propagating would convert discards into DLQ entries)."""
     update, condition, values = build_advance_last_seen_expressions(
         incoming_sha=incoming_sha, seen_at_read=seen_at_read
     )
-    table.update_item(
-        Key={"pk": pk},
-        UpdateExpression=update,
-        ConditionExpression=condition,
-        ExpressionAttributeNames=expression_names(update, condition),
-        ExpressionAttributeValues=values,
-    )
+    try:
+        table.update_item(
+            Key={"pk": pk},
+            UpdateExpression=update,
+            ConditionExpression=condition,
+            ExpressionAttributeNames=expression_names(update, condition),
+            ExpressionAttributeValues=values,
+        )
+    except ConditionalCheckFailed:
+        raise
+    except Exception:
+        logger.warning("observe_superseded_failed", extra={"status": "observe_failed"})
 
 
 def _establish_first_write(
