@@ -22,7 +22,7 @@ Gate <n> — <phase | ticket>, attempt <k> of 3 (<3-k> re-reviews remaining).
 - On re-reviews: do not reopen accepted or unchanged concerns; do hunt for NEW
   risk the remediation introduced.
 
-## 2. Review contract (exactly these four dimensions, nothing more)
+## 2. Review contract (exactly these five dimensions, nothing more)
 
 1. **Scope discipline** — diff ⊆ task. Enumerate anything extra, however small,
    and rule it in or out explicitly.
@@ -32,6 +32,13 @@ Gate <n> — <phase | ticket>, attempt <k> of 3 (<3-k> re-reviews remaining).
    and which you could not.
 4. **Jira hygiene** — event-table conformance, legal transitions, no direct
    Done, comment shapes per AGENTS.md.
+5. **Diff defect hunt** — correctness defects in the diff itself, with file:line
+   for each: races and ordering assumptions, silent coercions (e.g. `int()` on
+   non-integral values), trust-boundary/injection edges, resource and
+   concurrency posture, and test-logic flaws (tests that pass for the wrong
+   reason, cross-test coupling). Report the top findings — this dimension is
+   the one an automated reviewer (e.g. the pr-reviewer bot's self-review)
+   exercises hardest; the gate must not cede it entirely.
 
 ## 3. Evidence table (mandatory format)
 
@@ -48,6 +55,8 @@ claim = unproven (see stance block).
 - [ ] Full diff inline, or a precise pointer (branch/worktree path)
 - [ ] Claimed verify evidence, explicitly labeled as claims
 - [ ] Jira trail summary (event → comment → transition, per ticket)
+- [ ] If a pr-reviewer **self-review comment** exists on the PR, link it and
+      require dimension 5 to confirm, contradict, or extend each of its findings
 - [ ] **≥ 3 adversarial questions**, composed against this specific diff, e.g.:
   - What breaks when this runs on its worst day?
   - What is subtly wrong that a passing test suite would not catch?
@@ -60,6 +69,7 @@ claim = unproven (see stance block).
 ```text
 VERDICT per ticket: APPROVE | CHANGES_REQUESTED | SPEC_CONFLICT
 Findings: numbered; each = severity (merge-blocking | advisory) + evidence + fix
+Diff defects (dimension 5): numbered; each = severity + file:line + concrete failure mode + fix (or "none found" — stated explicitly)
 Explicit answers: one per composer question
 Merge recommendation: one line
 ```

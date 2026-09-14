@@ -90,12 +90,16 @@ If the AC/HLD is wrong: Needs input, stop. Spec change is a git PR first.
 
 After step 6, dispatch an Oracle review with a bounded brief: the single T-id text
 from `tasks.md`, the PR diff, real verify evidence + CI status, and the Jira trail.
-Oracle reviews exactly four things — nothing more:
+Oracle reviews exactly five things — nothing more:
 
 1. Scope discipline — the diff contains only what that T-id requires.
 2. Spec/HLD/AC conformance for that task.
 3. Verify honesty — claimed evidence matches real output and CI.
 4. Jira hygiene — right comment at the right event, legal transitions, no direct Done.
+5. Diff defect hunt — correctness bugs in the diff itself (races, silent
+   coercions, trust boundaries, concurrency posture, test-logic flaws), each
+   with file:line. Compose per `docs/process/gate-brief.md`; link any
+   pr-reviewer self-review comment on the PR as mandatory input.
 
 Verdicts and actions:
 
