@@ -201,6 +201,12 @@ def build_envelope_body(payload: Any, delivery_guid: str) -> str | None:
 
 
 def _respond(status: int) -> dict[str, Any]:
+    if status == 401:
+        # The ingress-401-spike alarm's metric filter matches
+        # `{ $.statusCode = 401 }` on structured log lines — the handler
+        # otherwise emits nothing (Function URL return values are not
+        # logged), so the 401 path logs itself (deploy-order add-on).
+        print(json.dumps({"statusCode": status}), flush=True)
     return {"statusCode": status, "body": ""}
 
 

@@ -174,6 +174,34 @@ def test_wrong_secret_rejected_end_to_end():
     assert len(sqs.calls) == 1
 
 
+def test_401_responses_log_structured_status_line(capsys):
+    """The 401-spike alarm's filter matches { $.statusCode = 401 } log lines.
+
+    Ingress emits no other log lines, so every 401 path must print exactly
+    one structured line (and non-401 dispositions none)."""
+    raw = raw_of(make_payload())
+    bad_sig = handler(
+        make_event(raw, "sha256=" + "0" * 64),
+        None,
+        _table=FakeTable(),
+        _sqs=FakeSQS(),
+        _secret=FIXED_SECRET,
+    )
+    assert bad_sig == {"statusCode": 401, "body": ""}
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert [json.loads(line) for line in lines] == [{"statusCode": 401}]
+
+    accepted = handler(
+        make_event(raw, sign(raw)),
+        None,
+        _table=FakeTable(),
+        _sqs=FakeSQS(),
+        _secret=FIXED_SECRET,
+    )
+    assert accepted["statusCode"] == 202  # accepted delivery emits no log line
+    assert capsys.readouterr().out.strip() == ""
+
+
 # --- 413 pre-decode ----------------------------------------------------------
 
 
