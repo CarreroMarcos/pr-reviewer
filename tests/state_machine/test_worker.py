@@ -43,6 +43,7 @@ and nothing raised; a test asserting "raises" also asserts the
 `retry_queued` log line was emitted first.
 """
 
+import http.client
 import json
 
 import pytest
@@ -568,6 +569,48 @@ def test_llm_invalid_output_raises_for_queue_retry():
     assert h.github.calls == []
 
 
+def _validating_llm_factory(harness):
+    """Wrap the harness LLM factory so `request()` runs the REAL stdlib
+    header validation first — replays production `putheader` rejection of
+    control-char key material without any network."""
+    real_factory = harness._factory
+
+    def factory(host, port, *, timeout):
+        conn = real_factory(host, port, timeout=timeout)
+        orig_request = conn.request
+
+        def request(method, path, body=None, headers=None):
+            probe = http.client.HTTPConnection(host)
+            probe.putrequest(method, path)
+            for name, value in (headers or {}).items():
+                probe.putheader(name, value)
+            return orig_request(method, path, body=body, headers=headers)
+
+        conn.request = request
+        return conn
+
+    return factory
+
+
+def test_newline_key_replays_to_terminal_invalid_key_with_notice():
+    """Live-incident replay (SPR-58): a trailing-newline GLM key used to
+    crash invisibly (bare ValueError from header validation, retried to
+    the DLQ with no notice). Now: typed `invalid_key` → non-retryable →
+    terminal `discarded_error` with `error_class="invalid_key"` and the
+    immediate `failure_notice_published="true"` — no raise, no retry/DLQ
+    loop (the review itself never publishes; only the fixed template)."""
+    values = dict(SSM_VALUES)
+    values["/pr-reviewer/glm-api-key"] = "glm-key-value\n"  # noqa: S105 (newline-key fixture)
+    h = Harness(meta=[(200, SHA_B)], ssm_values=values)
+    result = h.run(envelope(sha=SHA_B), _llm_factory=_validating_llm_factory(h))
+    assert result == {"ok": True, "results": ["discarded_error"]}
+    assert h.github.methods() == ["GET", "POST", "GET"]
+    (line,) = h.log_lines()
+    assert line["status"] == "discarded_error"
+    assert line["error_class"] == "invalid_key"
+    assert line["failure_notice_published"] == "true"
+
+
 def test_diff_transport_error_raises_for_queue_retry():
     """F4 `transport_error` (DNS/refused/reset class) → raise for redelivery."""
     h = Harness(meta=[DiffError("request", "transport_error")])
@@ -637,6 +680,7 @@ def test_is_retryable_table():
     assert is_retryable(LlmError("invalid_response")) is True
     assert is_retryable(LlmError("bad_endpoint")) is False
     assert is_retryable(LlmError("http_401")) is False
+    assert is_retryable(LlmError("invalid_key")) is False
     assert is_retryable(LlmError("http_400")) is False
 
     assert is_retryable(GitHubError(500, "http_500")) is True

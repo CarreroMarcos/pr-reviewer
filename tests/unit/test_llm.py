@@ -8,6 +8,7 @@ diff, completion, or key material).
 
 import json
 import logging
+from http import client as http_client
 
 import pytest
 
@@ -475,3 +476,143 @@ def test_close_failure_never_masks_success():
     factory = make_factory(behavior={"raise_on_close": RuntimeError("close boom")})
     result = invoke(_connection_factory=factory)
     assert result.content == COMPLETION_TEXT
+
+
+# --- SPR-58: typed invalid_key closure ----------------------------------------
+# Live incident: a trailing-newline API key crashed invisibly (bare
+# ValueError from `http.client.putheader`, whose message embeds the full
+# `Bearer <API KEY>` value) and spun to the DLQ. These pins close that
+# hole: construction faults surface as typed `LlmError("invalid_key")`
+# with no key material in the message, and the escape probe pins the
+# realistic transport-fault inventory (no blanket `except Exception` in
+# product code).
+
+
+def _validating_factory(seen=None):
+    """Factory whose `request()` runs the REAL stdlib header validation
+    before delegating to the stub — replays what production `putheader`
+    does with control-char key material, without any network."""
+
+    def factory(host, port, *, timeout):
+        conn = FakeConnection(host, port, timeout=timeout)
+        if seen is not None:
+            seen.append(conn)
+        orig_request = conn.request
+
+        def request(method, path, body=None, headers=None):
+            probe = http_client.HTTPConnection(host)
+            probe.putrequest(method, path)
+            for name, value in (headers or {}).items():
+                probe.putheader(name, value)
+            return orig_request(method, path, body=body, headers=headers)
+
+        conn.request = request
+        return conn
+
+    return factory
+
+
+@pytest.mark.parametrize("suffix", ["\n", "\r", "\r\n"])
+def test_newline_suffixed_key_is_invalid_key(suffix):
+    """Trailing-newline key (the live incident) → typed `invalid_key`;
+    the key never appears in the exception message."""
+    key = API_KEY + suffix
+    with pytest.raises(LlmError) as exc_info:
+        invoke(api_key=key, _connection_factory=_validating_factory())
+    assert exc_info.value.error_class == "invalid_key"
+    assert key not in str(exc_info.value)
+    assert API_KEY not in str(exc_info.value)
+
+
+def test_embedded_crlf_key_is_invalid_key():
+    """Control characters anywhere in the key → `invalid_key`, key-free."""
+    key = "prefix\r\ninjected: evil"
+    with pytest.raises(LlmError) as exc_info:
+        invoke(api_key=key, _connection_factory=_validating_factory())
+    assert exc_info.value.error_class == "invalid_key"
+    assert key not in str(exc_info.value)
+
+
+def test_putheader_style_value_error_maps_to_invalid_key_without_key_material():
+    """Seam-level pin: a putheader-shaped ValueError (message embedding the
+    full `Bearer <key>` value, as CPython raises) → `invalid_key`, and the
+    embedded key material is dropped (`from None`, fixed message)."""
+    key = "glm-test-probe-not-a-credential"  # noqa: S105 (dummy fixture)
+    factory = make_factory(
+        behavior={"raise_on_request": ValueError(f"Invalid header value b'Bearer {key}'")}
+    )
+    with pytest.raises(LlmError) as exc_info:
+        invoke(api_key=key, _connection_factory=factory)
+    assert exc_info.value.error_class == "invalid_key"
+    assert key not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("key", ["   ", " \t ", "\n", " \r\n "])
+def test_whitespace_only_key_is_invalid_key(key):
+    """Boundary pin: whitespace-only keys are truthy (pass the empty-key
+    guard) but carry no credential — `invalid_key`, never the wire."""
+    with pytest.raises(LlmError) as exc_info:
+        invoke(api_key=key)
+    assert exc_info.value.error_class == "invalid_key"
+
+
+def test_empty_key_stays_bad_endpoint():
+    """Boundary pin (unchanged): empty/missing keys stay `bad_endpoint`."""
+    with pytest.raises(LlmError) as exc_info:
+        invoke(api_key="")
+    assert exc_info.value.error_class == "bad_endpoint"
+
+
+def test_bad_status_line_is_connection_error():
+    factory = make_factory(
+        behavior={"raise_on_response": http_client.BadStatusLine("HTTP/1.1 ???")}
+    )
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "connection_error"
+
+
+def test_incomplete_read_is_connection_error():
+    factory = make_factory(
+        behavior={"raise_on_response": http_client.IncompleteRead(partial=b'{"cho', expected=200)}
+    )
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "connection_error"
+
+
+def test_remote_disconnected_stays_connection_error_via_os_error():
+    """`RemoteDisconnected` subclasses both `OSError` and `HTTPException`;
+    the pre-existing `OSError` arm owns it (no double-map)."""
+    factory = make_factory(behavior={"raise_on_response": http_client.RemoteDisconnected("closed")})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == "connection_error"
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_class"),
+    [
+        (
+            ValueError("Invalid header value b'Bearer SECRET-PROBE'"),
+            "invalid_key",
+        ),
+        (http_client.BadStatusLine("HTTP/1.1 ???"), "connection_error"),
+        (
+            http_client.IncompleteRead(partial=b'{"cho', expected=200),
+            "connection_error",
+        ),
+        # `socket.timeout` is an alias of `TimeoutError` (3.10+): one row pins both.
+        (TimeoutError("timed out"), "timeout"),
+        (ConnectionResetError("reset by peer"), "connection_error"),
+    ],
+)
+def test_transport_fault_inventory_never_escapes_bare(fault, expected_class):
+    """Escape probe: every realistic transport fault injected through the
+    factory seam surfaces as a typed `LlmError` — never a bare fault
+    (which would bypass the worker's retry/notice classification)."""
+    factory = make_factory(behavior={"raise_on_request": fault})
+    with pytest.raises(LlmError) as exc_info:
+        invoke(_connection_factory=factory)
+    assert exc_info.value.error_class == expected_class
+    assert "SECRET-PROBE" not in str(exc_info.value)
