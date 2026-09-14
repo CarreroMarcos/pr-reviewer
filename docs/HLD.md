@@ -450,3 +450,5 @@ GitHub App installation tokens; inline review comments via Reviews API; expanded
 ---
 
 *End of document.*
+
+Scratch acceptance target for SPR-35 / T035 quickstart runs (a/b/e/f/k/k2). Deleted after acceptance.
