@@ -1,3 +1,3 @@
-fixture: US2 acceptance scratch file (T042)
-not product content — drives real synchronize events for acceptance (c)(d)(h)
-push: after-delete at 2026-09-14T16:46:35.469981+00:00
+fixture: US2 acceptance scratch file (T042/T045)
+not product content — drives real synchronize events for acceptance
+push: us3-baseline at 2026-09-14T16:56:38.448701+00:00
