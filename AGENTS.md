@@ -14,6 +14,10 @@ pre-commit run --all-files
 terraform -chdir=terraform init -backend=false
 terraform -chdir=terraform fmt -check
 terraform -chdir=terraform validate
+# Real terraform runs (init/plan/destroy) also need live AWS creds. The CLI's
+# `aws login` cache (~/.aws/login) is invisible to the terraform AWS provider —
+# export resolved session creds into the environment first (verified 2026-09-13):
+eval "$(aws configure export-credentials --format env)"
 ```
 
 Pre-push hook will run the same class of checks. If it fails, fix the code. Do not `--no-verify`.
