@@ -1,3 +1,3 @@
 fixture: US acceptance scratch file (T057)
 not product content — drives real synchronize events for acceptance
-push: us5-s1 at 2026-09-14T19:12:40.245191+00:00
+push: us5-s2 at 2026-09-14T19:49:07.330857+00:00
