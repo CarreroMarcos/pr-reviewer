@@ -41,6 +41,7 @@ EXPECTED_FIELDS = frozenset(
         "status",
         "error_class",
         "stale_discarded",
+        "failure_notice_published",
         "prompt_version",
     }
 )
@@ -184,6 +185,7 @@ def test_build_event_carries_exactly_fixed_fields():
     assert event["error_class"] is None
     assert event["generation"] is None
     assert event["stale_discarded"] is False  # default: no stale work discarded
+    assert event["failure_notice_published"] == "false"  # default: no notice published
     assert event["prompt_version"] is None
 
 
@@ -199,12 +201,14 @@ def test_build_event_carries_optional_fields():
         error_class="TimeoutError",
         generation=3,
         stale_discarded=True,
+        failure_notice_published="true",
         prompt_version="v3",
     )
     assert set(event) == FIXED_FIELDS
     assert event["error_class"] == "TimeoutError"
     assert event["generation"] == 3
     assert event["stale_discarded"] is True
+    assert event["failure_notice_published"] == "true"
     assert event["prompt_version"] == "v3"
 
 
@@ -501,6 +505,13 @@ def test_build_event_rejects_non_bool_stale_discarded():
         build_event(**_valid_kwargs(stale_discarded="yes"))
     assert excinfo.value.field == "stale_discarded"
     assert excinfo.value.reason == "bad_stale_discarded"
+
+
+def test_build_event_rejects_bad_failure_notice_published():
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(failure_notice_published="maybe"))
+    assert excinfo.value.field == "failure_notice_published"
+    assert excinfo.value.reason == "bad_failure_notice"
 
 
 def test_build_event_rejects_overlong_error_class():

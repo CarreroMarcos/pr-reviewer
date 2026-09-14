@@ -6,7 +6,8 @@ usage, status, error class) plus the §4.3 review-metric identifiers
 `generation` and `prompt_version` and the §4.3 `stale_discarded` discard
 metric (True when the run discarded superseded/stale work via fencing,
 False otherwise — strict bool, never None, so the metric is always
-queryable). `build_event()` takes those fields as
+queryable) plus the §4.3 `failure_notice_published` D2 metric (`true` /
+`false` / `skipped-stale`; see `common.failure_notice`). `build_event()` takes those fields as
 explicit keyword-only parameters, so non-fixed content (Authorization
 headers, PATs, secrets, raw payloads, diffs, LLM request/response bodies) is
 structurally unemittable — there is no parameter that could carry it
@@ -54,6 +55,7 @@ FIXED_FIELDS = frozenset(
         "status",
         "error_class",
         "stale_discarded",
+        "failure_notice_published",
         "prompt_version",
     }
 )
@@ -101,7 +103,8 @@ class LogsError(ValueError):
     machine-readable code (`not_object`, `missing`, `bad_fields`,
     `bad_repo`, `bad_pr_number`, `bad_sha`, `bad_guid`,
     `bad_generation`, `bad_duration`, `bad_token_usage`, `bad_status`,
-    `bad_error_class`, `bad_stale_discarded`, `bad_prompt_version`)."""
+    `bad_error_class`, `bad_stale_discarded`, `bad_failure_notice`,
+    `bad_prompt_version`)."""
 
     def __init__(self, field: str, reason: str) -> None:
         self.field = field
@@ -210,6 +213,18 @@ def _clean_stale_discarded(value: Any) -> bool:
     return value
 
 
+# HLD §4.3 / research R8: `failure_notice_published` ∈
+# {true, false, skipped-stale} — whether this run published the D2
+# failure-state notice (see `common.failure_notice.NoticeDisposition`).
+_FAILURE_NOTICE_VALUES = frozenset({"true", "false", "skipped-stale"})
+
+
+def _clean_failure_notice_published(value: Any) -> str:
+    if not isinstance(value, str) or value not in _FAILURE_NOTICE_VALUES:
+        raise LogsError("failure_notice_published", "bad_failure_notice")
+    return value
+
+
 def _clean_prompt_version(value: Any) -> str | None:
     if value is None:
         return None
@@ -234,6 +249,7 @@ def build_event(
     error_class: Any = None,
     generation: Any = None,
     stale_discarded: Any = False,
+    failure_notice_published: Any = "false",
     prompt_version: Any = None,
 ) -> dict[str, Any]:
     """Build a fixed-field log event.
@@ -243,8 +259,10 @@ def build_event(
     smuggle them in (unknown keywords raise `TypeError`). Every value is
     format-checked (`LogsError`) and guard-scanned (`RedactionError`); the
     returned dict carries exactly `FIXED_FIELDS`, with `None` defaults for
-    the optional `error_class`, `generation`, and `prompt_version`, and
-    `False` for `stale_discarded` (runs that did not discard stale work).
+    the optional `error_class`, `generation`, and `prompt_version`,
+    `False` for `stale_discarded` (runs that did not discard stale work),
+    and `"false"` for `failure_notice_published` (runs that published no
+    D2 failure notice).
     """
     return {
         "repo_full_name": _clean_repo(repo_full_name),
@@ -257,6 +275,7 @@ def build_event(
         "status": _clean_status(status),
         "error_class": _clean_error_class(error_class),
         "stale_discarded": _clean_stale_discarded(stale_discarded),
+        "failure_notice_published": _clean_failure_notice_published(failure_notice_published),
         "prompt_version": _clean_prompt_version(prompt_version),
     }
 
@@ -270,6 +289,7 @@ def event_from_envelope(
     error_class: Any = None,
     generation: Any = None,
     stale_discarded: Any = False,
+    failure_notice_published: Any = "false",
     prompt_version: Any = None,
 ) -> dict[str, Any]:
     """Build a fixed-field event from an envelope-shaped dict or `Envelope`.
@@ -298,6 +318,7 @@ def event_from_envelope(
         error_class=error_class,
         generation=generation,
         stale_discarded=stale_discarded,
+        failure_notice_published=failure_notice_published,
         prompt_version=prompt_version,
     )
 

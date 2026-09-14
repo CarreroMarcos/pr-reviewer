@@ -469,7 +469,10 @@ def test_c_same_sha_rereview_after_finalize_patches(stack: SimpleNamespace) -> N
 
 def test_d_approval_like_verdict_discards_without_post(stack: SimpleNamespace) -> None:
     """Approval-like LLM output fails the validate gate → discarded_error:
-    no POST, and the handler never sends to the DLQ itself."""
+    the invalid content is never posted, and the handler never sends to
+    the DLQ itself. D2: assemble-invalid is permanent, so the fixed
+    template notice IS posted (exactly one comment, template only) with
+    `failure_notice_published: "true"` on the line."""
     pr_number = 104
     result, github, sink = _worker(
         stack,
@@ -478,10 +481,14 @@ def test_d_approval_like_verdict_discards_without_post(stack: SimpleNamespace) -
         llm_body=_completion_body(APPROVAL_BODY),
     )
     assert result == {"ok": True, "results": ["discarded_error"]}
-    assert github.calls == []
+    assert github.methods() == ["GET", "POST", "GET"]
+    assert len(github.comments) == 1
+    assert "Safe to merge" not in github.comments[0]["body"]
+    assert "could not be completed" in github.comments[0]["body"]
     assert _queue_depth(stack.sqs, stack.dlq_url) == 0
-    statuses = [json.loads(line)["status"] for line in sink]
-    assert statuses == ["discarded_error"]
+    lines = [json.loads(line) for line in sink]
+    assert [line["status"] for line in lines] == ["discarded_error"]
+    assert lines[0]["failure_notice_published"] == "true"
 
 
 def test_e_decimal_round_trip_publish_uses_patch(stack: SimpleNamespace) -> None:
