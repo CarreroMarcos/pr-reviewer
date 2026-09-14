@@ -25,9 +25,11 @@ Phases run IN ORDER (each idempotent/resumable via a state file):
         M2 recv#4 push S2 (webhook delivery M3 fails, recovers post-revert)
         M2 recv#5 superseded AT ESTABLISH (M3 rewrote last_seen ~12 min
                    earlier) — stale-delivery rejection [m]
-        M3 recv#4 timed push S3 at r4+717s — inside M3's #5 establish->
-                   notice-fence window (driver-executed so it survives
-                   the ~15-min AWS credential windows)
+        M3 recv#4 adaptive timed push S3 (SPR-65 establish-observed gate:
+                    residual measured from observed retry intervals; the old
+                    r4+717s arithmetic survives only as the logged comparison delta)
+                   inside M3's #5 establish->notice-fence window (driver-executed
+                   so it survives the ~15-min AWS credential windows)
         M3 recv#5 notice fence sees live==S3 -> skipped-stale [m]; M3 -> DLQ
         then      restore endpoint; a post-refetch receive succeeds ->
                   review for S3 publishes, comment reverts from notice
@@ -745,9 +747,14 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
     # notice runs — and the notice's fence must then see a head NEWER
     # than sha2.
     #
-    # Timing: receive #5 lands ~720s after receive #4 (visibility), and
-    # the #4 log line is emitted ~2-3s INTO that receive, so the push is
-    # scheduled at r4_ts + 717s = ~0.5s into the #5 processing window.
+    # Timing (SPR-65 adaptive establish-observed gate): receive #5 lands
+    # ~720s after receive #4 (visibility), and the #4 log line is emitted
+    # ~2-3s INTO that receive. The old fixed arithmetic scheduled the push
+    # at r4_ts + 717s (~0.5s into the #5 processing window); the gate below
+    # instead MEASURES the residual from the observed retry intervals
+    # (median log-to-log cycle minus ~2s of end-of-processing offset), so
+    # slow cold starts push later and fast ones sooner while the push still
+    # lands inside the #5 establish->notice-fence window.
     # The dead-port connect fails in ~1-2s, so the notice's fence reads
     # ~3-4s after establish — after the push (GitHub's ref moves at push
     # time, before M3's own delivery even establishes). Both
@@ -756,6 +763,16 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
     # push runs in the DRIVER (gh creds outlive the ~15-min AWS windows):
     # the harness records push_at in the state file and the driver
     # executes it, so the timed push survives pytest credential deaths.
+    #
+    # INVARIANT — why r4 (non-final) is the gate anchor: r4 still has a
+    # next retry coming (#5), so a push scheduled off its observed line
+    # lands while the race is still live and #5's fence can go stale. A
+    # gate anchored on the FINAL receive's establish would fire the push
+    # after the record's review already completed (post-terminal): the M3
+    # skipped-stale line could then never trigger again and the (m) drill
+    # would go green forever while proving nothing. The M3 skipped-stale
+    # and M2 superseded-at-establish asserts are byte-identical in force:
+    # this gate may change WHEN the S3 push fires, never WHAT is asserted.
     if "t_restore" not in drill:
         since_f = drill["t_s2"] - 10
 
@@ -798,10 +815,44 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
             40 * MINUTE,
             lambda: f"M3 retries seen: {len(_m3_retries())} (need 4)",
         )
-        r4_ts = _m3_retries()[3][0] / 1000
+        observed = _m3_retries()
+        if len(observed) < 4:
+            # Fresh-scan regression guard: the poll above converged, so a
+            # short re-read means CloudWatch rotation/skew, not absence.
+            # Fail LOUD — never fall back to the old arithmetic silently.
+            pytest.fail(
+                f"SPR-65 gate: r4 converged but fresh scan shows "
+                f"{len(observed)} retry lines (need 4)",
+                pytrace=False,
+            )
+        r4_ts = observed[3][0] / 1000
         if "push_at" not in drill:
-            drill["push_at"] = r4_ts + 717.0
+            stamps = [ts / 1000 for ts, _ in observed[:4]]
+            gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:], strict=False)]
+            ordered = sorted(gaps)
+            median_gap = ordered[len(ordered) // 2]
+            # Log lines mark END of processing; the next receive starts one
+            # visibility cycle after this receive's START (~2-3s before its
+            # log on the dead-port path). Land the push ~1s after the
+            # predicted #5 establish: residual = median cycle - 2s, clamped
+            # to [700, 725]s so a skewed scan cannot throw the push outside
+            # the establish->fence window. The old fixed 717.0s survives
+            # only as the logged comparison delta, never as a fallback.
+            residual = min(max(median_gap - 2.0, 700.0), 725.0)
+            drill["push_at"] = r4_ts + residual
             drill["push_note"] = "us5-s3"
+            drill["push_gate"] = {
+                "anchor": "m3-r4-establish-observed",
+                "r4_observed": r4_ts,
+                "gaps": gaps,
+                "residual": residual,
+                "old_arithmetic_delta": 717.0,
+            }
+            print(
+                f"[SPR-65 gate] r4_observed={r4_ts:.0f} push_at={drill['push_at']:.0f} "
+                f"residual={residual:.1f}s (old arithmetic would use 717.0s; "
+                f"delta={residual - 717.0:+.1f}s; gaps={[f'{g:.1f}' for g in gaps]})"
+            )
             _save_state()
 
         def _m3_skipped_lines() -> list[tuple[int, dict[str, Any]]]:
