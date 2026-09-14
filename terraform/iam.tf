@@ -37,6 +37,12 @@
 #    (future T030 concern — both handlers are still stubs).
 # 6. No kms:Decrypt grants: SecureStrings use the AWS-managed aws/ssm key and
 #    SSM decrypts server-side via WithDecryption (HLD §2.6).
+# 7. The worker role trusts lambda.amazonaws.com scoped to aws:SourceAccount,
+#    not the function ARN: CreateEventSourceMapping validates assumability
+#    for the QUEUE event source, so a function-ARN SourceArn condition fails
+#    it (seen live applying this stack — T035). SourceAccount keeps the
+#    confused-deputy guard; the ingress role keeps its function-ARN condition
+#    (no mapping; CreateFunction validated it fine).
 
 data "aws_caller_identity" "current" {}
 
@@ -127,7 +133,7 @@ resource "aws_iam_role" "worker" {
       Principal = { Service = "lambda.amazonaws.com" }
       Action    = "sts:AssumeRole"
       Condition = {
-        StringEquals = { "aws:SourceArn" = local.worker_function_arn }
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
       }
     }]
   })

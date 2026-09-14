@@ -55,9 +55,16 @@ resource "aws_lambda_function" "ingress" {
   filename         = data.archive_file.ingress.output_path
   source_code_hash = data.archive_file.ingress.output_base64sha256
 
-  timeout                        = 5
-  memory_size                    = 128
-  reserved_concurrent_executions = 25
+  timeout = 5
+  # Scratch stack: 512 MB because CPU scales with memory — the lazy boto3
+  # import cannot fit a cold start into the 5 s budget at 128 MB (observed:
+  # Sandbox.Timedout on first invoke). Restore the HLD §5 value (128) for
+  # production or after measured warm evidence.
+  memory_size = 512
+  # Scratch stack: account concurrency quota is 10 (new-account default), so
+  # any reservation is rejected. -1 = unreserved. Restore the HLD §5 value
+  # (25) when the quota is raised.
+  reserved_concurrent_executions = -1
 }
 
 resource "aws_lambda_function" "worker" {
@@ -69,9 +76,14 @@ resource "aws_lambda_function" "worker" {
   filename         = data.archive_file.worker.output_path
   source_code_hash = data.archive_file.worker.output_base64sha256
 
-  timeout                        = 120
-  memory_size                    = 256
-  reserved_concurrent_executions = 5
+  timeout = 120
+  # Scratch stack: 512 MB — same cold-start reasoning as ingress (lazy boto3
+  # import) and headroom for the LLM round-trip within the 15 s end-to-end
+  # budget. Restore the HLD §5 value (256) for production.
+  memory_size = 512
+  # Scratch stack: -1 = unreserved (account quota is 10). Restore the HLD §5
+  # value (5) when the quota is raised.
+  reserved_concurrent_executions = -1
 
   environment {
     variables = {
@@ -87,6 +99,17 @@ resource "aws_lambda_function_url" "ingress" {
   # No cors block: CORS is disabled by omission (HLD §5.2). The only
   # legitimate caller is GitHub's non-browser webhook dispatcher.
 }
+
+# NOTE (T035, first-deploy finding): since Lambda's Oct-2025 hardening, NONE-auth
+# function URLs need TWO resource-policy statements: lambda:InvokeFunctionUrl
+# (auto-added by aws_lambda_function_url with auth NONE) AND lambda:InvokeFunction
+# gated on lambda:InvokedViaFunctionUrl=true. aws_lambda_permission cannot express
+# the second statement until provider v6 (invoked_via_function_url arg,
+# hashicorp/terraform-provider-aws#44829). Applied out-of-band for the scratch
+# stack, pinned here for the provider-bump ticket:
+#   aws lambda add-permission --function-name pr-reviewer-ingress \
+#     --statement-id AllowPublicFunctionUrlInvoke --action lambda:InvokeFunction \
+#     --principal "*" --invoked-via-function-url --region us-west-2
 
 resource "aws_lambda_event_source_mapping" "work" {
   event_source_arn = aws_sqs_queue.work.arn
