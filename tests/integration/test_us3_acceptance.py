@@ -12,16 +12,20 @@ and asserts the revision-fence contract:
 
 The stale SHA used is the fixture PR's real pre-baseline head, captured
 before the harness pushes its baseline commit, so the delivery is a true
-previously-reviewed revision, not a malformed guess.
+previously-reviewed revision, not a malformed guess. (Gate-9 correction:
+the superseded path advances ONLY last_seen_sha via the observation
+write — generation never moves on any discard path — so neither state
+field is asserted.)
 
 Observable split (deliberate):
   - AC assertion: canonical comment immutability (id + updated_at + count).
   - Mechanism evidence: the worker's structured `discarded_superseded` log
     line carrying the stale SHA, timestamped after the redrive POST. State
-    `last_seen_sha`/`generation` are NOT asserted: the claim/establish write
-    records the incoming SHA and bumps generation before the fence runs
-    (observed live during T042), so they legitimately move on a discarded
-    delivery — asserting them would over-pin beyond the AC.
+    `last_seen_sha`/`generation` are NOT asserted: the superseded path
+    records the incoming SHA via the observation write (generation never
+    moves on discard paths; establish-(c) is the sole bumper and requires
+    incoming == live head), so `last_seen_sha` legitimately changes on a
+    discarded delivery — asserting it would over-pin beyond the AC.
 
 Opt-in gate: the module SKIPS unless ACCEPTANCE_LIVE=1, so the default
 `pytest -q` path stays green without AWS/gh access. The T045 verify is::
