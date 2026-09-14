@@ -21,6 +21,8 @@ Mapping (pipeline stage / ruling → test):
 * single 401 re-fetch, the ONLY in-request retry →
   `test_llm_401_refreshes_once_then_publishes`,
   `test_llm_401_twice_completes`, `test_diff_401_refreshes_once`
+* prompt packaging (T035) → `test_load_system_prompt_resolves_zip_layout`,
+  `test_load_system_prompt_falls_back_to_repo_layout`
 * discard outcomes → `test_concurrent_different_owner_discards_claim_held`,
   `test_superseded_sha_discards_without_publish`,
   `test_fence_mismatch_discards_stale`,
@@ -43,6 +45,7 @@ import json
 import pytest
 from dynamodb_stub import InMemoryTable
 
+import worker_handler
 from common.assemble import AssembleError
 from common.config import ConfigError, ConfigProvider
 from common.diff import DiffError, HttpResponse
@@ -627,3 +630,26 @@ def test_log_event_carries_fixed_fields_only():
     raw = h.sink[0]
     for forbidden in ("github-token-value", "glm-key-value", "SYSTEM-PROMPT", REVIEW_BODY):
         assert forbidden not in raw
+
+
+def test_load_system_prompt_resolves_zip_layout(tmp_path, monkeypatch):
+    """The Lambda archive ships prompts/ beside the handler; the loader
+    must read the contract file there (T035 packaging)."""
+    monkeypatch.delenv("SYSTEM_PROMPT", raising=False)
+    task = tmp_path / "task"
+    (task / "prompts").mkdir(parents=True)
+    (task / "prompts" / "system_prompt.md").write_text("zip prompt", encoding="utf-8")
+    monkeypatch.setattr(worker_handler, "__file__", str(task / "worker_handler.py"))
+    assert worker_handler._load_system_prompt() == "zip prompt"
+
+
+def test_load_system_prompt_falls_back_to_repo_layout(tmp_path, monkeypatch):
+    """A repo checkout keeps prompts/ one level above lambda/; when the
+    zip layout is absent the loader walks up (dev parity)."""
+    monkeypatch.delenv("SYSTEM_PROMPT", raising=False)
+    repo = tmp_path / "repo"
+    (repo / "lambda").mkdir(parents=True)
+    (repo / "prompts").mkdir()
+    (repo / "prompts" / "system_prompt.md").write_text("repo prompt", encoding="utf-8")
+    monkeypatch.setattr(worker_handler, "__file__", str(repo / "lambda" / "worker_handler.py"))
+    assert worker_handler._load_system_prompt() == "repo prompt"

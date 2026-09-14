@@ -575,18 +575,26 @@ def _env_allowed_hosts() -> tuple[str, ...]:
 def _load_system_prompt() -> str:
     """Production prompt source: the versioned contract file (T018).
 
-    Tests always inject `_system_prompt`. A missing file falls back to the
-    `SYSTEM_PROMPT` env var; absence of both is a permanent config fault
-    (complete, alert) — never an empty prompt.
+    Two layouts are resolved, zip first: the Lambda archive ships
+    `prompts/` beside the handler (`<dir>/prompts`), while a repo checkout
+    keeps it one level up (`<dir>/../prompts`). Tests always inject
+    `_system_prompt`. No layout match falls back to the `SYSTEM_PROMPT`
+    env var (dev only — never set in Terraform); absence of all three is a
+    permanent config fault (complete, alert) — never an empty prompt.
     """
-    candidate = Path(__file__).resolve().parent.parent / "prompts" / "system_prompt.md"
-    try:
-        return candidate.read_text(encoding="utf-8")
-    except OSError:
-        fallback = os.environ.get("SYSTEM_PROMPT", "")
-        if fallback:
-            return fallback
-        raise ConfigError("system_prompt", "missing") from None
+    here = Path(__file__).resolve().parent
+    for candidate in (
+        here / "prompts" / "system_prompt.md",
+        here.parent / "prompts" / "system_prompt.md",
+    ):
+        try:
+            return candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    fallback = os.environ.get("SYSTEM_PROMPT", "")
+    if fallback:
+        return fallback
+    raise ConfigError("system_prompt", "missing") from None
 
 
 def reset_config_cache() -> None:

@@ -23,14 +23,27 @@ data "archive_file" "ingress" {
 
 data "archive_file" "worker" {
   type        = "zip"
-  source_dir  = "${path.module}/../lambda"
   output_path = "${path.module}/worker.zip"
 
-  excludes = [
-    "ingress_handler.py",
-    "**/__pycache__",
-    "*.pyc",
-  ]
+  # prompts/ ships in the worker zip at zip-root prompts/ so
+  # _load_system_prompt resolves the versioned contract file (T035).
+  source {
+    content  = file("${path.module}/../prompts/system_prompt.md")
+    filename = "prompts/system_prompt.md"
+  }
+
+  # lambda/ modules enumerated at plan time (auto-includes new modules;
+  # the ingress handler stays out of the worker artifact).
+  dynamic "source" {
+    for_each = {
+      for f in fileset("${path.module}/../lambda", "**/*.py") : f => f
+      if f != "ingress_handler.py"
+    }
+    content {
+      content  = file("${path.module}/../lambda/${source.value}")
+      filename = source.value
+    }
+  }
 }
 
 resource "aws_lambda_function" "ingress" {
@@ -59,6 +72,12 @@ resource "aws_lambda_function" "worker" {
   timeout                        = 120
   memory_size                    = 256
   reserved_concurrent_executions = 5
+
+  environment {
+    variables = {
+      GLM_ALLOWED_HOSTS = "api.z.ai"
+    }
+  }
 }
 
 resource "aws_lambda_function_url" "ingress" {
