@@ -318,6 +318,65 @@ def test_stale_event_leaves_canonical_comment_untouched():
     assert h.table.items[PK]["head_sha"] == SHA_B
 
 
+def test_repeat_stale_sha_after_observation():
+    """Gate-3 F2/D2 — stale-repeat cost, pinned as OBSERVED (see below).
+
+    Setup is the faithful settled state: ACTIVE, live head B, NO lease
+    (finalize releases it, HLD §3.2). After stale A is observed
+    (`last_seen_sha` = A), a second IDENTICAL A matches the (b) equality
+    path (incoming == `last_seen_sha`) — which proceeds with the STORED
+    head B — and runs a FULL redundant review + PATCH of the canonical
+    comment with fresh B content before finalizing. Nothing is wrong
+    content-wise (the comment carries a current-head review; generation
+    does not churn), but the cost is a full publish, not a cheap discard:
+    pre-T044 the repeat was a review-free superseded discard, and the T044
+    observation extends (b) hits to repeat-stale events.
+
+    LOUD DEVIATION from the H2 brief as specified: it predicted a full
+    review ending in DISCARDED_STALE with no publish ("claim-fails on head
+    mismatch"). That mechanism does not exist — (b) returns the stored
+    head by construction, so the claim cannot fail on head mismatch in a
+    single-threaded run; with no live lease the claim succeeds and the run
+    publishes. (With a live foreign lease the same repeat yields
+    DISCARDED_CLAIM_HELD after one review — also not STALE.) The behavior
+    below is the unmodified code's actual answer; the brief's assertions
+    are not satisfiable without new behavior.
+
+    For Mars: gating (b) on `head_sha` as well (incoming must equal BOTH
+    `last_seen_sha` and the stored head) would restore the cheap superseded
+    discard for repeat-stale while preserving true idempotent redelivery —
+    this finding makes that alternative MORE urgent than Gate 3 assumed.
+    Deliberately NOT implemented here (new behavior, needs its own ticket).
+    Bounded today: exact-repeat stale events are rare, and the queue's
+    maxReceiveCount caps redelivery; reconcile-converged, never wrong."""
+    table = InMemoryTable()
+    github = StatefulGitHub(comments=[{"id": STORED_ID, "body": "review for B " + MARKER}])
+    table.items[PK] = {
+        "pk": PK,
+        "status": "ACTIVE",
+        "generation": 3,
+        "head_sha": SHA_B,
+        "last_seen_sha": SHA_B,
+        "comment_id": STORED_ID,
+        "updated_at": UPDATED_AT,
+    }
+    first = Harness(meta=[(200, SHA_B)], table=table, github=github)
+    assert first.run(SHA_A, GUID_A) == {"ok": True, "results": ["discarded_superseded"]}
+    assert table.items[PK]["last_seen_sha"] == SHA_A
+
+    second = Harness(meta=[(200, SHA_B)], table=table, github=github)
+    assert second.run(SHA_A, GUID_B) == {"ok": True, "results": ["published"]}
+    assert len(second.llm_conns) == 1  # full redundant review ran
+    assert second.github.methods() == ["PATCH"]  # ...and published it (redundant B review)
+    assert len(github.comments) == 1  # still exactly one canonical comment
+    assert github.comments[0]["id"] == STORED_ID
+    assert MARKER in github.comments[0]["body"]
+    item = table.items[PK]
+    assert item["head_sha"] == SHA_B  # (b) never bumps generation or moves head
+    assert item["generation"] == 3
+    assert item["comment_id"] == STORED_ID
+
+
 # --- logging (T044 half): the HLD §4.3 stale_discarded metric ---
 
 
