@@ -200,6 +200,10 @@ def _save_state() -> None:
     # file while a harness process is live; a blind whole-file write
     # clobbers them (observed live 2026-09-14). Disk keys the loaded
     # snapshot never had survive; harness keys win on conflict.
+    #
+    # The secret assert runs on IN-MEMORY state BEFORE merge/scrub: a
+    # secret-shaped key must fail LOUD here, never be silently scrubbed.
+    _assert_no_secret_keys(_STATE["state"])
     disk: dict[str, Any] = {}
     if os.path.exists(STATE_PATH):
         try:
@@ -419,11 +423,11 @@ def test_stage_permanent_notice_immediate():
     if previous and "t_notice" not in previous:
         # A prior attempt died mid-phase: restore its backup before redoing.
         # The backup lives in SSM (test-scoped param); the legacy
-        # on-disk "key_backup" field is honored once for pre-hardening
-        # state files, then dropped by the _save_state scrub.
-        legacy = previous.get("key_backup", "")
-        backup_param = str(previous.get("key_backup_param", "") or _key_backup_param())
-        backed_up = _get_param(backup_param) if previous.get("key_backup_param") else legacy
+        # on-disk "key_backup" field is consumed once for pre-hardening
+        # state files, then deleted (never written back).
+        legacy = str(previous.pop("key_backup", ""))
+        backup_param = str(previous.get("key_restore_param", "") or _key_backup_param())
+        backed_up = _get_param(backup_param) if previous.get("key_restore_param") else legacy
         _put_param(SSM_KEY, backed_up)
         assert _get_param(SSM_KEY) == backed_up
     state.pop("l", None)
@@ -432,26 +436,28 @@ def test_stage_permanent_notice_immediate():
     original_key = _get_param(SSM_KEY)
     _put_param(SSM_KEY, original_key)  # write-access probe: no-op rewrite
 
-    live = _gh_api(f"repos/{REPO}/pulls/{PR_NUMBER}")
-    sha0 = str(live["head"]["sha"])
-    base_sha = str(live["base"]["sha"])
-    bad_key = "t057-acceptance-invalid-key"  # gitleaks:allow - intentionally invalid flip value
-    _put_param(SSM_KEY, bad_key)
-    assert _get_param(SSM_KEY) == bad_key
-    backup_param = _key_backup_param()
-    _put_param(backup_param, original_key)  # at-rest in SSM, never the state file
-    state["l"] = {
-        "sha": sha0,
-        "key_param": SSM_KEY,
-        "key_backup_param": backup_param,
-        "t_flip": time.time(),
-        "dlq_before": dlq_before,
-    }
-    _save_state()
-
-    # Any early assert below must still restore the flipped key.
+    # The flip window opens here: flip -> verify -> backup -> save and
+    # everything after run under ONE try/finally, so a failed verify,
+    # backup write, or save cannot leave the invalid key behind.
     key_restored = False
     try:
+        live = _gh_api(f"repos/{REPO}/pulls/{PR_NUMBER}")
+        sha0 = str(live["head"]["sha"])
+        base_sha = str(live["base"]["sha"])
+        bad_key = "t057-acceptance-invalid-key"  # gitleaks:allow - intentionally invalid flip value
+        _put_param(SSM_KEY, bad_key)
+        assert _get_param(SSM_KEY) == bad_key
+        backup_param = _key_backup_param()
+        _put_param(backup_param, original_key)  # at-rest in SSM, never the state file
+        state["l"] = {
+            "sha": sha0,
+            "key_param": SSM_KEY,
+            "key_restore_param": backup_param,
+            "t_flip": time.time(),
+            "dlq_before": dlq_before,
+        }
+        _save_state()
+
         # Probe loop: each probe either succeeds on a cached good key
         # (published — flip not yet visible; harmless normal review) or takes
         # the 401-after-refetch path (discarded_error + notice, same receive).
@@ -896,10 +902,12 @@ def test_stage_redrive_drain_and_converge():
     try:
         task = sqs.start_message_move_task(SourceArn=dlq_arn, DestinationArn=work_arn)
         drill["move_task_handle"] = task.get("TaskHandle", "")
-    except botocore.exceptions.BotoCoreError as exc:
-        # Narrowed to the transport/service fault family: permission and
-        # shape variance fall here. Programming errors (TypeError,
-        # KeyError, ...) stay loud.
+    except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as exc:
+        # Narrowed to the botocore fault family: transport errors
+        # (BotoCoreError) and service-side API faults — AccessDenied,
+        # QueueDoesNotExist, throttling, permission-shape variance
+        # (ClientError, a sibling of BotoCoreError, not a subclass).
+        # Programming errors (TypeError, KeyError, ...) still propagate loud.
         drill["move_task_error"] = f"{type(exc).__name__}: {exc}"
         # Runbook deviation (logged per step 5): surgical equivalent move —
         # receive from the DLQ, re-send to the work queue, delete. Same
