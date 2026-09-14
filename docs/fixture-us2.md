@@ -1,3 +1,3 @@
-fixture: US2 acceptance scratch file (T042/T045)
+fixture: US2/US4 acceptance scratch file (T042/T050)
 not product content — drives real synchronize events for acceptance
-push: us3-baseline at 2026-09-14T17:05:54.845752+00:00
+push: us4-race at 2026-09-14T17:20:33.023394+00:00
