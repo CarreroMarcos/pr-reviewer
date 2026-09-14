@@ -127,8 +127,6 @@ def _condition_holds(
         return current is None
     if condition == "last_seen_sha = :seen_at_read":
         return current is not None and current.get("last_seen_sha") == values[":seen_at_read"]
-    if condition == "attribute_exists(pk)":
-        return current is not None
     if condition == "last_seen_sha = :sha":
         return current is not None and current.get("last_seen_sha") == values[":sha"]
     if condition == "generation = :expected_gen":
