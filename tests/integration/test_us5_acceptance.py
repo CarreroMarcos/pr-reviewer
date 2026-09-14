@@ -46,9 +46,13 @@ Phases run IN ORDER (each idempotent/resumable via a state file):
       must be fence-discarded, never mutate the comment); ~10 min.
 
 Safety notes (read before running):
-- Both SSM params are backed up to the state file before flipping and
-  restored + verified. The api-key backup file is written 0600 outside
-  the repo; the endpoint is not a secret but is restored verbatim.
+- Both SSM params are restored + verified after their flip. The api-key
+  original is backed up to a test-scoped SSM parameter (never the state
+  file — the on-disk JSON must stay greppable-clean of key material and
+  the driver asserts that on every save); the endpoint is not a secret
+  but its original is kept in the state file and restored verbatim.
+  Every temporary SSM mutation restores in a `finally` so an early
+  assert cannot leave a flipped value behind.
 - The DLQ-depth alarm WILL page during the drill — real DLQ messages are
   the acceptance criterion working (runbook step 5 logs the drill).
 - Real pushes during the flip window deliberately fail and recover on a
@@ -89,6 +93,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import boto3
+import botocore.exceptions
 import pytest
 
 from common.failure_notice import NOTICE_TEMPLATE
@@ -129,7 +134,55 @@ POLL_INTERVAL_SECONDS = 5.0
 _STATE: dict[str, Any] = {}
 
 
-# --- state file (resumable drill; 0600 — it holds the key backup) ---------
+# --- state file (resumable drill; 0600) ------------------------------------
+#
+# Secret discipline: key-shaped material (api-key backups) lives ONLY in
+# a test-scoped SSM parameter, never in this JSON file. _save_state
+# asserts that invariant on every write and scrubs legacy disk keys.
+
+# State-dict keys that must never reach the on-disk file (case-insensitive
+# substring match). "endpoint_backup" is deliberately NOT in this set —
+# the endpoint is not a secret.
+_FORBIDDEN_STATE_KEYS = ("key_backup", "secret", "api_key", "apikey", "private_key")
+
+
+def _key_backup_param() -> str:
+    """Test-scoped SSM parameter holding the api-key original during (l)."""
+    return f"{SSM_KEY}-backup-us5-{PR_NUMBER}"
+
+
+def _scrub_secret_keys(mapping: dict[str, Any]) -> None:
+    """Drop key-shaped entries in place (legacy disk files may hold them)."""
+
+    def _scrub(node: Any) -> None:
+        if isinstance(node, dict):
+            for key in [k for k in node if any(f in str(k).lower() for f in _FORBIDDEN_STATE_KEYS)]:
+                del node[key]
+            for value in node.values():
+                _scrub(value)
+        elif isinstance(node, list):
+            for value in node:
+                _scrub(value)
+
+    _scrub(mapping)
+
+
+def _assert_no_secret_keys(mapping: dict[str, Any]) -> None:
+    """Prove the to-be-written state holds no key-shaped material."""
+
+    def _walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                lowered = str(key).lower()
+                assert not any(f in lowered for f in _FORBIDDEN_STATE_KEYS), (
+                    f"secret-shaped key {path}.{key} must live in SSM, never the state file"
+                )
+                _walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                _walk(value, f"{path}[{index}]")
+
+    _walk(mapping, "state")
 
 
 def _load_state() -> dict[str, Any]:
@@ -158,9 +211,13 @@ def _save_state() -> None:
     for key, value in _STATE["state"].items():
         if isinstance(value, dict) and isinstance(disk.get(key), dict):
             merged[key] = {**disk[key], **value}
-    fd = os.open(STATE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    _scrub_secret_keys(merged)
+    _assert_no_secret_keys(merged)
+    tmp_path = f"{STATE_PATH}.tmp-{os.getpid()}"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
         json.dump(merged, handle, indent=1, sort_keys=True)
+    os.replace(tmp_path, STATE_PATH)
 
 
 # --- helpers --------------------------------------------------------------
@@ -361,8 +418,14 @@ def test_stage_permanent_notice_immediate():
     previous = state.get("l")
     if previous and "t_notice" not in previous:
         # A prior attempt died mid-phase: restore its backup before redoing.
-        _put_param(SSM_KEY, previous["key_backup"])
-        assert _get_param(SSM_KEY) == previous["key_backup"]
+        # The backup lives in SSM (test-scoped param); the legacy
+        # on-disk "key_backup" field is honored once for pre-hardening
+        # state files, then dropped by the _save_state scrub.
+        legacy = previous.get("key_backup", "")
+        backup_param = str(previous.get("key_backup_param", "") or _key_backup_param())
+        backed_up = _get_param(backup_param) if previous.get("key_backup_param") else legacy
+        _put_param(SSM_KEY, backed_up)
+        assert _get_param(SSM_KEY) == backed_up
     state.pop("l", None)
 
     dlq_before = _queue_depth(DLQ_QUEUE)
@@ -375,69 +438,81 @@ def test_stage_permanent_notice_immediate():
     bad_key = "t057-acceptance-invalid-key"  # gitleaks:allow - intentionally invalid flip value
     _put_param(SSM_KEY, bad_key)
     assert _get_param(SSM_KEY) == bad_key
+    backup_param = _key_backup_param()
+    _put_param(backup_param, original_key)  # at-rest in SSM, never the state file
     state["l"] = {
         "sha": sha0,
         "key_param": SSM_KEY,
-        "key_backup": original_key,  # 0600 file, outside the repo
+        "key_backup_param": backup_param,
         "t_flip": time.time(),
         "dlq_before": dlq_before,
     }
     _save_state()
 
-    # Probe loop: each probe either succeeds on a cached good key
-    # (published — flip not yet visible; harmless normal review) or takes
-    # the 401-after-refetch path (discarded_error + notice, same receive).
-    notice: tuple[int, dict[str, Any]] | None = None
-    probe_ts = 0.0
-    deadline = time.monotonic() + 45 * MINUTE
-    while notice is None and time.monotonic() < deadline:
-        guid = _inject(sha0, base_sha)
-        probe_ts = time.time()
-        since = probe_ts - 5
+    # Any early assert below must still restore the flipped key.
+    key_restored = False
+    try:
+        # Probe loop: each probe either succeeds on a cached good key
+        # (published — flip not yet visible; harmless normal review) or takes
+        # the 401-after-refetch path (discarded_error + notice, same receive).
+        notice: tuple[int, dict[str, Any]] | None = None
+        probe_ts = 0.0
+        deadline = time.monotonic() + 45 * MINUTE
+        while notice is None and time.monotonic() < deadline:
+            guid = _inject(sha0, base_sha)
+            probe_ts = time.time()
+            since = probe_ts - 5
 
-        def _probe_settled(g: str = guid, s: float = since) -> bool:
-            return bool(_guid_lines(g, s))
+            def _probe_settled(g: str = guid, s: float = since) -> bool:
+                return bool(_guid_lines(g, s))
 
-        try:
-            _poll(
-                _probe_settled,
-                240.0,
-                lambda g: f"probe {g[:8]}: waiting for terminal line",
-                guid,
-            )
-        except pytest.fail.Exception:
-            continue  # lost probe (quiet window / cold start) — re-probe
-        lines = _guid_lines(guid, since)
-        flagged = [ln for ln in lines if str(ln[1].get("failure_notice_published")) == "true"]
-        if flagged:
-            notice = flagged[-1]
-        # else: published on the cached good key — loop and re-probe.
+            try:
+                _poll(
+                    _probe_settled,
+                    240.0,
+                    lambda g: f"probe {g[:8]}: waiting for terminal line",
+                    guid,
+                )
+            except pytest.fail.Exception:
+                continue  # lost probe (quiet window / cold start) — re-probe
+            lines = _guid_lines(guid, since)
+            flagged = [ln for ln in lines if str(ln[1].get("failure_notice_published")) == "true"]
+            if flagged:
+                notice = flagged[-1]
+            # else: published on the cached good key — loop and re-probe.
 
-    assert notice is not None, (
-        "no delivery took the LLM_401 path within 45 min of the flip "
-        "(TTL propagation + probes exhausted)"
-    )
-    ts, line = notice
-    latency = ts / 1000 - probe_ts
-    assert latency <= 240.0, (
-        f"permanent-class notice must be immediate (got {latency:.0f}s; "
-        "the transient bound is ~48 min)"
-    )
-    assert line.get("status") == "discarded_error", "401-after-refetch completes non-retryably"
+        assert notice is not None, (
+            "no delivery took the LLM_401 path within 45 min of the flip "
+            "(TTL propagation + probes exhausted)"
+        )
+        ts, line = notice
+        latency = ts / 1000 - probe_ts
+        assert latency <= 240.0, (
+            f"permanent-class notice must be immediate (got {latency:.0f}s; "
+            "the transient bound is ~48 min)"
+        )
+        assert line.get("status") == "discarded_error", "401-after-refetch completes non-retryably"
 
-    canonical = _canonical_comments()
-    assert len(canonical) == 1
-    expected = NOTICE_TEMPLATE.format(head_sha=sha0)
-    assert expected in str(canonical[0]["body"]), "comment must carry the fixed failure template"
+        canonical = _canonical_comments()
+        assert len(canonical) == 1
+        expected = NOTICE_TEMPLATE.format(head_sha=sha0)
+        assert expected in str(canonical[0]["body"]), (
+            "comment must carry the fixed failure template"
+        )
 
-    _put_param(SSM_KEY, original_key)
-    assert _get_param(SSM_KEY) == original_key, "api key must be restored verbatim"
-    state["l"]["guid"] = notice[1].get("delivery_guid")
-    state["l"]["t_notice"] = ts / 1000
-    state["l"]["latency_s"] = latency
-    state["l"]["dlq_after"] = _queue_depth(DLQ_QUEUE)
-    _save_state()
-    assert state["l"]["dlq_after"] == dlq_before, "non-retryable 401 must NOT land in the DLQ"
+        _put_param(SSM_KEY, original_key)
+        assert _get_param(SSM_KEY) == original_key, "api key must be restored verbatim"
+        key_restored = True
+        state["l"]["guid"] = notice[1].get("delivery_guid")
+        state["l"]["t_notice"] = ts / 1000
+        state["l"]["latency_s"] = latency
+        state["l"]["dlq_after"] = _queue_depth(DLQ_QUEUE)
+        _save_state()
+        assert state["l"]["dlq_after"] == dlq_before, "non-retryable 401 must NOT land in the DLQ"
+    finally:
+        if not key_restored:
+            _put_param(SSM_KEY, original_key)
+            assert _get_param(SSM_KEY) == original_key, "finally-restore of the api key failed"
 
 
 # --- (l2)+(m)+(n) transient exhaustion drill -------------------------------
@@ -449,6 +524,28 @@ def test_stage_transient_drill():
     see the module docstring for the timeline and safety notes."""
     state = _load_state()
     drill = state.setdefault("drill", {})
+
+    # Stages A-G run inside one try/finally: any early assert between the
+    # endpoint flip (A) and its restore (F) still restores the SSM value,
+    # so a failed drill never leaves the dead-port endpoint behind.
+    # (Stage G runs after the restore; it shares the helper so resume
+    # keeps one entry point.)
+    if "t_restore" not in drill:
+        try:
+            _drill_flip_to_restore(drill)
+        finally:
+            if "t_restore" not in drill and "endpoint_backup" in drill:
+                _put_param(SSM_ENDPOINT, drill["endpoint_backup"])
+                assert _get_param(SSM_ENDPOINT) == drill["endpoint_backup"], (
+                    "finally-restore of the endpoint failed"
+                )
+
+
+def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
+    """Stages A-G of the transient drill (see test_stage_transient_drill).
+
+    Split out so the caller can wrap the flip-to-restore span in a single
+    try/finally. Every stage guard stays resumable via the state file."""
 
     # Stage A: back up + flip the endpoint (same host, dead port).
     if "t0" not in drill:
@@ -525,16 +622,19 @@ def test_stage_transient_drill():
     if "t_notice_m1" not in drill:
         deadline = drill["m1_first_ts"] + 56 * MINUTE
 
-        def _m1_notice() -> bool:
-            lines = _guid_lines(drill["m1"], drill["t0"] - 5, head_sha=drill["sha0"], field="true")
-            if lines:
-                drill["t_notice_m1"] = lines[-1][0] / 1000
-                return True
-            return False
+        def _m1_notice_lines() -> list[tuple[int, dict[str, Any]]]:
+            # Pure predicate helper: no _STATE/drill mutation — the caller
+            # records t_notice_m1 explicitly after _poll converges.
+            return _guid_lines(drill["m1"], drill["t0"] - 5, head_sha=drill["sha0"], field="true")
 
         budget = max(deadline - time.time(), 60.0)
         elapsed = f"t0+{((time.time() - drill['t0']) / MINUTE):.0f}m"
-        _poll(_m1_notice, budget, lambda: f"waiting for M1 final-attempt notice ({elapsed})")
+        _poll(
+            lambda: bool(_m1_notice_lines()),
+            budget,
+            lambda: f"waiting for M1 final-attempt notice ({elapsed})",
+        )
+        drill["t_notice_m1"] = _m1_notice_lines()[-1][0] / 1000
         span = drill["t_notice_m1"] - drill["m1_first_ts"]
         assert span <= 55 * MINUTE, (
             f"SC-006 bound: final-attempt notice at +{span / MINUTE:.0f}m of retrying"
@@ -641,19 +741,18 @@ def test_stage_transient_drill():
             drill["push_note"] = "us5-s3"
             _save_state()
 
-        def _m3_skipped() -> bool:
-            lines = _guid_lines(cycler, since_f, head_sha=drill["sha2"], field="skipped-stale")
-            if lines:
-                drill["t_m3_skipped"] = lines[-1][0] / 1000
-                return True
-            return False
+        def _m3_skipped_lines() -> list[tuple[int, dict[str, Any]]]:
+            # Pure predicate helper: no _STATE/drill mutation — the caller
+            # records t_m3_skipped explicitly after _poll converges.
+            return _guid_lines(cycler, since_f, head_sha=drill["sha2"], field="skipped-stale")
 
         budget = max(r4_ts + 15 * MINUTE - time.time(), 60.0)
         _poll(
-            _m3_skipped,
+            lambda: bool(_m3_skipped_lines()),
             budget,
             lambda: f"waiting for M3 skipped-stale (push_at={drill['push_at']:.0f})",
         )
+        drill["t_m3_skipped"] = _m3_skipped_lines()[-1][0] / 1000
         _put_param(SSM_ENDPOINT, drill["endpoint_backup"])
         assert _get_param(SSM_ENDPOINT) == drill["endpoint_backup"]
         drill["t_restore"] = time.time()
@@ -675,32 +774,39 @@ def test_stage_transient_drill():
             drill["t_recovery_probe"] = time.time()
             _save_state()
 
-        def _reverted() -> bool:
+        def _reverted_snapshot() -> dict[str, Any] | None:
+            # Pure predicate helper: no _STATE mutation — the caller stores
+            # n_observed explicitly after _poll converges.
             canonical = _canonical_comments()
             if len(canonical) != 1:
-                return False
+                return None
             body = str(canonical[0]["body"])
             item = _state_item()
             if item is None or item.get("status") != "ACTIVE":
-                return False
+                return None
             if str(item.get("head_sha")) not in {
                 drill["sha2"],
                 drill.get("sha3", ""),
                 drill.get("recovery_sha", ""),
             }:
-                return False
+                return None
             if any(NOTICE_TEMPLATE.format(head_sha=drill[sha]) in body for sha in ("sha0", "sha2")):
-                return False
-            _STATE["n_observed"] = {
+                return None
+            return {
                 "head": str(item.get("head_sha")),
                 "comment": canonical[0],
             }
-            return True
 
         budget = max(drill["t_restore"] + 45 * MINUTE - time.time(), 10 * MINUTE)
         elapsed = f"t0+{((time.time() - drill['t0']) / MINUTE):.0f}m"
-        _poll(_reverted, budget, lambda: f"state={_state_item()} ({elapsed})")
-        observed = _STATE["n_observed"]
+        _poll(
+            lambda: _reverted_snapshot() is not None,
+            budget,
+            lambda: f"state={_state_item()} ({elapsed})",
+        )
+        observed = _reverted_snapshot()
+        assert observed is not None, "revert snapshot lost after convergence"
+        _STATE["n_observed"] = observed
         drill["n_head"] = observed["head"]
         if observed["head"] != drill["sha2"]:
             drill["sha3"] = observed["head"]  # a recovery push was needed
@@ -790,23 +896,49 @@ def test_stage_redrive_drain_and_converge():
     try:
         task = sqs.start_message_move_task(SourceArn=dlq_arn, DestinationArn=work_arn)
         drill["move_task_handle"] = task.get("TaskHandle", "")
-    except Exception as exc:  # noqa: BLE001 — permission shape varies; runbook deviation is logged
+    except botocore.exceptions.BotoCoreError as exc:
+        # Narrowed to the transport/service fault family: permission and
+        # shape variance fall here. Programming errors (TypeError,
+        # KeyError, ...) stay loud.
         drill["move_task_error"] = f"{type(exc).__name__}: {exc}"
         # Runbook deviation (logged per step 5): surgical equivalent move —
         # receive from the DLQ, re-send to the work queue, delete. Same
         # semantics as StartMessageMoveTask for a handful of messages.
+        # Custom MessageAttributes are carried over verbatim; SQS-managed
+        # system attributes (e.g. ApproximateReceiveCount) cannot be set
+        # via SendMessage and reset on the re-send — recorded, not hidden.
         moved = 0
         while True:
             batch = sqs.receive_message(
-                QueueUrl=dlq_url, MaxNumberOfMessages=10, VisibilityTimeout=60
+                QueueUrl=dlq_url,
+                MaxNumberOfMessages=10,
+                VisibilityTimeout=60,
+                AttributeNames=["All"],
+                MessageAttributeNames=["All"],
             ).get("Messages", [])
             if not batch:
                 break
             for message in batch:
-                sqs.send_message(QueueUrl=_queue_url(WORK_QUEUE), MessageBody=message["Body"])
+                send_kwargs: dict[str, Any] = {
+                    "QueueUrl": _queue_url(WORK_QUEUE),
+                    "MessageBody": message["Body"],
+                }
+                if message.get("MessageAttributes"):
+                    send_kwargs["MessageAttributes"] = {
+                        name: {
+                            key: attr[key]
+                            for key in ("StringValue", "BinaryValue", "DataType")
+                            if key in attr
+                        }
+                        for name, attr in message["MessageAttributes"].items()
+                    }
+                sqs.send_message(**send_kwargs)
                 sqs.delete_message(QueueUrl=dlq_url, ReceiptHandle=message["ReceiptHandle"])
                 moved += 1
         drill["manual_moved"] = moved
+        drill["manual_move_note"] = (
+            "custom MessageAttributes preserved; SQS-managed receive counts reset on re-send"
+        )
         moved_manually = True
     _save_state()
 
@@ -823,7 +955,26 @@ def test_stage_redrive_drain_and_converge():
 
     # Convergence: exactly one canonical comment, unchanged identity — the
     # redriven stale revisions (S0, S1 vs live head) must be fence-discarded.
-    time.sleep(30)  # let the redriven deliveries settle past the fence
+    # Condition-polled (work-queue drain + comment identity) with an overall
+    # timeout instead of a fixed settle sleep.
+    def _redrive_converged() -> bool:
+        # Pure predicate: no _STATE mutation — identity is asserted
+        # explicitly after _poll converges.
+        settled = _canonical_comments()
+        return (
+            len(settled) == 1
+            and int(settled[0]["id"]) == pre_id
+            and str(settled[0]["updated_at"]) == pre_updated
+        )
+
+    _poll(
+        lambda: _queue_depth(WORK_QUEUE) == 0 and _redrive_converged(),
+        15 * MINUTE,
+        lambda: (
+            f"work depth={_queue_depth(WORK_QUEUE)} "
+            f"dlq depth={_queue_depth(DLQ_QUEUE)} comments={len(_canonical_comments())}"
+        ),
+    )
     after = _canonical_comments()
     assert len(after) == 1, "constitution: exactly one canonical comment after redrive"
     assert int(after[0]["id"]) == pre_id, "redrive must not duplicate or replace the comment"
