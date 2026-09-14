@@ -232,6 +232,12 @@ def _llm_is_retryable(exc: LlmError) -> bool:
     error_class = exc.error_class
     if error_class in ("bad_endpoint", "http_401"):
         return False
+    if error_class == "invalid_key":
+        # LLM request-construction fault (malformed credential/header
+        # material): deterministic — retry cannot succeed. Stated as its
+        # own arm (not folded into the tuple above) so the contract row
+        # can never silently fall through to the retryable default below.
+        return False
     if error_class.startswith("http_4") and error_class != "http_429":
         return False
     return True
@@ -481,6 +487,141 @@ def _make_fence(
     return fence
 
 
+def _comment_write(
+    *,
+    creds: _Credentials,
+    github_transport: Callable[..., tuple[int, bytes]],
+    method: str,
+    url: str,
+    content: str,
+) -> int:
+    """One Issues-Comments write with the shared single-401 budget: the
+    first 401 invalidates the credential cache and retries once; a second
+    401 (or any other fault) propagates to the boundary classifier."""
+    try:
+        token = creds.current().github_token
+        return _github_write(github_transport, method, url, token, content)
+    except GitHubError as exc:
+        if exc.status == 401 and creds.refresh_once():
+            return _github_write(
+                github_transport, method, url, creds.current().github_token, content
+            )
+        raise
+
+
+def _comment_read(
+    *,
+    creds: _Credentials,
+    github_transport: Callable[..., tuple[int, bytes]],
+    url: str,
+) -> bytes:
+    """One GET with the shared single-401 budget; non-2xx → GitHubError
+    for the boundary classifier (403/404 complete, 429/5xx retry),
+    carrying a parsed `Retry-After` hint when supplied."""
+    token = creds.current().github_token
+    status, raw, headers = _unpack_transport_result(
+        github_transport("GET", url, _github_headers(token), b"")
+    )
+    if status == 401 and creds.refresh_once():
+        status, raw, headers = _unpack_transport_result(
+            github_transport("GET", url, _github_headers(creds.current().github_token), b"")
+        )
+    if not 200 <= status <= 299:
+        raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
+    return raw
+
+
+def _comment_delete(
+    *,
+    creds: _Credentials,
+    github_transport: Callable[..., tuple[int, bytes]],
+    repo_full_name: str,
+    comment_id: int,
+) -> None:
+    """One DELETE with the shared single-401 budget. DELETE has no
+    id-bearing reply (204 + empty body), so it bypasses `_github_write`'s
+    comment-id parse; only the status is classified."""
+    payload = json.dumps({"body": ""}, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    url = _comment_url(repo_full_name, comment_id)
+    token = creds.current().github_token
+    status, _, headers = _unpack_transport_result(
+        github_transport("DELETE", url, _github_headers(token), payload)
+    )
+    if status == 401 and creds.refresh_once():
+        status, _, headers = _unpack_transport_result(
+            github_transport("DELETE", url, _github_headers(creds.current().github_token), payload)
+        )
+    if status == 404:
+        return  # already gone is converged
+    if not 200 <= status <= 299:
+        raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
+
+
+def _github_comment_ports(
+    *,
+    repo_full_name: str,
+    pr_number: int,
+    creds: _Credentials,
+    github_transport: Callable[..., tuple[int, bytes]],
+) -> tuple[Any, Any, Any, Any]:
+    """Comment CRUD ports shared by the review publish path (`_make_publish`)
+    and the D2 notice path (`_attempt_notice`), as
+    `(list_page, create_comment, update_comment, delete_comment)`.
+
+    Single implementation of the single-401 budget, the 404 translations,
+    and the list-shape fallback: the former `_make_publish` closures and
+    `_notice_comment_ports` were line-identical duplicates, unified here
+    once Gates + US5 live acceptance proved the notice path in review.
+    Behavior is unchanged on both paths.
+    """
+
+    def list_page(page: int) -> Any:
+        raw = _comment_read(
+            creds=creds,
+            github_transport=github_transport,
+            url=f"{_comments_url(repo_full_name, pr_number)}?page={page}&per_page={PER_PAGE}",
+        )
+        try:
+            return json.loads(raw)
+        except ValueError:
+            # Not JSON at all: return raw so reconcile shape-validation
+            # maps it to list-unreadable (non-retryable), never a retry.
+            return raw
+
+    def create_comment(body: str) -> int:
+        return _comment_write(
+            creds=creds,
+            github_transport=github_transport,
+            method="POST",
+            url=_comments_url(repo_full_name, pr_number),
+            content=body,
+        )
+
+    def update_comment(comment_id: int, body: str) -> None:
+        try:
+            _comment_write(
+                creds=creds,
+                github_transport=github_transport,
+                method="PATCH",
+                url=_comment_url(repo_full_name, comment_id),
+                content=body,
+            )
+        except GitHubError as exc:
+            if exc.status == 404:
+                raise CommentNotFound(comment_id) from exc
+            raise
+
+    def delete_comment(comment_id: int) -> None:
+        _comment_delete(
+            creds=creds,
+            github_transport=github_transport,
+            repo_full_name=repo_full_name,
+            comment_id=comment_id,
+        )
+
+    return list_page, create_comment, update_comment, delete_comment
+
+
 def _make_publish(
     *,
     envelope: Envelope,
@@ -502,72 +643,24 @@ def _make_publish(
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
 
+    _list_page, _create, _update, _delete = _github_comment_ports(
+        repo_full_name=repo,
+        pr_number=pr_number,
+        creds=creds,
+        github_transport=github_transport,
+    )
+
     def _write(method: str, url: str, content: str) -> int:
-        try:
-            token = creds.current().github_token
-            return _github_write(github_transport, method, url, token, content)
-        except GitHubError as exc:
-            if exc.status == 401 and creds.refresh_once():
-                return _github_write(
-                    github_transport, method, url, creds.current().github_token, content
-                )
-            raise
-
-    def _read(url: str) -> bytes:
-        """One GET with the shared single-401 budget; non-2xx → GitHubError
-        for the boundary classifier (403/404 complete, 429/5xx retry),
-        carrying a parsed `Retry-After` hint when supplied."""
-        token = creds.current().github_token
-        status, raw, headers = _unpack_transport_result(
-            github_transport("GET", url, _github_headers(token), b"")
+        # PATCH fast-path when a stored `comment_id` exists: the raw write
+        # (a 404 here means recovery, not CommentNotFound) — same shared
+        # single-401 budget as the ports above.
+        return _comment_write(
+            creds=creds,
+            github_transport=github_transport,
+            method=method,
+            url=url,
+            content=content,
         )
-        if status == 401 and creds.refresh_once():
-            status, raw, headers = _unpack_transport_result(
-                github_transport("GET", url, _github_headers(creds.current().github_token), b"")
-            )
-        if not 200 <= status <= 299:
-            raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
-        return raw
-
-    def _list_page(page: int) -> Any:
-        raw = _read(f"{_comments_url(repo, pr_number)}?page={page}&per_page={PER_PAGE}")
-        try:
-            return json.loads(raw)
-        except ValueError:
-            # Not JSON at all: return raw so reconcile shape-validation
-            # maps it to list-unreadable (non-retryable), never a retry.
-            return raw
-
-    def _create(body: str) -> int:
-        return _write("POST", _comments_url(repo, pr_number), body)
-
-    def _update(comment_id: int, body: str) -> None:
-        try:
-            _write("PATCH", _comment_url(repo, comment_id), body)
-        except GitHubError as exc:
-            if exc.status == 404:
-                raise CommentNotFound(comment_id) from exc
-            raise
-
-    def _delete(comment_id: int) -> None:
-        # DELETE has no id-bearing reply (204 + empty body), so it bypasses
-        # `_github_write`'s comment-id parse; only the status is classified.
-        payload = json.dumps({"body": ""}, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-        url = _comment_url(repo, comment_id)
-        token = creds.current().github_token
-        status, _, headers = _unpack_transport_result(
-            github_transport("DELETE", url, _github_headers(token), payload)
-        )
-        if status == 401 and creds.refresh_once():
-            status, _, headers = _unpack_transport_result(
-                github_transport(
-                    "DELETE", url, _github_headers(creds.current().github_token), payload
-                )
-            )
-        if status == 404:
-            return  # already gone is converged
-        if not 200 <= status <= 299:
-            raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
 
     def _recover(content: str, dead_comment_id: int | None) -> int:
         if dead_comment_id is not None:
@@ -700,6 +793,8 @@ def _notice_trigger(exc: BaseException) -> NoticeTrigger | None:
     if isinstance(exc, LlmError):
         if exc.error_class == "http_401":
             return NoticeTrigger.LLM_401
+        if exc.error_class == "invalid_key":
+            return NoticeTrigger.INVALID_KEY
         if exc.error_class == "invalid_response":
             return NoticeTrigger.LLM_UNUSABLE
         if exc.error_class in (
@@ -732,85 +827,6 @@ def _notice_trigger(exc: BaseException) -> NoticeTrigger | None:
     return None
 
 
-def _notice_comment_ports(
-    *,
-    repo_full_name: str,
-    pr_number: int,
-    creds: _Credentials,
-    github_transport: Callable[..., tuple[int, bytes]],
-) -> tuple[Any, Any, Any, Any]:
-    """Comment CRUD ports for the D2 notice path, as
-    `(list_page, create_comment, update_comment, delete_comment)`.
-
-    Mirrors the `_make_publish` closures (shared single-401 budget, same
-    404 translations, same list-shape fallback); kept as a separate
-    builder so the live-pinned publish path stays untouched — a future
-    ticket may unify them once this path proves itself in review.
-    """
-
-    def _write(method: str, url: str, content: str) -> int:
-        try:
-            token = creds.current().github_token
-            return _github_write(github_transport, method, url, token, content)
-        except GitHubError as exc:
-            if exc.status == 401 and creds.refresh_once():
-                return _github_write(
-                    github_transport, method, url, creds.current().github_token, content
-                )
-            raise
-
-    def _read(url: str) -> bytes:
-        token = creds.current().github_token
-        status, raw, headers = _unpack_transport_result(
-            github_transport("GET", url, _github_headers(token), b"")
-        )
-        if status == 401 and creds.refresh_once():
-            status, raw, headers = _unpack_transport_result(
-                github_transport("GET", url, _github_headers(creds.current().github_token), b"")
-            )
-        if not 200 <= status <= 299:
-            raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
-        return raw
-
-    def list_page(page: int) -> Any:
-        raw = _read(f"{_comments_url(repo_full_name, pr_number)}?page={page}&per_page={PER_PAGE}")
-        try:
-            return json.loads(raw)
-        except ValueError:
-            return raw
-
-    def create_comment(body: str) -> int:
-        return _write("POST", _comments_url(repo_full_name, pr_number), body)
-
-    def update_comment(comment_id: int, body: str) -> None:
-        try:
-            _write("PATCH", _comment_url(repo_full_name, comment_id), body)
-        except GitHubError as exc:
-            if exc.status == 404:
-                raise CommentNotFound(comment_id) from exc
-            raise
-
-    def delete_comment(comment_id: int) -> None:
-        payload = json.dumps({"body": ""}, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-        url = _comment_url(repo_full_name, comment_id)
-        token = creds.current().github_token
-        status, _, headers = _unpack_transport_result(
-            github_transport("DELETE", url, _github_headers(token), payload)
-        )
-        if status == 401 and creds.refresh_once():
-            status, _, headers = _unpack_transport_result(
-                github_transport(
-                    "DELETE", url, _github_headers(creds.current().github_token), payload
-                )
-            )
-        if status == 404:
-            return
-        if not 200 <= status <= 299:
-            raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
-
-    return list_page, create_comment, update_comment, delete_comment
-
-
 def _attempt_notice(
     *,
     exc: BaseException,
@@ -840,7 +856,7 @@ def _attempt_notice(
     ):
         return NoticeDisposition.PUBLISHED_FALSE.value
     try:
-        list_page, create_comment, update_comment, delete_comment = _notice_comment_ports(
+        list_page, create_comment, update_comment, delete_comment = _github_comment_ports(
             repo_full_name=envelope.repo_full_name,
             pr_number=envelope.pr_number,
             creds=creds,

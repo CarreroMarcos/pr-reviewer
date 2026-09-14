@@ -30,11 +30,11 @@ logic, no new state fields (R6), no new permissions.
 Trigger mapping (`should_publish_notice`): pure function over the D2
 contract table. Transient/LLM-unusable rows publish only at the FINAL
 queue attempt (`receive_count >= max_receive_count`, default 5 —
-`maxReceiveCount`; tolerate above after redrive); assemble-invalid and
-LLM-401 publish immediately; GitHub-401 / lost-access / invalid-envelope
-/ superseded / stale / duplicate / non-failures skip. Parsing
-`int(Attributes["ApproximateReceiveCount"])` out of the SQS record is
-worker (T054) scope — this function takes the parsed ints.
+`maxReceiveCount`; tolerate above after redrive); assemble-invalid,
+LLM-401, and invalid-key publish immediately; GitHub-401 / lost-access
+/ invalid-envelope / superseded / stale / duplicate / non-failures
+skip. Parsing `int(Attributes["ApproximateReceiveCount"])` out of the
+SQS record is worker (T054) scope — this function takes the parsed ints.
 
 Disposition boundary: `publish_failure_notice` RETURNS the HLD §4.3 /
 research-R8 `failure_notice_published` value (`NoticeDisposition`:
@@ -98,6 +98,9 @@ class NoticeTrigger(StrEnum):
     LLM_UNUSABLE = "llm_unusable"  # timeout/429/5xx/invalid output, retried
     ASSEMBLE_INVALID = "assemble_invalid"  # structural validation failure
     LLM_401 = "llm_401"  # LLM auth after the single re-fetch
+    # LLM request-construction fault — D2 trigger-table row
+    # (specs/001-pr-reviewer/contracts/canonical-comment.md).
+    INVALID_KEY = "invalid_key"
     GITHUB_401 = "github_401"  # GitHub auth after the single re-fetch
     LIST_FORBIDDEN = "list_forbidden"  # 403/404 on list/GET (lost access)
     INVALID_ENVELOPE = "invalid_envelope"  # schema-invalid/malformed message
@@ -173,7 +176,11 @@ def should_publish_notice(
     """
     if trigger in (NoticeTrigger.TRANSIENT, NoticeTrigger.LLM_UNUSABLE):
         return receive_count >= max_receive_count
-    if trigger in (NoticeTrigger.ASSEMBLE_INVALID, NoticeTrigger.LLM_401):
+    if trigger in (
+        NoticeTrigger.ASSEMBLE_INVALID,
+        NoticeTrigger.LLM_401,
+        NoticeTrigger.INVALID_KEY,
+    ):
         return True
     return False
 

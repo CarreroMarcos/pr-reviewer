@@ -56,7 +56,7 @@ class LlmError(Exception):
     """Typed LLM failure for queue-retry semantics.
 
     `error_class` is machine-readable: `bad_endpoint`, `timeout`,
-    `connection_error`, `http_{status}`, `invalid_response`.
+    `connection_error`, `http_{status}`, `invalid_response`, `invalid_key`.
     The message never carries prompt, diff, completion, or key material.
     """
 
@@ -138,6 +138,13 @@ def review_diff(
     """
     if not api_key or not model:
         raise LlmError("bad_endpoint")
+    if isinstance(api_key, str) and not api_key.strip():
+        # Blank-but-truthy credential (whitespace-only): stdlib header
+        # validation accepts bare spaces, so without this guard the key
+        # would travel to the provider and fail there. Classify it here
+        # as malformed credential material instead — deterministic,
+        # non-retryable (`invalid_key`).
+        raise LlmError("invalid_key")
     host, port, path = _split_endpoint(endpoint)
     factory = _connection_factory if _connection_factory is not None else _default_factory
     clock = _clock if _clock is not None else time.monotonic
@@ -214,6 +221,44 @@ def review_diff(
         )
         raise LlmError("timeout") from None
     except OSError:
+        elapsed_ms = max(0, int((clock() - start) * 1000))
+        logger.warning(
+            "llm_review",
+            extra={
+                "status": "llm_error",
+                "error_class": "connection_error",
+                "duration_ms": elapsed_ms,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        raise LlmError("connection_error") from None
+    except ValueError:
+        # Request-construction fault: `http.client.putheader` rejects
+        # control characters in the Authorization value with a ValueError
+        # whose message EMBEDS the full header value (`Bearer <API KEY>`).
+        # `from None` (like the decode fault above) keeps key material out
+        # of tracebacks; the fixed `error_class` keeps it out of logs.
+        # Never include the ValueError text in any message or log field.
+        elapsed_ms = max(0, int((clock() - start) * 1000))
+        logger.warning(
+            "llm_review",
+            extra={
+                "status": "llm_error",
+                "error_class": "invalid_key",
+                "duration_ms": elapsed_ms,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        raise LlmError("invalid_key") from None
+    except http.client.HTTPException:
+        # Transport faults escaping the typed handlers above (BadStatusLine,
+        # IncompleteRead). Ordered AFTER `OSError` deliberately:
+        # RemoteDisconnected subclasses both, and its pre-existing OSError
+        # path owns it — this arm covers only the pure-HTTPException rest.
         elapsed_ms = max(0, int((clock() - start) * 1000))
         logger.warning(
             "llm_review",

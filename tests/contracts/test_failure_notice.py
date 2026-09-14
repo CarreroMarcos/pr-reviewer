@@ -453,6 +453,8 @@ def test_transport_failure_returns_false_never_raises():
         (NoticeTrigger.ASSEMBLE_INVALID, 1, True),
         (NoticeTrigger.ASSEMBLE_INVALID, 5, True),
         (NoticeTrigger.LLM_401, 1, True),
+        (NoticeTrigger.INVALID_KEY, 1, True),
+        (NoticeTrigger.INVALID_KEY, 5, True),
         # No-rows → skip at any count.
         (NoticeTrigger.GITHUB_401, 5, False),
         (NoticeTrigger.LIST_FORBIDDEN, 5, False),

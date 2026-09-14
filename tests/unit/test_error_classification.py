@@ -46,7 +46,9 @@ import json
 
 import pytest
 
-from worker_handler import GitHubError, handler
+from common.failure_notice import NoticeTrigger
+from common.llm import LlmError
+from worker_handler import GitHubError, _notice_trigger, handler
 
 REPO = "octo-org/hello-world"
 PR_NUMBER = 42
@@ -599,3 +601,43 @@ def test_github_401_skips_notice():
     assert line["status"] == "discarded_error"
     assert line["error_class"] == "diff_http_error_401"
     assert line["failure_notice_published"] == "false"
+
+
+# --- SPR-58: invalid_key trigger row + final-attempt 429 combination ---
+
+
+def test_notice_trigger_invalid_key_maps_to_immediate_row():
+    """`invalid_key` (LLM request-construction fault) maps to the new D2
+    immediate row — not transient, not skipped."""
+    assert _notice_trigger(LlmError("invalid_key")) is NoticeTrigger.INVALID_KEY
+    assert _notice_trigger(LlmError("http_400")) is None
+
+
+def test_final_attempt_429_publishes_notice_then_raises_with_visibility():
+    """429-combination (current final-attempt semantics, pinned — not
+    changed): GitHub 429 with `Retry-After: 120` at
+    `ApproximateReceiveCount == maxReceiveCount` (5) → visibility extended
+    per the hint, the D2 notice publishes (transient-at-final), the
+    `retry_queued` line carries `failure_notice_published: true`, and the
+    ORIGINAL error still raises so DLQ/alert/redrive proceed unchanged."""
+    github = ScriptedGitHub(
+        [
+            (200, _list_body()),
+            (429, b'{"message":"throttled"}', {"Retry-After": "120"}),
+            (200, _list_body()),
+            (201, json.dumps({"id": NOTICE_ID}).encode()),
+            (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),
+        ]
+    )
+    h = Harness(meta=[(200, SHA_B), (200, SHA_B)], github=github)
+    with pytest.raises(GitHubError) as exc_info:
+        h.run(receive_count="5", env_queue_url=QUEUE_URL)
+    assert exc_info.value.status == 429
+    assert h.sqs.visibility_calls == [
+        {"QueueUrl": QUEUE_URL, "ReceiptHandle": "rh-1", "VisibilityTimeout": 120}
+    ]
+    assert github.methods() == ["GET", "POST", "GET", "POST", "GET"]
+    (line,) = h.log_lines()
+    assert line["status"] == "retry_queued"
+    assert line["error_class"] == "http_429"
+    assert line["failure_notice_published"] == "true"
