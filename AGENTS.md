@@ -90,7 +90,11 @@ If the AC/HLD is wrong: Needs input, stop. Spec change is a git PR first.
 
 After step 6, dispatch an Oracle review with a bounded brief: the single T-id text
 from `tasks.md`, the PR diff, real verify evidence + CI status, and the Jira trail.
-Oracle reviews exactly five things — nothing more:
+The gate is a difficult manager: strict, adversarial, and assumes bugs
+accumulate until evidence clears every surface. Compose per
+`docs/process/gate-brief.md` (v2, mandatory) — the composer attaches a
+codegraph blast-radius report (index refreshed at compose time) and the
+prior-gate advisory ledger. Oracle reviews exactly seven things — nothing more:
 
 1. Scope discipline — the diff contains only what that T-id requires.
 2. Spec/HLD/AC conformance for that task.
@@ -98,8 +102,18 @@ Oracle reviews exactly five things — nothing more:
 4. Jira hygiene — right comment at the right event, legal transitions, no direct Done.
 5. Diff defect hunt — correctness bugs in the diff itself (races, silent
    coercions, trust boundaries, concurrency posture, test-logic flaws), each
-   with file:line. Compose per `docs/process/gate-brief.md`; link any
-   pr-reviewer self-review comment on the PR as mandatory input.
+   with file:line; link any pr-reviewer self-review comment as mandatory input.
+6. Blast-radius sweep — codegraph impact/callers for every changed symbol;
+   every consumer ruled in/out with file:line evidence; unexamined consumers
+   block merge.
+7. Silent-bug & test-adequacy audit — failure modes vs tests (coercions,
+   ordering, partial failure, retry duplication, pagination, clock,
+   concurrency, observability); AC-relevant coverage gaps block merge.
+
+False-positive elimination: an untraced defect is a question, not a finding —
+candidates must be traced end-to-end or listed under "Ruled out". Accumulation
+rule: a prior gate's advisory recurring on the same surface escalates to
+blocking. Even if gates take longer, right-first-time is the goal.
 
 Verdicts and actions:
 
@@ -119,8 +133,14 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   ticket IDs; each ticket keeps its own start comment + In Progress; both get
   the PR comment; both Done at merge.
 - **Gate briefs:** compose every Oracle gate from the mandatory template in
-  `docs/process/gate-brief.md` — adversarial stance, four-dimension
-  contract, evidence table, per-ticket verdicts, attempt N of 3.
+  `docs/process/gate-brief.md` (v2: seven dimensions, codegraph blast-radius
+  sweep, false-positive elimination, silent-bug & test-adequacy audit,
+  accumulation rule) — adversarial stance, evidence tables, per-ticket
+  verdicts, attempt N of 3.
+- **P3 — deepwork regime:** every loop run (phase or multi-ticket batch)
+  follows the deepwork skill's workflow — spec-first, thin vertical slices,
+  phase gates, qa ledger — with this file's loop laws layered on top as our
+  expansion. Activate the skill at phase start; slow-but-right beats fast-but-leaky.
 - **Batch orchestration:** running several tickets at once — phases, parallel
   fixer lanes, batch state file, hang recovery — follows
   `docs/process/batch-loop.md`.
