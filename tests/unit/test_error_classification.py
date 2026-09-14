@@ -436,18 +436,28 @@ def test_llm_429_raises_without_visibility_adjustment():
 
 def test_401_twice_completes_after_single_refetch():
     """LLM 401 → cache-bust → re-fetch → 401 again: terminal. Exactly two
-    SSM fetches (the single in-request retry budget), no publish, no
-    raise, `discarded_error`."""
+    SSM fetches (the single in-request retry budget), no raise,
+    `discarded_error`. D2: LLM-401 is a permanent row, so the notice
+    publishes immediately alongside completion."""
+    notice_id = 888
+    github = ScriptedGitHub(
+        [
+            (200, _list_body()),
+            (201, json.dumps({"id": notice_id}).encode()),
+            (200, _list_body(_comment(notice_id, "n " + MARKER))),
+        ]
+    )
     h = Harness(
-        meta=[(200, SHA_B)],
+        meta=[(200, SHA_B), (200, SHA_B)],
         llm_script=[("response", 401, b"{}"), ("response", 401, b"{}")],
-        github=ScriptedGitHub([]),
+        github=github,
     )
     assert h.run() == {"ok": True, "results": ["discarded_error"]}
-    assert h.github.calls == []
+    assert github.methods() == ["GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["error_class"] == "http_401"
+    assert line["failure_notice_published"] == "true"
 
 
 # --- LLM timeout / invalid output → raise for queue retry ---
@@ -488,17 +498,29 @@ def test_llm_invalid_output_raises():
 
 def test_assemble_refused_completes():
     """Model output failing the validate gate → `AssembleError` → complete
-    (`discarded_error`): invalid content is never published, never retried."""
+    (`discarded_error`): the invalid content itself is never published and
+    never retried. D2: assemble-invalid is a permanent row, so the fixed
+    template notice publishes immediately (only the template goes out)."""
+    notice_id = 888
+    github = ScriptedGitHub(
+        [
+            (200, _list_body()),
+            (201, json.dumps({"id": notice_id}).encode()),
+            (200, _list_body(_comment(notice_id, "n " + MARKER))),
+        ]
+    )
     h = Harness(
-        meta=[(200, SHA_B)],
+        meta=[(200, SHA_B), (200, SHA_B)],
         llm_script=[("response", 200, _completion("plain text without sections"))],
-        github=ScriptedGitHub([]),
+        github=github,
     )
     assert h.run() == {"ok": True, "results": ["discarded_error"]}
-    assert h.github.calls == []
+    assert github.methods() == ["GET", "POST", "GET"]
+    assert all("plain text" not in (call["body"].decode() or "") for call in github.calls)
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["error_class"].startswith("assemble_")
+    assert line["failure_notice_published"] == "true"
 
 
 # --- D2: final-attempt transient → notice published, original still raises ---
@@ -530,7 +552,7 @@ def test_final_attempt_transient_publishes_notice_then_raises():
     assert "could not be completed" in posts[0]["body"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
-    assert line["failure_notice_published"] is True
+    assert line["failure_notice_published"] == "true"
 
 
 # --- D2: permanent assemble failure → notice immediately ---
@@ -559,7 +581,7 @@ def test_assemble_failure_publishes_notice_immediately():
     assert github.methods() == ["GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
-    assert line["failure_notice_published"] is True
+    assert line["failure_notice_published"] == "true"
 
 
 # --- D2: GitHub-401 → no notice (`false`) ---
@@ -576,4 +598,4 @@ def test_github_401_skips_notice():
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["error_class"] == "diff_http_error_401"
-    assert line["failure_notice_published"] is False
+    assert line["failure_notice_published"] == "false"

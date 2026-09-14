@@ -59,7 +59,13 @@ Ports (duck-typed — fakes mirror these exactly):
 * ssm: `get_parameters(Names=..., WithDecryption=True)` (GetParameters shape).
 * diff transport: `(url, headers) -> common.diff.HttpResponse`.
 * llm factory: `(host, port, *, timeout)` (`http.client.HTTPSConnection` shape).
-* github transport: `(method, url, headers, body) -> (status, body_bytes)`.
+* github transport: `(method, url, headers, body) -> (status, body_bytes)`
+  (transports MAY append response headers as an optional third element —
+  `(status, body, headers)` with case-insensitive header names — so the
+  worker can honor `Retry-After` without breaking two-tuple doubles; the
+  diff seam (`common.diff.HttpResponse.headers`) already carries headers,
+  while `common.llm` surfaces only `error_class`, so LLM/diff 429s raise
+  without visibility adjustment).
 
 Pure stdlib + boto3. No secrets in logs or error text (Constitution III).
 """
@@ -82,6 +88,12 @@ from common.assemble import AssembleError, build_comment, render_diff_text
 from common.config import ConfigError, ConfigProvider
 from common.diff import DiffError, fetch_diff, fetch_pr_head_sha
 from common.envelope import Envelope, EnvelopeError, validate_envelope
+from common.failure_notice import (
+    NoticeDisposition,
+    NoticeTrigger,
+    publish_failure_notice,
+    should_publish_notice,
+)
 from common.llm import LlmError, review_diff
 from common.logs import build_event, emit
 from common.protocol import ConditionalCheckFailed, OutcomeKind, run_review
@@ -107,11 +119,17 @@ class GitHubError(Exception):
     """Typed GitHub failure: `status` is the HTTP status (`None` for
     transport failures or unparseable bodies); `error_class` is
     machine-readable (`http_{status}`, `transport_error`,
-    `invalid_response`). Never carries token material."""
+    `invalid_response`); `retry_after` carries a parsed `Retry-After`
+    hint in seconds when the response supplied one (`None` otherwise —
+    callers without header visibility leave it unset). Never carries
+    token material."""
 
-    def __init__(self, status: int | None, error_class: str) -> None:
+    def __init__(
+        self, status: int | None, error_class: str, retry_after: int | None = None
+    ) -> None:
         self.status = status
         self.error_class = error_class
+        self.retry_after = retry_after
         super().__init__(f"github request failed: {error_class}")
 
 
@@ -277,17 +295,54 @@ def _github_headers(token: str) -> dict[str, str]:
     }
 
 
+# SQS `ChangeMessageVisibility` ceiling: 12 hours. A `Retry-After` beyond
+# it (or garbage) is ignored — the queue default applies.
+_MAX_VISIBILITY_TIMEOUT = 12 * 3600
+
+
+def _unpack_transport_result(result: Any) -> tuple[int, bytes, dict[str, str]]:
+    """Split a transport reply into (status, body, response headers).
+
+    Transports return `(status, body)` or `(status, body, headers)`; the
+    optional third element keeps every existing two-tuple double working
+    while header-carrying doubles (and the production transport) expose
+    `Retry-After`. Header names are normalized to lowercase.
+    """
+    status, raw = result[0], result[1]
+    headers: dict[str, str] = {}
+    if len(result) > 2 and isinstance(result[2], dict):
+        headers = {str(key).lower(): value for key, value in result[2].items()}
+    return status, raw, headers
+
+
+def _parse_retry_after(headers: dict[str, str]) -> int | None:
+    """Parse a `Retry-After` delay in seconds; `None` when absent or
+    unusable (non-numeric, non-positive, or beyond the SQS ceiling)."""
+    raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        seconds = int(str(raw).strip())
+    except (ValueError, TypeError):
+        return None
+    if not 1 <= seconds <= _MAX_VISIBILITY_TIMEOUT:
+        return None
+    return seconds
+
+
 def _default_github_transport(
     method: str, url: str, headers: dict[str, str], body: bytes
-) -> tuple[int, bytes]:
+) -> tuple[int, bytes, dict[str, str]]:
     """Live Issues-Comments transport: non-2xx surfaces as status (the
-    caller raises `GitHubError`); only transport failures raise here."""
+    caller raises `GitHubError`); only transport failures raise here.
+    Returns response headers as the third element so the worker can honor
+    `Retry-After` (HLD §2.3 item 8 throttling row)."""
     request = Request(url, data=body, headers=dict(headers), method=method)  # noqa: S310
     try:
         with urlopen(request, timeout=GITHUB_TIMEOUT_SECONDS) as response:  # noqa: S310
-            return response.status, response.read()
+            return response.status, response.read(), dict(response.headers)
     except HTTPError as exc:
-        return exc.code, exc.read()
+        return exc.code, exc.read(), dict(exc.headers)
     except (TimeoutError, URLError, OSError) as exc:
         raise GitHubError(None, "transport_error") from exc
 
@@ -321,11 +376,14 @@ def _github_write(
     token: str,
     content: str,
 ) -> int:
-    """One Issues-Comments write → the comment id; non-2xx → `GitHubError`."""
+    """One Issues-Comments write → the comment id; non-2xx → `GitHubError`
+    carrying a parsed `Retry-After` hint when the response supplied one."""
     body = json.dumps({"body": content}, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    status, raw = github_transport(method, url, _github_headers(token), body)
+    status, raw, headers = _unpack_transport_result(
+        github_transport(method, url, _github_headers(token), body)
+    )
     if not 200 <= status <= 299:
-        raise GitHubError(status, f"http_{status}")
+        raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
     return _parse_comment_id(raw)
 
 
@@ -457,15 +515,18 @@ def _make_publish(
 
     def _read(url: str) -> bytes:
         """One GET with the shared single-401 budget; non-2xx → GitHubError
-        for the boundary classifier (403/404 complete, 429/5xx retry)."""
+        for the boundary classifier (403/404 complete, 429/5xx retry),
+        carrying a parsed `Retry-After` hint when supplied."""
         token = creds.current().github_token
-        status, raw = github_transport("GET", url, _github_headers(token), b"")
+        status, raw, headers = _unpack_transport_result(
+            github_transport("GET", url, _github_headers(token), b"")
+        )
         if status == 401 and creds.refresh_once():
-            status, raw = github_transport(
-                "GET", url, _github_headers(creds.current().github_token), b""
+            status, raw, headers = _unpack_transport_result(
+                github_transport("GET", url, _github_headers(creds.current().github_token), b"")
             )
         if not 200 <= status <= 299:
-            raise GitHubError(status, f"http_{status}")
+            raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
         return raw
 
     def _list_page(page: int) -> Any:
@@ -494,15 +555,19 @@ def _make_publish(
         payload = json.dumps({"body": ""}, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         url = _comment_url(repo, comment_id)
         token = creds.current().github_token
-        status, _ = github_transport("DELETE", url, _github_headers(token), payload)
+        status, _, headers = _unpack_transport_result(
+            github_transport("DELETE", url, _github_headers(token), payload)
+        )
         if status == 401 and creds.refresh_once():
-            status, _ = github_transport(
-                "DELETE", url, _github_headers(creds.current().github_token), payload
+            status, _, headers = _unpack_transport_result(
+                github_transport(
+                    "DELETE", url, _github_headers(creds.current().github_token), payload
+                )
             )
         if status == 404:
             return  # already gone is converged
         if not 200 <= status <= 299:
-            raise GitHubError(status, f"http_{status}")
+            raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
 
     def _recover(content: str, dead_comment_id: int | None) -> int:
         if dead_comment_id is not None:
@@ -583,6 +648,222 @@ _OUTCOME_STATUS = {
 # live lease, but the event itself was not proven stale.
 _STALE_DISCARDED_KINDS = frozenset({OutcomeKind.DISCARDED_SUPERSEDED, OutcomeKind.DISCARDED_STALE})
 
+# SQS redrive budget mirror (HLD §2.2, terraform/messaging.tf
+# `maxReceiveCount = 5`): the final attempt publishes the D2 notice.
+_MAX_RECEIVE_COUNT = 5
+
+
+def _record_delivery_context(record: Any) -> tuple[str | None, int]:
+    """Extract the SQS delivery identity: receipt handle (for visibility
+    calls) and `ApproximateReceiveCount` (wire string) for final-attempt
+    detection. A missing/unparseable count defaults to 1 (non-final — a
+    later redelivery re-evaluates rather than publishing early)."""
+    if not isinstance(record, dict):
+        return None, 1
+    receipt = record.get("receiptHandle")
+    receipt_handle = receipt if isinstance(receipt, str) and receipt else None
+    attributes = record.get("attributes")
+    raw_count = attributes.get("ApproximateReceiveCount") if isinstance(attributes, dict) else None
+    try:
+        receive_count = int(str(raw_count).strip())
+    except (ValueError, TypeError, AttributeError):
+        return receipt_handle, 1
+    return receipt_handle, receive_count if receive_count >= 1 else 1
+
+
+def _extend_visibility(
+    sqs: Any, queue_url: str, receipt_handle: str | None, seconds: int | None
+) -> None:
+    """Best-effort `ChangeMessageVisibility` per `Retry-After` (HLD §2.3
+    item 8 throttling row, §2.2). Skips silently without URL, handle, or
+    hint; a failed call warns and the original error still raises — the
+    visibility edge never masks the record disposition."""
+    if sqs is None or not queue_url or not receipt_handle or seconds is None:
+        return
+    try:
+        sqs.change_message_visibility(
+            QueueUrl=queue_url,
+            ReceiptHandle=receipt_handle,
+            VisibilityTimeout=seconds,
+        )
+    except Exception:
+        logger.warning("visibility_extend_failed", extra={"status": "visibility_failed"})
+
+
+def _notice_trigger(exc: BaseException) -> NoticeTrigger | None:
+    """Map a terminal error to its D2 trigger-table row; `None` means no
+    contract row authorizes a notice (the worker completes/raises without
+    one). Unlisted permanent faults (other LLM 4xx, config faults, caller
+    shape faults, reconcile faults) skip: only listed Yes-rows publish."""
+    if isinstance(exc, AssembleError):
+        return NoticeTrigger.ASSEMBLE_INVALID
+    if isinstance(exc, LlmError):
+        if exc.error_class == "http_401":
+            return NoticeTrigger.LLM_401
+        if exc.error_class == "invalid_response":
+            return NoticeTrigger.LLM_UNUSABLE
+        if exc.error_class in (
+            "timeout",
+            "connection_error",
+            "http_429",
+        ) or exc.error_class.startswith("http_5"):
+            return NoticeTrigger.TRANSIENT
+        return None
+    if isinstance(exc, DiffError):
+        if exc.reason == "http_error":
+            if exc.status == 401:
+                # GitHub unreachable: comment writes would 401 too.
+                return NoticeTrigger.GITHUB_401
+            if exc.status in (403, 404):
+                return NoticeTrigger.LIST_FORBIDDEN
+            return NoticeTrigger.TRANSIENT
+        if exc.reason == "transport_error":
+            return NoticeTrigger.TRANSIENT
+        return None
+    if isinstance(exc, GitHubError):
+        if exc.status == 401:
+            return NoticeTrigger.GITHUB_401
+        if exc.status == 404:
+            # Dead-id-clear loss: a newer revision owns the record now.
+            return NoticeTrigger.STALE
+        if exc.status == 403:
+            return NoticeTrigger.LIST_FORBIDDEN
+        return NoticeTrigger.TRANSIENT
+    return None
+
+
+def _notice_comment_ports(
+    *,
+    repo_full_name: str,
+    pr_number: int,
+    creds: _Credentials,
+    github_transport: Callable[..., tuple[int, bytes]],
+) -> tuple[Any, Any, Any, Any]:
+    """Comment CRUD ports for the D2 notice path, as
+    `(list_page, create_comment, update_comment, delete_comment)`.
+
+    Mirrors the `_make_publish` closures (shared single-401 budget, same
+    404 translations, same list-shape fallback); kept as a separate
+    builder so the live-pinned publish path stays untouched — a future
+    ticket may unify them once this path proves itself in review.
+    """
+
+    def _write(method: str, url: str, content: str) -> int:
+        try:
+            token = creds.current().github_token
+            return _github_write(github_transport, method, url, token, content)
+        except GitHubError as exc:
+            if exc.status == 401 and creds.refresh_once():
+                return _github_write(
+                    github_transport, method, url, creds.current().github_token, content
+                )
+            raise
+
+    def _read(url: str) -> bytes:
+        token = creds.current().github_token
+        status, raw, headers = _unpack_transport_result(
+            github_transport("GET", url, _github_headers(token), b"")
+        )
+        if status == 401 and creds.refresh_once():
+            status, raw, headers = _unpack_transport_result(
+                github_transport("GET", url, _github_headers(creds.current().github_token), b"")
+            )
+        if not 200 <= status <= 299:
+            raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
+        return raw
+
+    def list_page(page: int) -> Any:
+        raw = _read(f"{_comments_url(repo_full_name, pr_number)}?page={page}&per_page={PER_PAGE}")
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return raw
+
+    def create_comment(body: str) -> int:
+        return _write("POST", _comments_url(repo_full_name, pr_number), body)
+
+    def update_comment(comment_id: int, body: str) -> None:
+        try:
+            _write("PATCH", _comment_url(repo_full_name, comment_id), body)
+        except GitHubError as exc:
+            if exc.status == 404:
+                raise CommentNotFound(comment_id) from exc
+            raise
+
+    def delete_comment(comment_id: int) -> None:
+        payload = json.dumps({"body": ""}, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        url = _comment_url(repo_full_name, comment_id)
+        token = creds.current().github_token
+        status, _, headers = _unpack_transport_result(
+            github_transport("DELETE", url, _github_headers(token), payload)
+        )
+        if status == 401 and creds.refresh_once():
+            status, _, headers = _unpack_transport_result(
+                github_transport(
+                    "DELETE", url, _github_headers(creds.current().github_token), payload
+                )
+            )
+        if status == 404:
+            return
+        if not 200 <= status <= 299:
+            raise GitHubError(status, f"http_{status}", _parse_retry_after(headers))
+
+    return list_page, create_comment, update_comment, delete_comment
+
+
+def _attempt_notice(
+    *,
+    exc: BaseException,
+    envelope: Envelope,
+    receive_count: int,
+    table: Any,
+    creds: _Credentials | None,
+    clock: Clock,
+    diff_transport: Any,
+    github_transport: Callable[..., tuple[int, bytes]],
+) -> str:
+    """D2 trigger → best-effort notice publish → disposition value.
+
+    Returns `"false"` unless the trigger row authorizes AND the notice
+    landed (`"true"`) or the revision proved stale (`"skipped-stale"`).
+    Never raises: notice failure must not mask the alert/DLQ flow (the
+    module is best-effort internally; this wrapper additionally guards
+    port construction and the trigger comparison).
+    """
+    trigger = _notice_trigger(exc)
+    if (
+        trigger is None
+        or creds is None
+        or not should_publish_notice(
+            trigger, receive_count=receive_count, max_receive_count=_MAX_RECEIVE_COUNT
+        )
+    ):
+        return NoticeDisposition.PUBLISHED_FALSE.value
+    try:
+        list_page, create_comment, update_comment, delete_comment = _notice_comment_ports(
+            repo_full_name=envelope.repo_full_name,
+            pr_number=envelope.pr_number,
+            creds=creds,
+            github_transport=github_transport,
+        )
+        result = publish_failure_notice(
+            repo_full_name=envelope.repo_full_name,
+            pr_number=envelope.pr_number,
+            head_sha=envelope.head_sha,
+            owner=envelope.delivery_guid,
+            table=table,
+            now=lambda: int(clock()),
+            fence=_make_fence(envelope=envelope, creds=creds, diff_transport=diff_transport),
+            list_page=list_page,
+            create_comment=create_comment,
+            update_comment=update_comment,
+            delete_comment=delete_comment,
+        )
+    except Exception:
+        logger.warning("failure_notice_failed", extra={"status": "notice_failed"})
+        return NoticeDisposition.PUBLISHED_FALSE.value
+    return result.disposition.value
+
 
 def _emit(
     sink: Sink,
@@ -594,6 +875,7 @@ def _emit(
     error_class: str | None,
     generation: int | None,
     stale_discarded: bool = False,
+    failure_notice_published: str = "false",
 ) -> None:
     """Best-effort structured log (HLD §5.4): emission never masks the
     record disposition — a logging fault is a plain warning, not a retry."""
@@ -611,6 +893,7 @@ def _emit(
                 error_class=error_class,
                 generation=generation,
                 stale_discarded=stale_discarded,
+                failure_notice_published=failure_notice_published,
                 prompt_version=PROMPT_VERSION,
             ),
         )
@@ -629,11 +912,16 @@ def _process_record(
     github_transport: Callable[..., tuple[int, bytes]],
     sink: Sink,
     system_prompt: str,
+    sqs: Any = None,
+    queue_url: str = "",
 ) -> str:
     """Run one SQS record through the pipeline.
 
     Returns the completion status. Raises the original error ONLY for
     retryable faults (queue redelivery); every other path completes.
+    `sqs`/`queue_url` drive the Retry-After visibility edge and are
+    optional (absent in older tests) — without them the queue default
+    applies and classification is unchanged.
     """
     raw_body = record.get("body") if isinstance(record, dict) else None
     try:
@@ -653,6 +941,7 @@ def _process_record(
 
     started = clock()
     usage = {"tokens": 0}
+    creds = None
     try:
         creds = _Credentials(provider)
         pk = review_pk(envelope.repo_full_name, envelope.pr_number)
@@ -684,7 +973,27 @@ def _process_record(
     except (DiffError, LlmError, GitHubError, ConfigError, AssembleError, ReconcileError) as exc:
         error_class = _error_class(exc)
         duration_ms = max(0, int((clock() - started) * 1000))
-        if is_retryable(exc):
+        retryable = is_retryable(exc)
+        receipt_handle, receive_count = _record_delivery_context(record)
+        if retryable:
+            # Throttling row first (time-critical): extend visibility per
+            # Retry-After when the error carries the hint, best-effort.
+            hint = exc.retry_after if isinstance(exc, GitHubError) else None
+            _extend_visibility(sqs, queue_url, receipt_handle, hint)
+        # D2 trigger second: final-attempt transients and permanent rows
+        # publish the failure notice (best-effort); No-rows skip. The
+        # returned disposition rides the log line either way.
+        notice = _attempt_notice(
+            exc=exc,
+            envelope=envelope,
+            receive_count=receive_count,
+            table=table,
+            creds=creds,
+            clock=clock,
+            diff_transport=diff_transport,
+            github_transport=github_transport,
+        )
+        if retryable:
             _emit(
                 sink,
                 envelope=envelope,
@@ -693,6 +1002,7 @@ def _process_record(
                 status="retry_queued",
                 error_class=error_class,
                 generation=None,
+                failure_notice_published=notice,
             )
             raise
         _emit(
@@ -703,6 +1013,7 @@ def _process_record(
             status="discarded_error",
             error_class=error_class,
             generation=None,
+            failure_notice_published=notice,
         )
         return "discarded_error"
     duration_ms = max(0, int((clock() - started) * 1000))
@@ -716,6 +1027,7 @@ def _process_record(
         error_class=None,
         generation=outcome.generation,
         stale_discarded=outcome.kind in _STALE_DISCARDED_KINDS,
+        failure_notice_published="false",
     )
     return status
 
@@ -770,9 +1082,13 @@ def handler(
     _sink: Sink | None = None,
     _system_prompt: str | None = None,
     _allowed_hosts: tuple[str, ...] | None = None,
+    _sqs: Any = None,
 ) -> dict[str, Any]:
     """SQS event → per-record pipeline; retryable faults raise (the batch
-    fails and the queue redelivers), every other record completes."""
+    fails and the queue redelivers), every other record completes. `_sqs`
+    drives the Retry-After visibility edge; production builds a client
+    lazily, tests inject a double (or omit it — the queue default then
+    applies)."""
     clock = _now if _now is not None else time.time
     sink: Sink = _sink if _sink is not None else sys.stdout.write
 
@@ -807,6 +1123,19 @@ def handler(
     )
     system_prompt = _system_prompt if _system_prompt is not None else _load_system_prompt()
 
+    sqs = _sqs
+    if sqs is None:
+        # Best-effort edge: without a client (no region/credentials in unit
+        # tests that predate the edge) the queue default applies and
+        # classification is unchanged.
+        try:
+            import boto3  # deferred: import-time must not require credentials
+
+            sqs = boto3.client("sqs")
+        except Exception:
+            sqs = None
+    queue_url = os.environ.get("WORK_QUEUE_URL", "")
+
     records = event.get("Records") if isinstance(event, dict) else None
     results: list[str] = []
     for record in records or []:
@@ -821,6 +1150,8 @@ def handler(
                 github_transport=github_transport,
                 sink=sink,
                 system_prompt=system_prompt,
+                sqs=sqs,
+                queue_url=queue_url,
             )
         )
     return {"ok": True, "results": results}
