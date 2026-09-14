@@ -58,3 +58,6 @@ ignore = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: live acceptance tests against a deployed stack (require ACCEPTANCE_LIVE=1)",
+]
