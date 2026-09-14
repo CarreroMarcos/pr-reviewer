@@ -121,7 +121,17 @@ def _webhook_secret() -> str:
 
 
 def _sign(raw: bytes) -> str:
-    return "sha256=" + hmac.new(_webhook_secret().encode(), raw, hashlib.sha256).hexdigest()
+    secret = _STATE.get("webhook_secret")
+    if not secret:
+        pytest.skip("prerequisite steps not run; run the full module in order")
+    assert isinstance(secret, str)
+    return "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+
+
+def _require_state(*names: str) -> None:
+    """Skip when prerequisite steps did not run (subset/shuffled runs)."""
+    if any(name not in _STATE for name in names):
+        pytest.skip("prerequisite steps not run; run the full module in order")
 
 
 def _post_delivery(
@@ -130,6 +140,8 @@ def _post_delivery(
     signature: str | None = None,
 ) -> tuple[int, str, str]:
     """POST one signed delivery with a fresh GUID. Returns (status, body, guid)."""
+    # The ingress verifies the HMAC over the exact raw request bytes, so the
+    # harness must sign the exact bytes it sends.
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     guid = str(uuid.uuid4())
     request = urllib.request.Request(  # noqa: S310 (https-only Function URL)
@@ -204,6 +216,7 @@ def _wait_for(
         if predicate == "exactly-one" and len(comments) == 1:
             return comments, now - start
         if predicate == "refreshed":
+            _require_state("comment_updated_at")
             before = str(_STATE["comment_updated_at"])
             if len(comments) == 1 and str(comments[0].get("updated_at", "")) > before:
                 return comments, now - start
@@ -217,11 +230,21 @@ def _wait_for(
 
 @pytest.fixture(scope="module", autouse=True)
 def _live_config() -> None:
+    if "ACCEPTANCE_REPO" not in os.environ or "ACCEPTANCE_PR" not in os.environ:
+        if os.environ.get("ACCEPTANCE_ALLOW_DEFAULT_TARGET") != "1":
+            pytest.fail(
+                "refusing to target the default live repo/PR: set ACCEPTANCE_REPO "
+                "and ACCEPTANCE_PR explicitly (this harness mutates PR state), or "
+                "set ACCEPTANCE_ALLOW_DEFAULT_TARGET=1 to allow the default target"
+            )
     head_sha, base_sha = _resolve_shas()
     _STATE["head_sha"] = head_sha
     _STATE["base_sha"] = base_sha
     _STATE["work_url"] = _queue_url(WORK_QUEUE_NAME)
     _STATE["dlq_url"] = _queue_url(DLQ_NAME)
+    secret = _webhook_secret()
+    assert secret, "webhook secret from SSM is empty"
+    _STATE["webhook_secret"] = secret
 
 
 # --- (e) bad signature → 401, nothing enqueued (runs FIRST) ----------------
@@ -229,6 +252,7 @@ def _live_config() -> None:
 
 def test_01_e_bad_signature_rejected_nothing_enqueued() -> None:
     """QS-e: wrong HMAC → 401, empty body, work-queue depth unchanged, DLQ at 0."""
+    _require_state("work_url", "dlq_url", "head_sha", "base_sha", "webhook_secret")
     work_url = str(_STATE["work_url"])
     dlq_url = str(_STATE["dlq_url"])
     before = _queue_depths(work_url)["ApproximateNumberOfMessages"]
@@ -252,6 +276,7 @@ def test_01_e_bad_signature_rejected_nothing_enqueued() -> None:
 
 def test_02_a_opened_accepted_and_logged() -> None:
     """QS-a: signed action=opened → 202 empty body + delivery row in DynamoDB."""
+    _require_state("head_sha", "base_sha", "webhook_secret")
     payload = _pr_payload("opened", str(_STATE["head_sha"]), str(_STATE["base_sha"]))
     status, body, guid = _post_delivery(payload)
     assert status == 202, f"expected 202, got {status} body={body!r}"
@@ -269,6 +294,7 @@ def test_02_a_opened_accepted_and_logged() -> None:
 
 def test_03_b_exactly_one_canonical_comment_within_budget() -> None:
     """QS-b: one marker-bearing comment end-to-end ≤15 s from the (a) delivery."""
+    _require_state("opened_guid_logged", "opened_at")
     assert _STATE.get("opened_guid_logged") is True, "test_02_a must run first"
     comments, waited = _wait_for("exactly-one", REVIEW_BUDGET_SECONDS, "first review")
     end_to_end = time.monotonic() - float(_STATE["opened_at"])
@@ -288,6 +314,7 @@ def test_03_b_exactly_one_canonical_comment_within_budget() -> None:
 
 def test_04_f_dlq_empty_on_happy_path() -> None:
     """QS-f: no DLQ entries after the (a)/(b) happy path."""
+    _require_state("dlq_url")
     dlq = _queue_depths(str(_STATE["dlq_url"]))
     assert dlq["ApproximateNumberOfMessages"] == 0, f"DLQ not empty: {dlq}"
 
@@ -301,6 +328,7 @@ def test_05_k_reopen_produces_fresh_review() -> None:
     Same-SHA replay is allowed per plan D1; the canonical comment must refresh
     (updated_at moves past the pre-reopen value) with still exactly one.
     """
+    _require_state("comment_updated_at", "head_sha", "base_sha", "webhook_secret")
     before_updated_at = str(_STATE["comment_updated_at"])
     _gh_api(f"repos/{REPO}/pulls/{PR_NUMBER}", "-X", "PATCH", "-f", "state=closed")
     try:
@@ -333,6 +361,7 @@ def test_05_k_reopen_produces_fresh_review() -> None:
 
 def test_06_k2_non_pr_events_discarded() -> None:
     """QS-k2: signed `label` + `issues` events → 200 empty body, nothing enqueued."""
+    _require_state("work_url", "webhook_secret")
     work_url = str(_STATE["work_url"])
     before = _queue_depths(work_url)["ApproximateNumberOfMessages"]
     for event_type in ("label", "issues"):

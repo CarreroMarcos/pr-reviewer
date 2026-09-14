@@ -328,6 +328,11 @@ def build_finalize_expressions(
     # through finalize"). Leaving it set kept every same-SHA redelivery —
     # e.g. a quick reopen, acceptance (k) — DISCARDED_CLAIM_HELD for the
     # full 180s (surfaced live by the T035 acceptance run).
+    # Accepted race (deliberate): the REMOVE drops claim_owner/claim_until
+    # unconditionally while head_sha+generation still match, so a delayed
+    # older finalize can clear a newer claim's lease. Bounded because the
+    # claim is single-lease and generation is monotonic; a claim_owner
+    # condition guard is deliberately deferred to a future ticket.
     update = (
         "SET #st = :status, comment_id = :comment, updated_at = :updated_at "
         "REMOVE claim_owner, claim_until"
