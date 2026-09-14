@@ -79,23 +79,55 @@ if os.environ.get("ACCEPTANCE_LIVE") != "1":
     )
 
 REPO = os.environ.get("ACCEPTANCE_REPO", "CarreroMarcos/pr-reviewer")
-PR_NUMBER = int(os.environ.get("ACCEPTANCE_PR", "0"))
+
+
+def _env_pr_number() -> int:
+    """Defensive ACCEPTANCE_PR parse: garbage -> 0 (the session gate fails
+    loudly in live mode; offline runs just skip). Never raises at import."""
+    try:
+        return int(str(os.environ.get("ACCEPTANCE_PR", "0")).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+PR_NUMBER = _env_pr_number()
 BRANCH = os.environ.get("ACCEPTANCE_BRANCH", "scratch/fixture-us2")
 PUSH_PATH = os.environ.get("ACCEPTANCE_FIXTURE_PATH", "docs/fixture-us2.md")
 REGION = os.environ.get("AWS_REGION", "us-west-2")
 TABLE_NAME = os.environ.get("ACCEPTANCE_TABLE", "pr-reviewer-state")
 WORK_QUEUE = os.environ.get("ACCEPTANCE_WORK_QUEUE", "pr-reviewer-work")
 
-if PR_NUMBER <= 0:
-    pytest.fail("ACCEPTANCE_PR must be set to a fixture PR number in live mode", pytrace=False)
-
 CLAIM_BUDGET_SECONDS = 90.0  # push -> webhook establish-(c) visible
 RACE_BUDGET_SECONDS = 300.0  # duplicates review + collapse; winner publishes
 CONVERGE_BUDGET_SECONDS = 60.0  # end-state check after settle
 POLL_INTERVAL_SECONDS = 1.0
 
+# CloudWatch scan tuning: Lambda fans log lines out across streams under
+# contention, so the window is deliberately deeper than the 3-stream/200-line
+# shape that missed terminal lines live. LOG_CLOCK_SKEW_SECONDS margins
+# `since` (driver wall clock) against CloudWatch ingestion timestamps.
+SCAN_STREAM_LIMIT = 10
+SCAN_EVENT_LIMIT = 300
+LOG_CLOCK_SKEW_SECONDS = 120.0
+
 MARKER = build_marker(REPO, PR_NUMBER)
 _STATE: dict[str, Any] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _live_gate() -> None:
+    """Session-scoped live gate: module import never fails, so one bad env
+    cannot poison the whole run — only tests needing the guard skip/fail."""
+    if os.environ.get("ACCEPTANCE_LIVE") != "1":
+        pytest.skip("live acceptance only: set ACCEPTANCE_LIVE=1 and ACCEPTANCE_PR=<fixture pr>")
+    raw = os.environ.get("ACCEPTANCE_PR", "")
+    if _env_pr_number() <= 0:
+        pytest.fail(
+            f"ACCEPTANCE_PR={raw!r} is not a usable fixture PR number: set it to "
+            "the numeric id of a dedicated fixture PR (never a product PR — this "
+            "harness pushes real commits).",
+            pytrace=False,
+        )
 
 
 # --- helpers --------------------------------------------------------------
@@ -143,15 +175,16 @@ def _push_file(note: str) -> str:
 
 def _canonical_comments() -> list[dict[str, Any]]:
     """All current comments on the PR bearing the canonical marker."""
-    comments = _gh_api(f"repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=100")
+    comments = _gh_api(f"repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=100", "--paginate")
     assert isinstance(comments, list)
     return [c for c in comments if MARKER in str(c.get("body", ""))]
 
 
 def _state_item() -> dict[str, Any] | None:
     """The PR's state item, or None while no review has landed yet."""
-    table = boto3.resource("dynamodb", region_name=REGION).Table(TABLE_NAME)
-    item = table.get_item(Key={"pk": f"review:{REPO}#{PR_NUMBER}"}).get("Item")
+    if "dynamodb_table" not in _STATE:
+        _STATE["dynamodb_table"] = boto3.resource("dynamodb", region_name=REGION).Table(TABLE_NAME)
+    item = _STATE["dynamodb_table"].get_item(Key={"pk": f"review:{REPO}#{PR_NUMBER}"}).get("Item")
     return dict(item) if item else None
 
 
@@ -204,28 +237,44 @@ def _guid_terminal(guid: str, since_epoch: float) -> bool:
     """True once the worker logs ANY terminal line (published or
     discarded_*) for this delivery GUID at/after since_epoch.
 
-    Scans the newest few streams fresh on every call — Lambda spreads
+    Scans a deep stream window fresh on every call — Lambda spreads
     concurrent containers across streams (the T045 lesson: caching one
-    stream name races the writer container)."""
+    stream name races the writer container). Identity is matched on PARSED
+    fields (delivery_guid plus a published/discarded_* status), not
+    substrings, so a line that merely mentions the GUID in another field
+    cannot false-positive. The scanned stream/event count is left in
+    _STATE["last_log_scan"] so a silent poll still shows whether anything
+    was scanned at all."""
     client = _log_client()
     streams = client.describe_log_streams(
         logGroupName="/aws/lambda/pr-reviewer-worker",
         orderBy="LastEventTime",
         descending=True,
-        limit=3,
+        limit=SCAN_STREAM_LIMIT,
     )["logStreams"]
+    scanned_events = 0
     for stream in streams:
         for event in client.get_log_events(
             logGroupName="/aws/lambda/pr-reviewer-worker",
             logStreamName=stream["logStreamName"],
-            startTime=int(since_epoch * 1000),
-            limit=200,
+            startTime=int((since_epoch - LOG_CLOCK_SKEW_SECONDS) * 1000),
+            limit=SCAN_EVENT_LIMIT,
         )["events"]:
-            message = str(event.get("message", ""))
-            if guid in message and (
-                '"status":"published' in message or '"status":"discarded_' in message
-            ):
+            scanned_events += 1
+            message = str(event.get("message", "")).strip()
+            if not message.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(message)
+            except ValueError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            if str(parsed.get("delivery_guid")) != guid:
+                continue
+            if str(parsed.get("status", "")).startswith(("published", "discarded_")):
                 return True
+    _STATE["last_log_scan"] = {"streams": len(streams), "events": scanned_events}
     return False
 
 
@@ -269,6 +318,7 @@ def test_i_forced_concurrency_converges_to_single_correct_comment():
     live = _gh_api(f"repos/{REPO}/pulls/{PR_NUMBER}")
     base_sha = str(live["base"]["sha"])
     before = _canonical_comments()
+    pre_id = int(before[0]["id"]) if len(before) == 1 else 0
     pre_updated = str(before[0]["updated_at"]) if len(before) == 1 else ""
 
     # Real push: the webhook's review starts in flight.
@@ -285,10 +335,16 @@ def test_i_forced_concurrency_converges_to_single_correct_comment():
 
     # Settle: every injected racer reaches a terminal outcome BEFORE any
     # end-state assertion, so a late loser cannot invalidate the result.
+    def _describe_settle() -> str:
+        return (
+            f"settled={[g[:8] for g in _STATE['injected_guids']]} "
+            f"state={_state_item()} scan={_STATE.get('last_log_scan')}"
+        )
+
     _poll(
         lambda: _all_guids_settled(_STATE["injected_guids"], since),
         RACE_BUDGET_SECONDS,
-        lambda: f"settled={[g[:8] for g in _STATE['injected_guids']]} state={_state_item()}",
+        _describe_settle,
     )
     _poll(
         lambda: _converged_after_race(sha1),
@@ -307,6 +363,12 @@ def test_i_forced_concurrency_converges_to_single_correct_comment():
         "state must track the surviving canonical comment"
     )
     if pre_updated:
+        # Id-guard: the updated_at comparison is only meaningful on the same
+        # comment lineage — a changed id must fail HERE with both ids named,
+        # not false-pass via a trivially different timestamp.
+        assert int(observed["comment"]["id"]) == pre_id, (
+            f"race must update in place (was comment {pre_id}, now {observed['comment']['id']})"
+        )
         assert str(observed["comment"]["updated_at"]) != pre_updated, (
             "the canonical comment must have been regenerated for the race head"
         )

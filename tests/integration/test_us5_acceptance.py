@@ -108,7 +108,18 @@ if os.environ.get("ACCEPTANCE_LIVE") != "1":
     )
 
 REPO = os.environ.get("ACCEPTANCE_REPO", "CarreroMarcos/pr-reviewer")
-PR_NUMBER = int(os.environ.get("ACCEPTANCE_PR", "0"))
+
+
+def _env_pr_number() -> int:
+    """Defensive ACCEPTANCE_PR parse: garbage -> 0 (the session gate fails
+    loudly in live mode; offline runs just skip). Never raises at import."""
+    try:
+        return int(str(os.environ.get("ACCEPTANCE_PR", "0")).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+PR_NUMBER = _env_pr_number()
 BRANCH = os.environ.get("ACCEPTANCE_BRANCH", "scratch/fixture-us2")
 PUSH_PATH = os.environ.get("ACCEPTANCE_FIXTURE_PATH", "docs/fixture-us2.md")
 REGION = os.environ.get("AWS_REGION", "us-west-2")
@@ -123,15 +134,32 @@ STATE_PATH = os.environ.get(
 )
 PHASE = os.environ.get("ACCEPTANCE_US5_PHASE", "")
 
-if PR_NUMBER <= 0:
-    pytest.fail("ACCEPTANCE_PR must be set to a fixture PR number in live mode", pytrace=False)
-if PHASE not in {"notice_permanent", "drill", "asserts", "redrive"}:
-    pytest.skip("set ACCEPTANCE_US5_PHASE to one of notice_permanent|drill|asserts|redrive")
-
 MARKER = build_marker(REPO, PR_NUMBER)
 MINUTE = 60.0
 POLL_INTERVAL_SECONDS = 5.0
+# CloudWatch clock-skew margin: `since` is read from the driver wall clock
+# while log timestamps come from CloudWatch ingestion — without a margin a
+# line written "before" a POST (by skew) is missed forever.
+LOG_CLOCK_SKEW_SECONDS = 120.0
 _STATE: dict[str, Any] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _live_gate() -> None:
+    """Session-scoped live gate: module import never fails, so one bad env
+    cannot poison the whole run — only tests needing the guard skip/fail."""
+    if os.environ.get("ACCEPTANCE_LIVE") != "1":
+        pytest.skip("live acceptance only: set ACCEPTANCE_LIVE=1 and ACCEPTANCE_US5_PHASE=...")
+    raw = os.environ.get("ACCEPTANCE_PR", "")
+    if _env_pr_number() <= 0:
+        pytest.fail(
+            f"ACCEPTANCE_PR={raw!r} is not a usable fixture PR number: set it to "
+            "the numeric id of a dedicated fixture PR (never a product PR — this "
+            "harness pushes real commits and flips SSM config).",
+            pytrace=False,
+        )
+    if PHASE not in {"notice_permanent", "drill", "asserts", "redrive"}:
+        pytest.skip("set ACCEPTANCE_US5_PHASE to one of notice_permanent|drill|asserts|redrive")
 
 
 # --- state file (resumable drill; 0600) ------------------------------------
@@ -269,15 +297,16 @@ def _push_file(note: str) -> str:
 
 def _canonical_comments() -> list[dict[str, Any]]:
     """All current comments on the PR bearing the canonical marker."""
-    comments = _gh_api(f"repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=100")
+    comments = _gh_api(f"repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=100", "--paginate")
     assert isinstance(comments, list)
     return [c for c in comments if MARKER in str(c.get("body", ""))]
 
 
 def _state_item() -> dict[str, Any] | None:
     """The PR's state item, or None while no review has landed yet."""
-    table = boto3.resource("dynamodb", region_name=REGION).Table(TABLE_NAME)
-    item = table.get_item(Key={"pk": f"review:{REPO}#{PR_NUMBER}"}).get("Item")
+    if "dynamodb_table" not in _STATE:
+        _STATE["dynamodb_table"] = boto3.resource("dynamodb", region_name=REGION).Table(TABLE_NAME)
+    item = _STATE["dynamodb_table"].get_item(Key={"pk": f"review:{REPO}#{PR_NUMBER}"}).get("Item")
     return dict(item) if item else None
 
 
@@ -359,7 +388,14 @@ def _guid_lines(
     GUID-or-SHA needle and optional head_sha / exact-field constraints,
     scanned fresh each call. Streams are walked newest-first up to
     max_streams so hours-old evidence (e.g. the (l) phase) stays
-    reachable by the asserts phase after stream rotation."""
+    reachable by the asserts phase after stream rotation.
+
+    Identity is matched on PARSED fields — the needle must sit in
+    delivery_guid or head_sha — not substrings, so semantically adjacent
+    lines (a retry_queued line naming the same SHA, an error string
+    echoing a GUID) cannot false-positive. The scanned stream/event/hit
+    count is left in _STATE["last_log_scan"] so a silent poll still shows
+    whether anything was scanned at all."""
     streams = _log_client().describe_log_streams(
         logGroupName="/aws/lambda/pr-reviewer-worker",
         orderBy="LastEventTime",
@@ -367,25 +403,36 @@ def _guid_lines(
         limit=max_streams,
     )["logStreams"]
     hits: list[tuple[int, dict[str, Any]]] = []
+    scanned_events = 0
     for stream in streams:
         for event in _log_client().get_log_events(
             logGroupName="/aws/lambda/pr-reviewer-worker",
             logStreamName=stream["logStreamName"],
-            startTime=int(since_epoch * 1000),
+            startTime=int((since_epoch - LOG_CLOCK_SKEW_SECONDS) * 1000),
             limit=300,
         )["events"]:
+            scanned_events += 1
             message = str(event.get("message", "")).strip()
-            if not message.startswith("{") or needle not in message:
+            if not message.startswith("{"):
                 continue
             try:
                 parsed = json.loads(message)
             except ValueError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            if str(parsed.get("delivery_guid")) != needle and str(parsed.get("head_sha")) != needle:
                 continue
             if head_sha is not None and str(parsed.get("head_sha")) != head_sha:
                 continue
             if field is not None and str(parsed.get("failure_notice_published")) != field:
                 continue
             hits.append((int(event["timestamp"]), parsed))
+    _STATE["last_log_scan"] = {
+        "streams": len(streams),
+        "events": scanned_events,
+        "hits": len(hits),
+    }
     return sorted(hits)
 
 
@@ -638,7 +685,10 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
         _poll(
             lambda: bool(_m1_notice_lines()),
             budget,
-            lambda: f"waiting for M1 final-attempt notice ({elapsed})",
+            lambda: (
+                f"waiting for M1 final-attempt notice ({elapsed}; "
+                f"scan={_STATE.get('last_log_scan')})"
+            ),
         )
         drill["t_notice_m1"] = _m1_notice_lines()[-1][0] / 1000
         span = drill["t_notice_m1"] - drill["m1_first_ts"]
@@ -725,7 +775,14 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
                 10 * MINUTE,
                 lambda: "no sha2 retry-cycle delivery yet",
             )
-            drill["m3_guid"] = max(_cyclers(), key=lambda g: _cyclers()[g])
+            # Deterministic pick: most retry_queued attempts wins; ties
+            # break on the lexicographically smallest GUID. max() over the
+            # scan-ordered counts dict was nondeterministic under stream
+            # rotation (same input set, different schedule per run). Compute
+            # once — the old key-function re-scanned CloudWatch per
+            # comparison.
+            counts = _cyclers()
+            drill["m3_guid"] = sorted(counts, key=lambda g: (-counts[g], g))[0]
             _save_state()
         cycler = drill["m3_guid"]
 
@@ -756,7 +813,10 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
         _poll(
             lambda: bool(_m3_skipped_lines()),
             budget,
-            lambda: f"waiting for M3 skipped-stale (push_at={drill['push_at']:.0f})",
+            lambda: (
+                f"waiting for M3 skipped-stale (push_at={drill['push_at']:.0f}; "
+                f"scan={_STATE.get('last_log_scan')})"
+            ),
         )
         drill["t_m3_skipped"] = _m3_skipped_lines()[-1][0] / 1000
         _put_param(SSM_ENDPOINT, drill["endpoint_backup"])
@@ -985,7 +1045,11 @@ def test_stage_redrive_drain_and_converge():
     )
     after = _canonical_comments()
     assert len(after) == 1, "constitution: exactly one canonical comment after redrive"
-    assert int(after[0]["id"]) == pre_id, "redrive must not duplicate or replace the comment"
+    # Id-guard first: an id mismatch fails HERE with both ids named — the
+    # updated_at comparison below is only meaningful on the same comment.
+    assert int(after[0]["id"]) == pre_id, (
+        f"redrive must not duplicate or replace the comment (was {pre_id}, now {after[0]['id']})"
+    )
     assert str(after[0]["updated_at"]) == pre_updated, (
         "stale redrives must be discarded without mutating the comment"
     )

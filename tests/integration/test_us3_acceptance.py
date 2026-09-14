@@ -38,7 +38,8 @@ Env config (defaults match the current live stack):
 
   ACCEPTANCE_PR            REQUIRED in live mode — the fixture PR number.
   ACCEPTANCE_REPO          default CarreroMarcos/pr-reviewer
-  ACCEPTANCE_FUNCTION_URL  default: the current live ingress URL
+  ACCEPTANCE_FUNCTION_URL  REQUIRED in live mode — no default (a stale
+                           default would drive deliveries at the wrong stack)
   ACCEPTANCE_BRANCH        default scratch/fixture-us2
   ACCEPTANCE_FIXTURE_PATH  default docs/fixture-us2.md
   ACCEPTANCE_FIXTURE_BASE  default docs/fixture-us3.md (separate seed file so
@@ -81,27 +82,64 @@ if os.environ.get("ACCEPTANCE_LIVE") != "1":
     )
 
 REPO = os.environ.get("ACCEPTANCE_REPO", "CarreroMarcos/pr-reviewer")
-PR_NUMBER = int(os.environ.get("ACCEPTANCE_PR", "0"))
-FUNCTION_URL = os.environ.get(
-    "ACCEPTANCE_FUNCTION_URL",
-    "https://2clzftk3as32ofc7vxnv47pssu0zpajq.lambda-url.us-west-2.on.aws/",
-)
+
+
+def _env_pr_number() -> int:
+    """Defensive ACCEPTANCE_PR parse: garbage -> 0 (the session gate fails
+    loudly in live mode; offline runs just skip). Never raises at import."""
+    try:
+        return int(str(os.environ.get("ACCEPTANCE_PR", "0")).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+PR_NUMBER = _env_pr_number()
+# No silent default: live mode requires ACCEPTANCE_FUNCTION_URL explicitly
+# (the session gate fails when it is absent).
+FUNCTION_URL = os.environ.get("ACCEPTANCE_FUNCTION_URL", "")
 BRANCH = os.environ.get("ACCEPTANCE_BRANCH", "scratch/fixture-us2")
 PUSH_PATH = os.environ.get("ACCEPTANCE_FIXTURE_PATH", "docs/fixture-us2.md")
 SEED_PATH = os.environ.get("ACCEPTANCE_FIXTURE_BASE", "docs/fixture-us3-baseline.md")
 REGION = os.environ.get("AWS_REGION", "us-west-2")
 SECRET_NAME = os.environ.get("ACCEPTANCE_SSM_SECRET", "/pr-reviewer/webhook-secret")
 
-if PR_NUMBER <= 0:
-    pytest.fail("ACCEPTANCE_PR must be set to a fixture PR number in live mode", pytrace=False)
-
 BASELINE_BUDGET_SECONDS = 90.0  # one full review cycle for the baseline push
 STALE_BUDGET_SECONDS = 90.0  # claim + fence + discard + log availability
 POLL_INTERVAL_SECONDS = 2.0
 
+# CloudWatch scan tuning: Lambda fans log lines out across streams under
+# contention, so the window is deliberately deeper than the 3-stream/200-line
+# shape that missed discards live. LOG_CLOCK_SKEW_SECONDS margins `since`
+# (driver wall clock) against CloudWatch ingestion timestamps.
+SCAN_STREAM_LIMIT = 10
+SCAN_EVENT_LIMIT = 300
+LOG_CLOCK_SKEW_SECONDS = 120.0
+
 MARKER = build_marker(REPO, PR_NUMBER)
 _STATE: dict[str, Any] = {}
 _SECRET_CACHE: dict[str, str] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _live_gate() -> None:
+    """Session-scoped live gate: module import never fails, so one bad env
+    cannot poison the whole run — only tests needing the guard skip/fail."""
+    if os.environ.get("ACCEPTANCE_LIVE") != "1":
+        pytest.skip("live acceptance only: set ACCEPTANCE_LIVE=1 and ACCEPTANCE_PR=<fixture pr>")
+    raw = os.environ.get("ACCEPTANCE_PR", "")
+    if _env_pr_number() <= 0:
+        pytest.fail(
+            f"ACCEPTANCE_PR={raw!r} is not a usable fixture PR number: set it to "
+            "the numeric id of a dedicated fixture PR (never a product PR — this "
+            "harness pushes real commits).",
+            pytrace=False,
+        )
+    if not FUNCTION_URL:
+        pytest.fail(
+            "ACCEPTANCE_FUNCTION_URL must be set explicitly in live mode "
+            "(no default — a stale default would drive deliveries at the wrong stack).",
+            pytrace=False,
+        )
 
 
 # --- helpers --------------------------------------------------------------
@@ -173,17 +211,24 @@ def _post_delivery(payload: dict[str, object]) -> tuple[int, str, str]:
         return exc.code, exc.read().decode(), guid
 
 
-def _seed_file_if_missing() -> str:
-    """Create the US3 seed file on the fixture branch if not present."""
+def _seed_file_if_missing() -> None:
+    """Create the US3 seed file on the fixture branch if not present.
+
+    Only a 404 ("not present") falls through to creation — a 403 or 5xx
+    re-raises instead of being mistaken for "missing" (which would then
+    fail confusingly on the create PUT).
+    """
     try:
-        meta = _gh_api(f"repos/{REPO}/contents/{SEED_PATH}?ref={BRANCH}")
-        return str(meta["sha"])
-    except AssertionError:
+        _gh_api(f"repos/{REPO}/contents/{SEED_PATH}?ref={BRANCH}")
+        return
+    except AssertionError as exc:
+        if "404" not in str(exc):
+            raise
         body = (
             "fixture: US3 stale-redrive baseline seed (T045)\n"
             f"seeded at {datetime.now(UTC).isoformat()}\n"
         )
-        payload = _gh_api(
+        _gh_api(
             f"repos/{REPO}/contents/{SEED_PATH}",
             "-X",
             "PUT",
@@ -194,7 +239,36 @@ def _seed_file_if_missing() -> str:
             "-f",
             f"content={base64.b64encode(body.encode()).decode()}",
         )
-        return str(payload["commit"]["sha"])
+        return
+
+
+def _delete_seed_file() -> None:
+    """Teardown for `_seed_file_if_missing`: remove the US3 seed fixture so
+    later phases see a clean surface (no accumulated fixture files).
+
+    Best-effort with a loud warning — teardown must never mask an AC result.
+    A no-seed state (already clean) is a silent no-op, not a failure."""
+    try:
+        meta = _gh_api(f"repos/{REPO}/contents/{SEED_PATH}?ref={BRANCH}")
+    except AssertionError as exc:
+        if "404" in str(exc):
+            return  # already absent — clean surface, nothing to do
+        print(f"\n[teardown] seed-file lookup failed (non-fatal): {exc}")
+        return
+    try:
+        _gh_api(
+            f"repos/{REPO}/contents/{SEED_PATH}",
+            "-X",
+            "DELETE",
+            "-f",
+            "message=fixture: US3 seed teardown (T045)",
+            "-f",
+            f"branch={BRANCH}",
+            "-f",
+            f"sha={meta['sha']}",
+        )
+    except (AssertionError, KeyError) as exc:
+        print(f"\n[teardown] seed-file delete failed (non-fatal): {exc}")
 
 
 def _push_file(note: str) -> str:
@@ -226,17 +300,18 @@ def _push_file(note: str) -> str:
 
 def _canonical_comments() -> list[dict[str, Any]]:
     """All current comments on the PR bearing the canonical marker."""
-    comments = _gh_api(f"repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=100")
+    comments = _gh_api(f"repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=100", "--paginate")
     assert isinstance(comments, list)
     return [c for c in comments if MARKER in str(c.get("body", ""))]
 
 
 def _state_item() -> dict[str, Any] | None:
     """The PR's state item, or None while no review has landed yet."""
-    table = boto3.resource("dynamodb", region_name=REGION).Table(
-        os.environ.get("ACCEPTANCE_TABLE", "pr-reviewer-state")
-    )
-    item = table.get_item(Key={"pk": f"review:{REPO}#{PR_NUMBER}"}).get("Item")
+    if "dynamodb_table" not in _STATE:
+        _STATE["dynamodb_table"] = boto3.resource("dynamodb", region_name=REGION).Table(
+            os.environ.get("ACCEPTANCE_TABLE", "pr-reviewer-state")
+        )
+    item = _STATE["dynamodb_table"].get_item(Key={"pk": f"review:{REPO}#{PR_NUMBER}"}).get("Item")
     return dict(item) if item else None
 
 
@@ -277,29 +352,53 @@ def _superseded_line_seen(stale_sha: str, since_epoch: float) -> bool:
     """True once the worker logs a discarded_superseded line for stale_sha
     at/after since_epoch (CloudWatch near-real-time availability).
 
-    Scans the newest few streams fresh on every call — Lambda spreads
+    Scans a deep stream window fresh on every call — Lambda spreads
     concurrent containers across streams, so caching one stream name races
     the writer container (observed live: the discard line landed in a
-    different stream than the baseline review's)."""
+    different stream than the baseline review's). Identity is matched on
+    PARSED fields (status == discarded_superseded, head_sha == stale_sha),
+    not substrings, so semantically adjacent lines (e.g. a retry_queued
+    line naming the same SHA) cannot false-positive. The scanned
+    stream/event count is left in _STATE["last_log_scan"] so a silent poll
+    still shows whether anything was scanned at all."""
     client = _log_client()
     streams = client.describe_log_streams(
         logGroupName="/aws/lambda/pr-reviewer-worker",
         orderBy="LastEventTime",
         descending=True,
-        limit=3,
+        limit=SCAN_STREAM_LIMIT,
     )["logStreams"]
+    scanned_events = 0
     for stream in streams:
         events = client.get_log_events(
             logGroupName="/aws/lambda/pr-reviewer-worker",
             logStreamName=stream["logStreamName"],
-            startTime=int(since_epoch * 1000),
-            limit=200,
+            startTime=int((since_epoch - LOG_CLOCK_SKEW_SECONDS) * 1000),
+            limit=SCAN_EVENT_LIMIT,
         )["events"]
+        scanned_events += len(events)
         for event in events:
-            message = str(event.get("message", ""))
-            if "discarded_superseded" in message and stale_sha in message:
-                return True
+            message = str(event.get("message", "")).strip()
+            if not message.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(message)
+            except ValueError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            if str(parsed.get("status")) != "discarded_superseded":
+                continue
+            if str(parsed.get("head_sha")) != stale_sha:
+                continue
+            return True
+    _STATE["last_log_scan"] = {"streams": len(streams), "events": scanned_events}
     return False
+
+
+def _describe_superseded_wait() -> str:
+    scan = _STATE.get("last_log_scan")
+    return f"waiting for discarded_superseded log line; last scan: {scan}"
 
 
 # --- (g) stale head SHA redrive must not mutate the canonical comment ------
@@ -311,38 +410,48 @@ def test_g_stale_redrive_does_not_mutate_canonical_comment():
 
     # Seed + baseline: converge one canonical comment at the current head.
     _seed_file_if_missing()
-    live = _gh_api(f"repos/{REPO}/pulls/{PR_NUMBER}")
-    stale_sha = str(live["head"]["sha"])  # current head BEFORE the baseline push
-    sha1 = _push_file("us3-baseline")
-    assert sha1 != stale_sha, "baseline push must move the head for a true stale case"
-    _poll(
-        lambda: _converged_active(sha1),
-        BASELINE_BUDGET_SECONDS,
-        lambda: f"canonical={[c['id'] for c in _canonical_comments()]} state={_state_item()}",
-    )
-    before = _canonical_comments()
-    assert len(before) == 1
-    pre_id = int(before[0]["id"])
-    pre_updated = str(before[0]["updated_at"])
+    try:
+        live = _gh_api(f"repos/{REPO}/pulls/{PR_NUMBER}")
+        stale_sha = str(live["head"]["sha"])  # current head BEFORE the baseline push
+        sha1 = _push_file("us3-baseline")
+        assert sha1 != stale_sha, "baseline push must move the head for a true stale case"
+        _poll(
+            lambda: _converged_active(sha1),
+            BASELINE_BUDGET_SECONDS,
+            lambda: f"canonical={[c['id'] for c in _canonical_comments()]} state={_state_item()}",
+        )
+        before = _canonical_comments()
+        assert len(before) == 1
+        pre_id = int(before[0]["id"])
+        pre_updated = str(before[0]["updated_at"])
 
-    # Redrive the stale revision through the real admission path.
-    base_sha = str(live["base"]["sha"])
-    since = time.time()
-    status, body, guid = _post_delivery(_pr_payload("synchronize", stale_sha, base_sha))
-    assert status == 202, f"stale delivery must be admitted (202), got {status}: {body[:200]}"
-    _STATE["redrive_guid"] = guid
+        # Redrive the stale revision through the real admission path.
+        base_sha = str(live["base"]["sha"])
+        since = time.time()
+        status, body, guid = _post_delivery(_pr_payload("synchronize", stale_sha, base_sha))
+        assert status == 202, f"stale delivery must be admitted (202), got {status}: {body[:200]}"
+        _STATE["redrive_guid"] = guid
 
-    # Mechanism evidence: the fence discarded it, naming the stale SHA.
-    _poll(
-        lambda: _superseded_line_seen(stale_sha, since),
-        STALE_BUDGET_SECONDS,
-        lambda: "waiting for discarded_superseded log line",
-    )
+        # Mechanism evidence: the fence discarded it, naming the stale SHA.
+        _poll(
+            lambda: _superseded_line_seen(stale_sha, since),
+            STALE_BUDGET_SECONDS,
+            _describe_superseded_wait,
+        )
 
-    # The AC: the canonical comment was NOT mutated.
-    after = _canonical_comments()
-    assert len(after) == 1, "stale redrive must not add comments"
-    assert int(after[0]["id"]) == pre_id, "canonical comment id must be unchanged"
-    assert str(after[0]["updated_at"]) == pre_updated, (
-        "canonical comment updated_at must be unchanged — no regeneration happened"
-    )
+        # The AC: the canonical comment was NOT mutated. Id-guard first: an
+        # id mismatch fails HERE with both ids named — comparing updated_at
+        # on the wrong comment would false-pass or false-fail.
+        after = _canonical_comments()
+        assert len(after) == 1, "stale redrive must not add comments"
+        assert int(after[0]["id"]) == pre_id, (
+            f"canonical comment id must be unchanged (was {pre_id}, now {after[0]['id']})"
+        )
+        assert str(after[0]["updated_at"]) == pre_updated, (
+            "canonical comment updated_at must be unchanged — no regeneration happened"
+        )
+    finally:
+        # Fixture teardown: remove the seed file so later phases see a clean
+        # surface. Best-effort with a loud warning — teardown must not mask
+        # the AC result above.
+        _delete_seed_file()

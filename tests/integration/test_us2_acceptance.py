@@ -75,14 +75,22 @@ if os.environ.get("ACCEPTANCE_LIVE") != "1":
     )
 
 REPO = os.environ.get("ACCEPTANCE_REPO", "CarreroMarcos/pr-reviewer")
-PR_NUMBER = int(os.environ.get("ACCEPTANCE_PR", "0"))
+
+
+def _env_pr_number() -> int:
+    """Defensive ACCEPTANCE_PR parse: garbage -> 0 (the session gate fails
+    loudly in live mode; offline runs just skip). Never raises at import."""
+    try:
+        return int(str(os.environ.get("ACCEPTANCE_PR", "0")).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+PR_NUMBER = _env_pr_number()
 BRANCH = os.environ.get("ACCEPTANCE_BRANCH", "scratch/fixture-us2")
 FIXTURE_PATH = os.environ.get("ACCEPTANCE_FIXTURE_PATH", "docs/fixture-us2.md")
 REGION = os.environ.get("AWS_REGION", "us-west-2")
 TABLE_NAME = os.environ.get("ACCEPTANCE_TABLE", "pr-reviewer-state")
-
-if PR_NUMBER <= 0:
-    pytest.fail("ACCEPTANCE_PR must be set to a fixture PR number in live mode", pytrace=False)
 
 BASELINE_BUDGET_SECONDS = 90.0  # one full review cycle, generous first cold start
 CONVERGE_BUDGET_SECONDS = 90.0  # regeneration after push/deletion
@@ -90,6 +98,22 @@ POLL_INTERVAL_SECONDS = 2.0
 
 MARKER = build_marker(REPO, PR_NUMBER)
 _STATE: dict[str, Any] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _live_gate() -> None:
+    """Session-scoped live gate: module import never fails, so one bad env
+    cannot poison the whole run — only tests needing the guard skip/fail."""
+    if os.environ.get("ACCEPTANCE_LIVE") != "1":
+        pytest.skip("live acceptance only: set ACCEPTANCE_LIVE=1 and ACCEPTANCE_PR=<fixture pr>")
+    raw = os.environ.get("ACCEPTANCE_PR", "")
+    if _env_pr_number() <= 0:
+        pytest.fail(
+            f"ACCEPTANCE_PR={raw!r} is not a usable fixture PR number: set it to "
+            "the numeric id of a dedicated fixture PR (never a product PR — this "
+            "harness pushes real commits and deletes the bot comment).",
+            pytrace=False,
+        )
 
 
 # --- helpers --------------------------------------------------------------
@@ -141,16 +165,19 @@ def _push_file(note: str) -> str:
 
 def _canonical_comments() -> list[dict[str, Any]]:
     """All current comments on the PR bearing the canonical marker."""
-    comments = _gh_api(f"repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=100")
+    comments = _gh_api(f"repos/{REPO}/issues/{PR_NUMBER}/comments?per_page=100", "--paginate")
     assert isinstance(comments, list)
     return [c for c in comments if MARKER in str(c.get("body", ""))]
 
 
 def _state_item() -> dict[str, Any] | None:
     """The PR's state item, or None while no review has landed yet."""
-    table = boto3.resource("dynamodb", region_name=REGION).Table(TABLE_NAME)
+    if "dynamodb_table" not in _STATE:
+        _STATE["dynamodb_table"] = boto3.resource("dynamodb", region_name=REGION).Table(TABLE_NAME)
     try:
-        item = table.get_item(Key={"pk": f"review:{REPO}#{PR_NUMBER}"}).get("Item")
+        item = (
+            _STATE["dynamodb_table"].get_item(Key={"pk": f"review:{REPO}#{PR_NUMBER}"}).get("Item")
+        )
     except ClientError as exc:  # pragma: no cover - table exists in live mode
         raise AssertionError(f"state table read failed: {exc}") from exc
     return dict(item) if item else None
@@ -212,6 +239,7 @@ def test_c_second_push_updates_same_comment():
     first = _STATE["observed"]
     id1 = int(first["comment"]["id"])
     gen1 = int(first["state"]["generation"])
+    updated1 = str(first["comment"].get("updated_at", ""))
     _STATE["baseline_generation"] = gen1
 
     # Second push: the SAME comment must be updated in place.
@@ -222,11 +250,19 @@ def test_c_second_push_updates_same_comment():
         CONVERGE_BUDGET_SECONDS,
     )
     second = _STATE["observed"]
-    assert int(second["comment"]["id"]) == id1, "second push must update the same comment"
+    # Id-guard first: an id mismatch fails HERE with both ids named — any
+    # timestamp comparison on the wrong comment would false-pass/fail.
+    assert int(second["comment"]["id"]) == id1, (
+        f"second push must update the same comment (was {id1}, now {second['comment']['id']})"
+    )
     assert int(second["state"]["generation"]) > gen1, (
         "generation must increment on live-head confirm"
     )
-    assert second["comment"].get("updated_at"), "updated comment must carry updated_at"
+    updated2 = str(second["comment"].get("updated_at", ""))
+    assert updated2, "updated comment must carry updated_at"
+    assert updated2 >= updated1, (
+        f"updated_at must not move backwards on the same comment ({updated1} -> {updated2})"
+    )
 
 
 # --- (d) two rapid pushes leave only the latest head -----------------------
