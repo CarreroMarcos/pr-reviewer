@@ -56,6 +56,7 @@ failure is the expected red.
 """
 
 import pytest
+
 from common.failure_notice import (
     NoticeDisposition,
     NoticeTrigger,
@@ -63,7 +64,6 @@ from common.failure_notice import (
     publish_failure_notice,
     should_publish_notice,
 )
-
 from common.marker import build_marker
 from common.protocol import ConditionalCheckFailed
 
