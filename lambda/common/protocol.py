@@ -55,9 +55,10 @@ Flagged interpretations for the review gate:
 * A superseded establish records the observation: `last_seen_sha` advances
   to the incoming SHA via `build_advance_last_seen_expressions` (HLD §3.3
   step 1 — the most recently observed webhook SHA is recorded regardless
-  of acceptance). ONLY `last_seen_sha` moves; head, generation, lease, and
-  comment are untouched, and a concurrent move retries the loop rather
-  than overwriting.
+  of acceptance), guarded on equality with the value the attempt read so a
+  concurrent accept retries the loop instead of dragging `last_seen_sha`
+  backward. ONLY `last_seen_sha` moves; head, generation, lease, and
+  comment are untouched.
 * Stale `comment_id` is cleared on re-establish: establish (c) emits
   `REMOVE comment_id` (HLD §3.1 — `comment_id` is present only on ACTIVE
   records), so the ACTIVE → CLAIMED transition leaves the record decodable
@@ -67,6 +68,7 @@ Flagged interpretations for the review gate:
 Pure stdlib, no I/O, no boto3 import.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -84,6 +86,8 @@ from common.state import (
     build_finalize_expressions,
     expression_names,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ESTABLISH_ATTEMPTS = 3
 
@@ -247,7 +251,7 @@ def _establish(
             if incoming_sha == item.get("last_seen_sha"):
                 return _establish_equality(pk, incoming_sha, item, table, now)
             if fence() != incoming_sha:
-                _observe_superseded(pk, incoming_sha, table)
+                _observe_superseded(pk, incoming_sha, item.get("last_seen_sha"), table)
                 return Outcome(
                     kind=OutcomeKind.DISCARDED_SUPERSEDED,
                     head_sha=incoming_sha,
@@ -265,19 +269,40 @@ def _establish(
     )
 
 
-def _observe_superseded(pk: str, incoming_sha: str, table: Any) -> None:
+def _observe_superseded(pk: str, incoming_sha: str, seen_at_read: Any, table: Any) -> None:
     """Record a superseded event's SHA as the latest observation (HLD §3.3
-    step 1; US3.AC1): ONLY `last_seen_sha` advances. A concurrent move
-    raises `ConditionalCheckFailed` for the establish loop to retry — the
-    observation is never forced over a newer record."""
-    update, condition, values = build_advance_last_seen_expressions(incoming_sha=incoming_sha)
-    table.update_item(
-        Key={"pk": pk},
-        UpdateExpression=update,
-        ConditionExpression=condition,
-        ExpressionAttributeNames=expression_names(update, condition),
-        ExpressionAttributeValues=values,
+    step 1; US3.AC1): ONLY `last_seen_sha` advances. TRUE semantics: a
+    concurrent accept does not delete the record (no delete path exists on
+    review records — the ingress delivery-item write is the sole `put_item`
+    in the system), so there is nothing to guard against deletion; instead
+    the write is guarded on equality with the value this attempt read. A
+    concurrent last_seen/head move raises `ConditionalCheckFailed` and the
+    establish loop retries on a fresh base and re-routes — the observation
+    is never forced over a newer record, and `last_seen_sha` can never be
+    dragged backward off the (b) idempotent path.
+
+    Fault semantics (Gate-3 F3): the observation is a metric, never
+    correctness. `ConditionalCheckFailed` propagates (the loop retries —
+    correctness path); any OTHER fault (throttle/transport) is caught, a
+    coded warning is logged via the module logger (codebase warning
+    mechanism, cf. `common.llm`), and the caller proceeds to the
+    superseded discard — review stays skipped, no publish, no retry storm
+    under throttle (propagating would convert discards into DLQ entries)."""
+    update, condition, values = build_advance_last_seen_expressions(
+        incoming_sha=incoming_sha, seen_at_read=seen_at_read
     )
+    try:
+        table.update_item(
+            Key={"pk": pk},
+            UpdateExpression=update,
+            ConditionExpression=condition,
+            ExpressionAttributeNames=expression_names(update, condition),
+            ExpressionAttributeValues=values,
+        )
+    except ConditionalCheckFailed:
+        raise
+    except Exception:
+        logger.warning("observe_superseded_failed", extra={"status": "observe_failed"})
 
 
 def _establish_first_write(

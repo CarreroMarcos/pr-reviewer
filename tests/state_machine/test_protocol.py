@@ -251,6 +251,33 @@ def test_establish_retry_same_sha_converges():
     assert "claim_owner" not in h.table.items[PK]  # takeover succeeded; finalize released the lease
 
 
+def test_observe_guard_retries_on_fresh_base_after_concurrent_move():
+    """US3.AC1 + Gate-3 D1: a newer establish-(c) landing between this run's
+    read and its observe write must not drag `last_seen_sha` backward. The
+    observe guard (equality with the read value) fails → the loop retries
+    on the fresh base (second live fetch) and re-observes there."""
+    landed: list = []
+
+    def concurrent_writer(_sha):
+        if not landed:
+            landed.append(_sha)
+            _seed(h.table, head=SHA_C, gen=6, owner=GUID_OTHER, status="CLAIMED")
+
+    h = Harness(live_shas=[SHA_A, SHA_C], on_fence=concurrent_writer)
+    _seed(h.table, head=SHA_A, gen=5, comment=111)
+    # Incoming SHA_B is stale throughout (live moves A → C via the hook);
+    # the run observes (never establishes) on both loop iterations.
+    outcome = h.run(incoming_sha=SHA_B)
+    assert outcome.kind == OutcomeKind.DISCARDED_SUPERSEDED
+    assert sum(1 for entry in h.calls if entry[0] == "fence") == 2  # fresh re-fetch on retry
+    item = h.table.items[PK]
+    assert item["last_seen_sha"] == SHA_B  # re-observed on the fresh base
+    assert item["head_sha"] == SHA_C  # writer's revision otherwise intact
+    assert item["generation"] == 6
+    assert ("review",) not in h.calls
+    assert not any(entry[0] == "publish" for entry in h.calls)
+
+
 def test_establish_retry_different_sha_discards_superseded():
     """Step 1c guard race: a concurrent writer lands a DIFFERENT SHA C (live now C)
     → retry re-confirms → incoming B is not live → discard as superseded.
