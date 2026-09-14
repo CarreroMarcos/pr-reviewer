@@ -22,6 +22,7 @@ packages = ["lambda.common"]
 
 [dependency-groups]
 dev = [
+    "moto>=5,<6",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1,<10",
     "ruff>=0.16.7",
