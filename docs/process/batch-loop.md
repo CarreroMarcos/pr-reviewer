@@ -63,3 +63,42 @@ never grade recovered work yourself — it still goes through the gate.
 Update the state file (statuses, carry-forwards, evidence log with CI run
 ids and merge shas), give Mars a compact batch summary, and name the next
 queue item.
+
+## 7. Proven lane patterns (US4/US5 overnight batch, 2026-09-14)
+
+Patterns below are not aspirational — each shipped through gates in the
+US4/US5 run. Reuse them as the default lane contract.
+
+- **Drift gate before dispatch.** Before any lane brief, classify each task
+  FRESH / PARTIAL / STALE against current main (spec premise vs a code
+  walk). STALE wiring closes P1 evidence-only — never manufacture a diff to
+  justify a PR (P1 in AGENTS.md). PARTIAL scopes the brief to the genuinely
+  fresh rows and demands an honest probe split. Evidence: US4 probes
+  honest-green (SPR-46..49 closed evidence-only); US5 T051 8/4 split.
+- **Lane brief contract.** Every brief names OWNED files, names FORBIDDEN
+  files (parallel lanes' scopes + any branch with an open PR), and demands
+  loud stops when verbatim scope crosses a forbidden file. Parallel lanes
+  only with disjoint write scopes; a dependent pair STACKS on its parent
+  lane's branch instead of waiting for gate+merge.
+- **Stacked-lane PRs.** Child lane branches from the parent lane branch;
+  the child PR's base is the parent branch (GitHub retargets to main when
+  the parent merges). Merge order: parent → child (rebase + full-suite
+  re-run mandatory before merge) → independent lanes anytime.
+- **Boundary stops are deliverables.** A lane that reports "stopped loudly,
+  piece X belongs to lane Y" (US5 lane A deferring worker wiring + log
+  emission to lane B) beats a lane that quietly expands scope. Grade stops
+  as conformance, not incompleteness.
+- **Wake-cycle patience.** Specialist lanes routinely span multiple
+  scheduler wakes; that is normal, not a hang. `task_status` (read-only:
+  possibly_stuck, last_activity) is the sanctioned health check. Cancel or
+  respawn only on stuck=true, an error state, or a genuinely obsolete
+  objective — never on duration alone.
+- **Cross-lane seams are the batch gate's center of mass.** When parallel
+  lanes build interlocking pieces (module↔wiring, alarms↔log shapes,
+  runbook↔terraform names), the gate brief carries a dedicated cross-lane
+  consistency question set (Gate 6 pattern) — seams are where parallel
+  work hides its bugs.
+- **Companion reference:** `docs/process/loop-gotchas.md` — mechanical
+  failure modes (shell quoting, watcher artifacts, worktree/CI races) with
+  rules; brief authors and reconcilers read it before driving git/PR
+  mechanics.
