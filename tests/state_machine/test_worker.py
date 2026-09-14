@@ -497,7 +497,9 @@ def test_llm_401_refreshes_once_then_publishes():
 
 def test_llm_401_twice_completes():
     """Auth failure after the single re-fetch is terminal: complete, no
-    second re-fetch (still exactly two SSM fetches), no publish."""
+    second re-fetch (still exactly two SSM fetches), no raise. D2: LLM-401
+    is a permanent row, so the fixed-template notice publishes alongside
+    completion (the review itself never publishes)."""
     h = Harness(
         meta=[(200, SHA_B)],
         llm_script=[("response", 401, b"{}"), ("response", 401, b"{}")],
@@ -505,10 +507,11 @@ def test_llm_401_twice_completes():
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["discarded_error"]}
     assert len(h.ssm.calls) == 2
-    assert h.github.calls == []
+    assert h.github.methods() == ["GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["error_class"] == "http_401"
+    assert line["failure_notice_published"] == "true"
 
 
 def test_diff_401_refreshes_once():
@@ -525,17 +528,22 @@ def test_diff_401_refreshes_once():
 
 def test_assemble_refused_completes():
     """Model output failing the validate gate → AssembleError → complete
-    (never published, never retried)."""
+    (never published, never retried). D2: assemble-invalid is permanent,
+    so the fixed-template notice publishes (only the template goes out —
+    the invalid content never does)."""
     h = Harness(
         meta=[(200, SHA_B)],
         llm_script=[("response", 200, completion_body("plain text without sections"))],
     )
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["discarded_error"]}
-    assert h.github.calls == []
+    assert h.github.methods() == ["GET", "POST", "GET"]
+    (post,) = [call for call in h.github.calls if call["method"] == "POST"]
+    assert "plain text" not in post["body"]["body"]  # template only, never the invalid content
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["error_class"].startswith("assemble_")
+    assert line["failure_notice_published"] == "true"
 
 
 def test_llm_timeout_raises_for_queue_retry():
