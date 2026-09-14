@@ -10,8 +10,10 @@ Evaluator vocabulary (exactly the builder vocabulary — NOT a general
 expression parser):
 
 * ``attribute_not_exists(pk)`` — establish (a) first write
-* ``attribute_exists(pk)`` — superseded-event observation (HLD §3.3 step 1,
-  US3.AC1; builder `common.state.build_advance_last_seen_expressions`)
+* ``last_seen_sha = :seen_at_read`` — superseded-event observation (HLD §3.3
+  step 1, US3.AC1; builder `common.state.build_advance_last_seen_expressions`;
+  equality with the read value, so a concurrent accept fails the guard and
+  retries instead of dragging `last_seen_sha` backward)
 * ``last_seen_sha = :sha`` — establish (b) idempotent equality
 * ``generation = :expected_gen`` — establish (c) live-head confirm
 * ``head_sha = :reviewed AND generation = :gen AND (claim_until < :now OR
@@ -123,6 +125,8 @@ def _condition_holds(
     """Exact-match dispatch over the builder vocabulary (no general parser)."""
     if condition == "attribute_not_exists(pk)":
         return current is None
+    if condition == "last_seen_sha = :seen_at_read":
+        return current is not None and current.get("last_seen_sha") == values[":seen_at_read"]
     if condition == "attribute_exists(pk)":
         return current is not None
     if condition == "last_seen_sha = :sha":

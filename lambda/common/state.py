@@ -373,14 +373,18 @@ def build_clear_comment_expressions(
     return update, condition, values
 
 
-def build_advance_last_seen_expressions(*, incoming_sha: str) -> ExprTriple:
+def build_advance_last_seen_expressions(*, incoming_sha: str, seen_at_read: str) -> ExprTriple:
     """Superseded-event observation (HLD §3.3 step 1; US3.AC1): record the
     most recently observed webhook SHA regardless of acceptance. Advances
     ONLY `last_seen_sha` — head, generation, lease, and comment are
-    untouched — guarded on record existence, so the observation can never
-    create or resurrect a record (records are never deleted; the guard
-    keeps the write strictly non-creative under races)."""
+    untouched — guarded on equality with the value the attempt READ
+    (`seen_at_read`, not the incoming stale SHA): a newer establish-(c)
+    landing between this run's read and the observe write raises
+    `ConditionalCheckFailed` instead of dragging `last_seen_sha` backward
+    (which would knock a redelivered current head off the (b) idempotent
+    path into a spurious (c) review + generation churn). The establish
+    loop retries on a fresh base and re-routes."""
     update = "SET last_seen_sha = :seen"
-    condition = "attribute_exists(pk)"
-    values: dict[str, Any] = {":seen": incoming_sha}
+    condition = "last_seen_sha = :seen_at_read"
+    values: dict[str, Any] = {":seen": incoming_sha, ":seen_at_read": seen_at_read}
     return update, condition, values
