@@ -72,13 +72,13 @@ from typing import Any
 
 from common.state import (
     CLAIM_LEASE_SECONDS,
-    EXPRESSION_ATTRIBUTE_NAMES,
     ReviewState,
     build_claim_expressions,
     build_establish_confirm,
     build_establish_equality,
     build_establish_first_write,
     build_finalize_expressions,
+    expression_names,
 )
 
 DEFAULT_MAX_ESTABLISH_ATTEMPTS = 3
@@ -166,7 +166,7 @@ def run_review(
             Key={"pk": pk},
             UpdateExpression=update,
             ConditionExpression=condition,
-            ExpressionAttributeNames=EXPRESSION_ATTRIBUTE_NAMES,
+            ExpressionAttributeNames=expression_names(update, condition),
             ExpressionAttributeValues=values,
         )
     except ConditionalCheckFailed:
@@ -195,7 +195,7 @@ def run_review(
             Key={"pk": pk},
             UpdateExpression=update,
             ConditionExpression=condition,
-            ExpressionAttributeNames=EXPRESSION_ATTRIBUTE_NAMES,
+            ExpressionAttributeNames=expression_names(update, condition),
             ExpressionAttributeValues=values,
         )
     except ConditionalCheckFailed:
@@ -277,7 +277,7 @@ def _establish_first_write(
         Key={"pk": pk},
         UpdateExpression=update,
         ConditionExpression=condition,
-        ExpressionAttributeNames=EXPRESSION_ATTRIBUTE_NAMES,
+        ExpressionAttributeNames=expression_names(update, condition),
         ExpressionAttributeValues=values,
     )
     return incoming_sha, 0
@@ -298,7 +298,7 @@ def _establish_equality(
         Key={"pk": pk},
         UpdateExpression=update,
         ConditionExpression=condition,
-        ExpressionAttributeNames=EXPRESSION_ATTRIBUTE_NAMES,
+        ExpressionAttributeNames=expression_names(update, condition),
         ExpressionAttributeValues=values,
     )
     return item["head_sha"], item["generation"]
@@ -320,7 +320,7 @@ def _establish_confirm(
         Key={"pk": pk},
         UpdateExpression=update,
         ConditionExpression=condition,
-        ExpressionAttributeNames=EXPRESSION_ATTRIBUTE_NAMES,
+        ExpressionAttributeNames=expression_names(update, condition),
         ExpressionAttributeValues=values,
     )
     return incoming_sha, expected + 1

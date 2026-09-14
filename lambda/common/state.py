@@ -17,7 +17,9 @@ Expression builders are pure functions returning
 (update_expression, condition_expression, expression_attribute_values)
 tuples as plain strings/dicts; the DB client arrives later via injected
 callers. Builders that SET `status` spell it `#st` (a DynamoDB reserved
-word) — callers must pass `EXPRESSION_ATTRIBUTE_NAMES` alongside.
+word) — callers pass `expression_names(...)` alongside (DynamoDB rejects
+declared-but-unused names, so the helper emits exactly the referenced
+subset).
 
 Pure stdlib, no I/O, no boto3 import.
 """
@@ -36,6 +38,19 @@ INT64_MAX = 2**63 - 1
 
 # `status` is a DynamoDB reserved word: expression builders alias it as `#st`.
 EXPRESSION_ATTRIBUTE_NAMES = {"#st": "status"}
+
+
+def expression_names(*expressions: str | None) -> dict[str, str] | None:
+    """Names map actually referenced by the given update/condition
+    expressions; `None` when none are. DynamoDB rejects BOTH extremes:
+    declared-but-unused names (`ValidationException … unused … {#st}`) and
+    an empty map (`ExpressionAttributeNames must not be empty`) — both
+    surfaced live by the T035 acceptance run — so callers pass this
+    helper's result straight through."""
+    used = set(re.findall(r"#[A-Za-z0-9_]+", " ".join(e for e in expressions if e)))
+    names = {k: v for k, v in EXPRESSION_ATTRIBUTE_NAMES.items() if k in used}
+    return names or None
+
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 _PK_RE = re.compile(r"^review:[^#]+#[0-9]+\Z")
@@ -309,7 +324,14 @@ def build_finalize_expressions(
     """Finalize (HLD §3.3 step 6): revision only — the lease is not
     re-checked. Failure means a newer accepted revision landed concurrently:
     log and reconcile rather than overwrite."""
-    update = "SET #st = :status, comment_id = :comment, updated_at = :updated_at"
+    # Lease lifecycle ends AT finalize (HLD §3.2: "held only from claim
+    # through finalize"). Leaving it set kept every same-SHA redelivery —
+    # e.g. a quick reopen, acceptance (k) — DISCARDED_CLAIM_HELD for the
+    # full 180s (surfaced live by the T035 acceptance run).
+    update = (
+        "SET #st = :status, comment_id = :comment, updated_at = :updated_at "
+        "REMOVE claim_owner, claim_until"
+    )
     condition = "head_sha = :reviewed AND generation = :gen"
     values: dict[str, Any] = {
         ":reviewed": head_sha,

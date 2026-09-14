@@ -65,6 +65,17 @@ resource "aws_lambda_function" "ingress" {
   # any reservation is rejected. -1 = unreserved. Restore the HLD §5 value
   # (25) when the quota is raised.
   reserved_concurrent_executions = -1
+
+  # WORK_QUEUE_URL has no safe default in the handler ("" → send fails, 500):
+  # the queue URL is account-specific, so it must be wired (surfaced by the
+  # T035 acceptance harness — first live delivery 500ed with Environment null).
+  # STATE_TABLE_NAME / WEBHOOK_SECRET_NAME keep their handler defaults, which
+  # match this stack's names exactly.
+  environment {
+    variables = {
+      WORK_QUEUE_URL = aws_sqs_queue.work.url
+    }
+  }
 }
 
 resource "aws_lambda_function" "worker" {

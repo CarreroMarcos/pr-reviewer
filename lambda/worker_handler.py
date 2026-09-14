@@ -70,6 +70,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -125,10 +126,28 @@ class _BotoTable:
     def get_item(self, pk: str) -> dict[str, Any] | None:
         response = self._table.get_item(Key={"pk": pk})
         item = response.get("Item")
-        return dict(item) if item is not None else None
+        if item is None:
+            return None
+        # boto3 deserializes DynamoDB numbers as decimal.Decimal, but the
+        # table-port contract (mirrored by the state-machine stub) is plain
+        # ints: the publish port's `isinstance(comment_id, int)` gate and
+        # the §5.4 event's json.dumps both fail on Decimal — surfaced live
+        # by the T035 acceptance run (every ride POSTed a fresh comment
+        # instead of PATCHing the stored one).
+        return {
+            key: int(value) if isinstance(value, Decimal) else value for key, value in item.items()
+        }
 
     def update_item(self, **kwargs: Any) -> dict[str, Any]:
         from common.protocol import ConditionalCheckFailed
+
+        # Empty names must be OMITTED, never passed: the boto3 resource
+        # layer rejects `{}` server-side ("must not be empty") and `None`
+        # client-side (its condition-expression transformer calls
+        # `.update()` on the value unconditionally — surfaced live by the
+        # T035 acceptance run).
+        if not kwargs.get("ExpressionAttributeNames"):
+            kwargs.pop("ExpressionAttributeNames", None)
 
         try:
             return self._table.update_item(**kwargs)

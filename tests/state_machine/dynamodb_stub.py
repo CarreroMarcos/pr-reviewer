@@ -32,6 +32,7 @@ fence fetch strictly before publish call) on one timeline together with the
 injected review/fence/publish fakes.
 """
 
+import re
 from typing import Any
 
 from common.protocol import ConditionalCheckFailed
@@ -67,6 +68,24 @@ class InMemoryTable:
     ) -> dict[str, Any]:
         """Evaluate the condition, then apply the update (boto3 kwarg subset)."""
         pk = Key["pk"]
+        # Real DynamoDB rejects declared-but-unused expression names/values
+        # (ValidationException) — the stub must fail the same way or a
+        # builder/caller mismatch passes tests and dies in production.
+        expr_text = f"{UpdateExpression} {ConditionExpression}"
+        unused_names = set((ExpressionAttributeNames or {}).keys()) - set(
+            re.findall(r"#[A-Za-z0-9_]+", expr_text)
+        )
+        if unused_names:
+            raise ValueError(
+                f"ExpressionAttributeNames declares unused keys: {sorted(unused_names)}"
+            )
+        unused_values = set((ExpressionAttributeValues or {}).keys()) - set(
+            re.findall(r":[A-Za-z0-9_]+", expr_text)
+        )
+        if unused_values:
+            raise ValueError(
+                f"ExpressionAttributeValues declares unused keys: {sorted(unused_values)}"
+            )
         self.log.append(("update", ConditionExpression))
         current = self.items.get(pk)
         values = ExpressionAttributeValues or {}

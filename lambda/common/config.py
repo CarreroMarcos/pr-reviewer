@@ -32,10 +32,13 @@ GLM_API_KEY_NAME = "/pr-reviewer/glm-api-key"
 GLM_MODEL_NAME = "/pr-reviewer/glm-model"
 GLM_ENDPOINT_NAME = "/pr-reviewer/glm-endpoint"
 
-# HLD §2.6 parameter surface — the full fetch set in one batched call.
+# Worker fetch surface (HLD §2.6) — one batched GetParameters call. The
+# webhook secret is NOT in this set: §2.6 gates it "Ingress-only IAM" (the
+# ingress fetches it via its singular GetParameter path), and iam.tf grants
+# the worker exactly these four ARNs — one unauthorized name in a batched
+# GetParameters denies the whole call.
 PARAMETER_NAMES = (
     GITHUB_TOKEN_NAME,
-    WEBHOOK_SECRET_NAME,
     GLM_API_KEY_NAME,
     GLM_MODEL_NAME,
     GLM_ENDPOINT_NAME,
@@ -43,7 +46,6 @@ PARAMETER_NAMES = (
 
 _FIELD_BY_NAME = {
     GITHUB_TOKEN_NAME: "github_token",
-    WEBHOOK_SECRET_NAME: "webhook_secret",
     GLM_API_KEY_NAME: "glm_api_key",
     GLM_MODEL_NAME: "glm_model",
     GLM_ENDPOINT_NAME: "glm_endpoint",
@@ -52,8 +54,8 @@ _FIELD_BY_NAME = {
 
 class ConfigError(ValueError):
     """Typed config rejection: `field` names the logical parameter
-    (`github_token`, `webhook_secret`, `glm_api_key`, `glm_model`,
-    `glm_endpoint`), `reason` is a machine-readable code (`missing`,
+    (`github_token`, `glm_api_key`, `glm_model`, `glm_endpoint`),
+    `reason` is a machine-readable code (`missing`,
     `empty`, `bad_scheme`, `bad_host`). Never carries secret values."""
 
     def __init__(self, field: str, reason: str) -> None:
@@ -64,10 +66,11 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True, repr=False)
 class AppConfig:
-    """Hydrated runtime config — all values decrypted via `WithDecryption`."""
+    """Hydrated runtime config — all values decrypted via `WithDecryption`.
+    Worker surface per HLD §2.6: the webhook secret is ingress-only and is
+    fetched by the ingress helper, never through this provider."""
 
     github_token: str
-    webhook_secret: str
     glm_api_key: str
     glm_model: str
     glm_endpoint: str
@@ -136,13 +139,12 @@ class ConfigProvider:
             if not isinstance(value, str) or not value.strip():
                 raise ConfigError(field, "empty")
             values[field] = value
-        for field in ("github_token", "webhook_secret", "glm_api_key", "glm_model", "glm_endpoint"):
+        for field in ("github_token", "glm_api_key", "glm_model", "glm_endpoint"):
             if field not in values:
                 raise ConfigError(field, "missing")
         self._check_endpoint(values["glm_endpoint"])
         return AppConfig(
             github_token=values["github_token"],
-            webhook_secret=values["webhook_secret"],
             glm_api_key=values["glm_api_key"],
             glm_model=values["glm_model"],
             glm_endpoint=values["glm_endpoint"],

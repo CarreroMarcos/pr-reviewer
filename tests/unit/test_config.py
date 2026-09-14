@@ -9,7 +9,13 @@ injected — the config module never constructs clients itself.
 
 import pytest
 
-from common.config import TTL_SECONDS, ConfigError, ConfigProvider
+from common.config import (
+    _FIELD_BY_NAME,
+    PARAMETER_NAMES,
+    TTL_SECONDS,
+    ConfigError,
+    ConfigProvider,
+)
 
 GITHUB_TOKEN = "/pr-reviewer/github-token"  # noqa: S105 (SSM path, not a credential)
 WEBHOOK_SECRET = "/pr-reviewer/webhook-secret"  # noqa: S105 (SSM path, not a credential)
@@ -17,9 +23,10 @@ GLM_API_KEY = "/pr-reviewer/glm-api-key"
 GLM_MODEL = "/pr-reviewer/glm-model"
 GLM_ENDPOINT = "/pr-reviewer/glm-endpoint"
 
-# HLD §2.6 parameter surface — hard-coded here so the tests verify the
-# module fetches exactly these names (no invented parameters).
-ALL_NAMES = (GITHUB_TOKEN, WEBHOOK_SECRET, GLM_API_KEY, GLM_MODEL, GLM_ENDPOINT)
+# Worker fetch surface (HLD §2.6) — hard-coded here so the tests verify the
+# module fetches exactly these names (no invented parameters; the webhook
+# secret is ingress-only per §2.6 and must never appear in the batch).
+ALL_NAMES = (GITHUB_TOKEN, GLM_API_KEY, GLM_MODEL, GLM_ENDPOINT)
 
 ALLOWED_HOSTS = ("llm.example.com",)
 ENDPOINT_URL = "https://llm.example.com/v1"
@@ -215,7 +222,7 @@ def test_no_secrets_in_repr_or_errors():
 
 
 def test_subset_parameter_names_raise_typed_missing():
-    # Given a provider fetching only a subset of the HLD §2.6 surface
+    # Given a provider fetching only a subset of the HLD §2.6 worker surface
     ssm = FakeSSM({GITHUB_TOKEN: GITHUB_TOKEN_VALUE})
     provider = ConfigProvider(
         ssm.get_parameters, clock=FakeClock(), parameter_names=(GITHUB_TOKEN,)
@@ -223,8 +230,16 @@ def test_subset_parameter_names_raise_typed_missing():
     # When hydrating Then a typed ConfigError, never a bare KeyError
     with pytest.raises(ConfigError) as excinfo:
         provider.get()
-    assert excinfo.value.field == "webhook_secret"
+    assert excinfo.value.field == "glm_api_key"
     assert excinfo.value.reason == "missing"
+
+
+def test_parameter_surface_excludes_webhook_secret():
+    # HLD §2.6: the webhook secret is ingress-only IAM — the worker's
+    # batched GetParameters must never request it (one unauthorized name
+    # denies the whole batch; surfaced live by the T035 acceptance run).
+    assert WEBHOOK_SECRET not in PARAMETER_NAMES
+    assert WEBHOOK_SECRET not in _FIELD_BY_NAME
 
 
 # --- QA-A: accessor edge cases ------------------------------------------------

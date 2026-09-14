@@ -378,7 +378,8 @@ def test_finalize_is_revision_only():
     assert values[":gen"] == 7
     assert values[":comment"] == COMMENT_ID
     assert "comment_id" in update
-    assert "claim_owner" not in update and "claim_until" not in update
+    # Lease lifecycle ends at finalize (HLD §3.2)
+    assert "REMOVE claim_owner, claim_until" in update
     assert EXPRESSION_ATTRIBUTE_NAMES == {"#st": "status"}
 
 

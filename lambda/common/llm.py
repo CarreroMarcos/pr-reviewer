@@ -145,6 +145,11 @@ def review_diff(
     body = json.dumps(
         {
             "model": model,
+            # Provider default runs GLM reasoning (~1.3K tokens, ~45s) before
+            # answering, which makes the quickstart ≤15s comment bar (HLD
+            # §2.2 (b)) unreachable and overruns READ_TIMEOUT_S — surfaced
+            # live by the T035 acceptance run. Thinking-off measured 5-8s.
+            "thinking": {"type": "disabled"},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": diff_text},

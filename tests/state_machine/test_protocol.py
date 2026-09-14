@@ -190,7 +190,7 @@ def test_first_delivery_publishes_and_finalizes():
     assert item["status"] == "ACTIVE"
     assert item["head_sha"] == SHA_B
     assert item["comment_id"] == COMMENT_ID
-    assert item["claim_owner"] == GUID_1
+    assert "claim_owner" not in item  # lease released at finalize (HLD §3.2)
 
 
 def test_redelivery_same_sha_is_idempotent():
@@ -246,7 +246,7 @@ def test_establish_retry_same_sha_converges():
     assert outcome.generation == 6  # converged at the writer's base, no extra bump
     conditions = [entry[1] for entry in h.calls if entry[0] == "update"]
     assert "last_seen_sha = :sha" in conditions  # (b) path taken on retry
-    assert h.table.items[PK]["claim_owner"] == GUID_1  # expired lease taken over
+    assert "claim_owner" not in h.table.items[PK]  # takeover succeeded; finalize released the lease
 
 
 def test_establish_retry_different_sha_discards_superseded():
@@ -288,7 +288,7 @@ def test_claim_succeeds_on_expired_lease():
     _seed(h.table, head=SHA_B, gen=2, owner=GUID_OTHER, until=NOW - 5, status="CLAIMED")
     outcome = h.run(incoming_sha=SHA_B)
     assert outcome.kind == OutcomeKind.PUBLISHED
-    assert h.table.items[PK]["claim_owner"] == GUID_1
+    assert "claim_owner" not in h.table.items[PK]  # finalize released the taken-over lease
     assert h.table.items[PK]["generation"] == 2  # takeover never bumps generation
 
 
@@ -357,6 +357,21 @@ def test_finalize_success_sets_active_with_comment_id():
     assert item["generation"] == 8  # revision-only finalize preserves the bump
 
 
+def test_finalize_releases_the_claim_lease():
+    """Step 6 + HLD §3.2 lease lifecycle: the lease is held only from claim
+    through finalize — a finalized record carries no live lease, so a
+    same-SHA redelivery (reopen) can re-claim immediately (acceptance (k);
+    surfaced live by T035: the leftover lease discarded quick reopens as
+    CLAIM_HELD)."""
+    h = Harness(live_shas=[SHA_B, SHA_B])
+    _seed(h.table, head=SHA_A, gen=7, comment=111)
+    outcome = h.run(incoming_sha=SHA_B)
+    assert outcome.kind == OutcomeKind.PUBLISHED
+    item = h.table.items[PK]
+    assert "claim_owner" not in item
+    assert "claim_until" not in item
+
+
 def test_finalize_conflict_never_overwrites_newer():
     """Step 6 + mode 7: a newer accepted revision lands between publish and
     finalize → log-and-reconcile path (typed outcome carrying comment_id);
@@ -392,17 +407,19 @@ def test_superseded_event_leaves_record():
     assert sum(1 for entry in h.calls if entry[0] == "fence") == 1  # confirm fetch only
 
 
-def test_duplicate_delivery_publishes_once():
-    """Mode 10 (protocol side): a duplicate delivery of an already-published SHA
-    runs establish (b) + review, then fails the live-lease claim → exactly one
-    publish total across both runs (claim exclusivity, no double publish)."""
-    h = Harness(live_shas=[SHA_B])
+def test_duplicate_delivery_after_finalize_republishes_same_comment():
+    """Mode 10 (protocol side): a duplicate delivery of an already-published
+    SHA arriving after finalize (lease released, HLD §3.2) re-reviews and
+    PATCHes the SAME canonical comment — bounded duplicate LLM spend, no
+    second publication (HLD §3.2: fencing prevents duplicate publication).
+    A duplicate arriving DURING a live lease is instead discarded
+    (test_claim_fails_on_live_lease_held)."""
+    h = Harness(live_shas=[SHA_B, SHA_B])
     first = h.run(incoming_sha=SHA_B)
     assert first.kind == OutcomeKind.PUBLISHED
     second = h.run(incoming_sha=SHA_B, owner=GUID_2)
-    assert second.kind == OutcomeKind.DISCARDED_CLAIM_HELD
-    assert sum(1 for entry in h.calls if entry[0] == "publish") == 1
-    assert h.table.items[PK]["comment_id"] == COMMENT_ID
+    assert second.kind == OutcomeKind.PUBLISHED
+    assert h.table.items[PK]["comment_id"] == COMMENT_ID  # PATCH, never a second comment
 
 
 def test_claim_failure_after_concurrent_move_discards_stale():
@@ -434,4 +451,4 @@ def test_claim_succeeds_when_owner_absent():
     del h.table.items[PK]["claim_until"]
     outcome = h.run(incoming_sha=SHA_A)
     assert outcome.kind == OutcomeKind.PUBLISHED
-    assert h.table.items[PK]["claim_owner"] == GUID_1
+    assert "claim_owner" not in h.table.items[PK]  # granted, then released at finalize
