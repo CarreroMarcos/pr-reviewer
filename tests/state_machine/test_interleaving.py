@@ -273,9 +273,10 @@ def test_second_push_establish_increments_generation():
 
 
 def test_midflight_older_review_aborts_at_fence():
-    """A lands a newer push between the older run's claim and its fence →
-    the older review discards as stale; publish NEVER runs (no GitHub
-    write of any kind); the record is left claimed for lease recovery."""
+    """The live head moves between the older run's review head-fetch and
+    its fence → the older review discards as stale; publish NEVER runs (no
+    GitHub write of any kind); the record is left claimed for lease
+    recovery."""
     h = Harness(meta=[(200, SHA_A), (200, SHA_B)], llm_bodies=[BODY_A])
     assert h.run(SHA_A, GUID_A) == {"ok": True, "results": ["discarded_stale"]}
     assert h.github.calls == []
