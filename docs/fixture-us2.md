@@ -1,3 +1,3 @@
 fixture: US2 acceptance scratch file (T042)
 not product content — drives real synchronize events for acceptance (c)(d)(h)
-push: rapid-1 at 2026-09-14T16:46:19.192206+00:00
+push: rapid-2 at 2026-09-14T16:46:20.266564+00:00
