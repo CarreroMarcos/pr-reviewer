@@ -52,9 +52,12 @@ Flagged interpretations for the review gate:
 * Fence mismatch after claim leaves the record CLAIMED (no release write):
   HLD §3.3 step 4 says only "Mismatch → discard as stale"; the 180 s lease
   expiry (HLD §3.2) is the recovery path.
-* A superseded establish performs NO write (the record is left unchanged):
-  `last_seen_sha` advances on the accepted (a)/(b)/(c) paths; recording it on
-  rejected events is stale-path (T043) scope, not this executor's.
+* A superseded establish records the observation: `last_seen_sha` advances
+  to the incoming SHA via `build_advance_last_seen_expressions` (HLD §3.3
+  step 1 — the most recently observed webhook SHA is recorded regardless
+  of acceptance). ONLY `last_seen_sha` moves; head, generation, lease, and
+  comment are untouched, and a concurrent move retries the loop rather
+  than overwriting.
 * Stale `comment_id` is cleared on re-establish: establish (c) emits
   `REMOVE comment_id` (HLD §3.1 — `comment_id` is present only on ACTIVE
   records), so the ACTIVE → CLAIMED transition leaves the record decodable
@@ -73,6 +76,7 @@ from typing import Any
 from common.state import (
     CLAIM_LEASE_SECONDS,
     ReviewState,
+    build_advance_last_seen_expressions,
     build_claim_expressions,
     build_establish_confirm,
     build_establish_equality,
@@ -228,8 +232,10 @@ def _establish(
     """Establish step (HLD §3.3 step 1): success returns (head_sha, generation).
 
     Failure returns an `Outcome`: superseded when the incoming SHA is not the
-    live head (no write performed), stale when the bounded re-read/retry loop
-    exhausts (a concurrent writer owns the record — never overwrite).
+    live head (the observation is still recorded via `_observe_superseded` —
+    `last_seen_sha` advances, nothing else moves), stale when the bounded
+    re-read/retry loop exhausts (a concurrent writer owns the record — never
+    overwrite).
     """
     last_item: dict[str, Any] | None = None
     for _ in range(max_attempts):
@@ -241,6 +247,7 @@ def _establish(
             if incoming_sha == item.get("last_seen_sha"):
                 return _establish_equality(pk, incoming_sha, item, table, now)
             if fence() != incoming_sha:
+                _observe_superseded(pk, incoming_sha, table)
                 return Outcome(
                     kind=OutcomeKind.DISCARDED_SUPERSEDED,
                     head_sha=incoming_sha,
@@ -255,6 +262,21 @@ def _establish(
         kind=OutcomeKind.DISCARDED_STALE,
         head_sha=incoming_sha,
         generation=last_item.get("generation") if last_item is not None else None,
+    )
+
+
+def _observe_superseded(pk: str, incoming_sha: str, table: Any) -> None:
+    """Record a superseded event's SHA as the latest observation (HLD §3.3
+    step 1; US3.AC1): ONLY `last_seen_sha` advances. A concurrent move
+    raises `ConditionalCheckFailed` for the establish loop to retry — the
+    observation is never forced over a newer record."""
+    update, condition, values = build_advance_last_seen_expressions(incoming_sha=incoming_sha)
+    table.update_item(
+        Key={"pk": pk},
+        UpdateExpression=update,
+        ConditionExpression=condition,
+        ExpressionAttributeNames=expression_names(update, condition),
+        ExpressionAttributeValues=values,
     )
 
 

@@ -3,7 +3,10 @@
 Fixed field set only: every emitted line is one JSON object carrying exactly
 `FIXED_FIELDS` — the HLD §5.4 "Logged" row (IDs, SHAs, durations, token
 usage, status, error class) plus the §4.3 review-metric identifiers
-`generation` and `prompt_version`. `build_event()` takes those fields as
+`generation` and `prompt_version` and the §4.3 `stale_discarded` discard
+metric (True when the run discarded superseded/stale work via fencing,
+False otherwise — strict bool, never None, so the metric is always
+queryable). `build_event()` takes those fields as
 explicit keyword-only parameters, so non-fixed content (Authorization
 headers, PATs, secrets, raw payloads, diffs, LLM request/response bodies) is
 structurally unemittable — there is no parameter that could carry it
@@ -50,6 +53,7 @@ FIXED_FIELDS = frozenset(
         "token_usage",
         "status",
         "error_class",
+        "stale_discarded",
         "prompt_version",
     }
 )
@@ -97,7 +101,7 @@ class LogsError(ValueError):
     machine-readable code (`not_object`, `missing`, `bad_fields`,
     `bad_repo`, `bad_pr_number`, `bad_sha`, `bad_guid`,
     `bad_generation`, `bad_duration`, `bad_token_usage`, `bad_status`,
-    `bad_error_class`, `bad_prompt_version`)."""
+    `bad_error_class`, `bad_stale_discarded`, `bad_prompt_version`)."""
 
     def __init__(self, field: str, reason: str) -> None:
         self.field = field
@@ -200,6 +204,12 @@ def _clean_error_class(value: Any) -> str | None:
     return value
 
 
+def _clean_stale_discarded(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise LogsError("stale_discarded", "bad_stale_discarded")
+    return value
+
+
 def _clean_prompt_version(value: Any) -> str | None:
     if value is None:
         return None
@@ -223,6 +233,7 @@ def build_event(
     status: Any,
     error_class: Any = None,
     generation: Any = None,
+    stale_discarded: Any = False,
     prompt_version: Any = None,
 ) -> dict[str, Any]:
     """Build a fixed-field log event.
@@ -232,7 +243,8 @@ def build_event(
     smuggle them in (unknown keywords raise `TypeError`). Every value is
     format-checked (`LogsError`) and guard-scanned (`RedactionError`); the
     returned dict carries exactly `FIXED_FIELDS`, with `None` defaults for
-    the optional `error_class`, `generation`, and `prompt_version`.
+    the optional `error_class`, `generation`, and `prompt_version`, and
+    `False` for `stale_discarded` (runs that did not discard stale work).
     """
     return {
         "repo_full_name": _clean_repo(repo_full_name),
@@ -244,6 +256,7 @@ def build_event(
         "token_usage": _clean_count(token_usage, "token_usage", "bad_token_usage"),
         "status": _clean_status(status),
         "error_class": _clean_error_class(error_class),
+        "stale_discarded": _clean_stale_discarded(stale_discarded),
         "prompt_version": _clean_prompt_version(prompt_version),
     }
 
@@ -256,6 +269,7 @@ def event_from_envelope(
     status: Any,
     error_class: Any = None,
     generation: Any = None,
+    stale_discarded: Any = False,
     prompt_version: Any = None,
 ) -> dict[str, Any]:
     """Build a fixed-field event from an envelope-shaped dict or `Envelope`.
@@ -283,6 +297,7 @@ def event_from_envelope(
         status=status,
         error_class=error_class,
         generation=generation,
+        stale_discarded=stale_discarded,
         prompt_version=prompt_version,
     )
 

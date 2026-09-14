@@ -578,6 +578,11 @@ _OUTCOME_STATUS = {
     OutcomeKind.DISCARDED_CLAIM_HELD: "discarded_claim_held",
 }
 
+# Outcomes that discarded superseded/stale work via fencing (HLD §4.3
+# `stale_discarded` metric). Claim-held is excluded: another owner holds a
+# live lease, but the event itself was not proven stale.
+_STALE_DISCARDED_KINDS = frozenset({OutcomeKind.DISCARDED_SUPERSEDED, OutcomeKind.DISCARDED_STALE})
+
 
 def _emit(
     sink: Sink,
@@ -588,6 +593,7 @@ def _emit(
     status: str,
     error_class: str | None,
     generation: int | None,
+    stale_discarded: bool = False,
 ) -> None:
     """Best-effort structured log (HLD §5.4): emission never masks the
     record disposition — a logging fault is a plain warning, not a retry."""
@@ -604,6 +610,7 @@ def _emit(
                 status=status,
                 error_class=error_class,
                 generation=generation,
+                stale_discarded=stale_discarded,
                 prompt_version=PROMPT_VERSION,
             ),
         )
@@ -708,6 +715,7 @@ def _process_record(
         status=status,
         error_class=None,
         generation=outcome.generation,
+        stale_discarded=outcome.kind in _STALE_DISCARDED_KINDS,
     )
     return status
 
