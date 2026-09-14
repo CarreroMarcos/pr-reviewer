@@ -24,15 +24,17 @@ Error mapping at the worker boundary (HLD §2.3 item 8 is the authority;
 
 Publish shape (constitution IV — exactly one canonical comment): the
 publish port re-reads the stored record; a stored `comment_id` → PATCH that
-comment; absent → POST a new comment. A re-publish of a row that still
-carries `comment_id` is therefore a PATCH of the same comment, never a
-second POST. There is deliberately NO ACTIVE same-owner short-circuit:
-sequential same-owner+SHA replay after a completed run publishes again via
-PATCH (reopened PR ⇒ fresh review, possibly at the same head SHA).
-Full §3.4 reconciliation (creation-lease race hardening, marker adoption,
-the PATCH-404 decision table) is T039/T040 scope: a PATCH 404 here
-completes non-retryably without recovery, and a new-revision POST converges
-through later reconciliation.
+comment; absent → `common.reconcile` (list-first: adopt a surviving marker
+comment when one exists, else creation-lease → POST → persist → re-check).
+A re-publish of a row that still carries `comment_id` is therefore a PATCH
+of the same comment, never a second POST. There is deliberately NO ACTIVE
+same-owner short-circuit: sequential same-owner+SHA replay after a completed
+run publishes again via PATCH (reopened PR ⇒ fresh review, possibly at the
+same head SHA). A PATCH 404 (stored comment deleted or migrated) takes the
+HLD §2.3 item-8 decision table through `common.reconcile`: marker found
+elsewhere → adopt + reconcile; none found → lease → POST → persist →
+re-check; list 403/404 or unparseable list → non-retryable complete;
+transient list failure → raise for queue retry.
 
 SQS at-least-once after success (wasted LLM + extra PATCH) is accepted for
 US1: no new idempotency key is invented.
@@ -82,8 +84,9 @@ from common.diff import DiffError, fetch_diff, fetch_pr_head_sha
 from common.envelope import Envelope, EnvelopeError, validate_envelope
 from common.llm import LlmError, review_diff
 from common.logs import build_event, emit
-from common.protocol import OutcomeKind, run_review
-from common.state import review_pk
+from common.protocol import ConditionalCheckFailed, OutcomeKind, run_review
+from common.reconcile import PER_PAGE, CommentNotFound, ReconcileError, reconcile
+from common.state import build_clear_comment_expressions, expression_names, review_pk
 from common.validate import PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
@@ -217,9 +220,10 @@ def _llm_is_retryable(exc: LlmError) -> bool:
 
 
 def _github_is_retryable(exc: GitHubError) -> bool:
-    """GitHub-write side: auth/lost-access completes (T040 owns the
-    PATCH-404 decision table); throttling, 5xx, transport and garbled
-    replies raise for the queue."""
+    """GitHub-write side: auth/lost-access completes; throttling, 5xx,
+    transport and garbled replies raise for the queue. PATCH-404 recovery
+    itself lives in `_make_publish` (decision table via `common.reconcile`);
+    a 404 escaping publish (e.g. second-round loss) still completes."""
     return exc.status not in (401, 403, 404)
 
 
@@ -240,6 +244,10 @@ def is_retryable(exc: BaseException) -> bool:
         return _llm_is_retryable(exc)
     if isinstance(exc, GitHubError):
         return _github_is_retryable(exc)
+    if isinstance(exc, ReconcileError):
+        # Unparseable/unreadable listing or irreconcilable contention: the
+        # decision table says complete (log, alert downstream, never spin).
+        return False
     return True
 
 
@@ -255,6 +263,8 @@ def _error_class(exc: BaseException) -> str:
         return f"diff_{exc.reason}{suffix}"
     if isinstance(exc, (LlmError, GitHubError)):
         return exc.error_class
+    if isinstance(exc, ReconcileError):
+        return f"reconcile_{exc.error_class}"
     return type(exc).__name__
 
 
@@ -419,13 +429,17 @@ def _make_publish(
     creds: _Credentials,
     table: Any,
     pk: str,
+    owner: str,
+    clock: Clock,
     github_transport: Callable[..., tuple[int, bytes]],
 ) -> Callable[[str], int]:
     """Protocol `publish` port (constitution IV — exactly one canonical
-    comment): consults the STORED `comment_id` — present → PATCH that
-    comment; absent → POST via creation lease. `comment_id` lands on the
-    record only via finalize, so a same-revision re-publish is a PATCH,
-    never a second POST."""
+    comment; HLD §2.3 item 8 + §3.4): consults the STORED `comment_id` —
+    present → PATCH that comment; a PATCH 404 (deleted/migrated) falls
+    through to `common.reconcile`; absent → reconcile directly (list-first:
+    a surviving marker comment from a crashed predecessor is adopted, not
+    duplicated). `comment_id` lands on the record only via finalize, so a
+    same-revision re-publish is a PATCH, never a second POST."""
 
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
@@ -441,14 +455,117 @@ def _make_publish(
                 )
             raise
 
+    def _read(url: str) -> bytes:
+        """One GET with the shared single-401 budget; non-2xx → GitHubError
+        for the boundary classifier (403/404 complete, 429/5xx retry)."""
+        token = creds.current().github_token
+        status, raw = github_transport("GET", url, _github_headers(token), b"")
+        if status == 401 and creds.refresh_once():
+            status, raw = github_transport(
+                "GET", url, _github_headers(creds.current().github_token), b""
+            )
+        if not 200 <= status <= 299:
+            raise GitHubError(status, f"http_{status}")
+        return raw
+
+    def _list_page(page: int) -> Any:
+        raw = _read(f"{_comments_url(repo, pr_number)}?page={page}&per_page={PER_PAGE}")
+        try:
+            return json.loads(raw)
+        except ValueError:
+            # Not JSON at all: return raw so reconcile shape-validation
+            # maps it to list-unreadable (non-retryable), never a retry.
+            return raw
+
+    def _create(body: str) -> int:
+        return _write("POST", _comments_url(repo, pr_number), body)
+
+    def _update(comment_id: int, body: str) -> None:
+        try:
+            _write("PATCH", _comment_url(repo, comment_id), body)
+        except GitHubError as exc:
+            if exc.status == 404:
+                raise CommentNotFound(comment_id) from exc
+            raise
+
+    def _delete(comment_id: int) -> None:
+        # DELETE has no id-bearing reply (204 + empty body), so it bypasses
+        # `_github_write`'s comment-id parse; only the status is classified.
+        payload = json.dumps({"body": ""}, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        url = _comment_url(repo, comment_id)
+        token = creds.current().github_token
+        status, _ = github_transport("DELETE", url, _github_headers(token), payload)
+        if status == 401 and creds.refresh_once():
+            status, _ = github_transport(
+                "DELETE", url, _github_headers(creds.current().github_token), payload
+            )
+        if status == 404:
+            return  # already gone is converged
+        if not 200 <= status <= 299:
+            raise GitHubError(status, f"http_{status}")
+
+    def _recover(content: str, dead_comment_id: int | None) -> int:
+        if dead_comment_id is not None:
+            _clear_dead_id(dead_comment_id)
+        return reconcile(
+            repo_full_name=repo,
+            pr_number=pr_number,
+            pk=pk,
+            owner=owner,
+            content=content,
+            table=table,
+            now=lambda: int(clock()),
+            list_page=_list_page,
+            create_comment=_create,
+            update_comment=_update,
+            delete_comment=_delete,
+        )
+
+    def _clear_dead_id(dead_comment_id: int) -> None:
+        """REMOVE a stored id the PATCH just proved dead, guarded on the
+        exact id at our revision. A concurrent move (newer revision owns
+        the record now) aborts recovery — the newer run converges."""
+        item = table.get_item(pk) or {}
+        head_sha = item.get("head_sha")
+        generation = item.get("generation")
+        if (
+            not isinstance(head_sha, str)
+            or not isinstance(generation, int)
+            or isinstance(generation, bool)
+        ):
+            raise GitHubError(404, "http_404")
+        update, condition, values = build_clear_comment_expressions(
+            head_sha=head_sha,
+            generation=generation,
+            dead_comment_id=dead_comment_id,
+        )
+        try:
+            table.update_item(
+                Key={"pk": pk},
+                UpdateExpression=update,
+                ConditionExpression=condition,
+                ExpressionAttributeNames=expression_names(update, condition),
+                ExpressionAttributeValues=values,
+            )
+        except ConditionalCheckFailed:
+            raise GitHubError(404, "http_404") from None
+
     def publish(content: str) -> int:
         item = table.get_item(pk) or {}
         comment_id = item.get("comment_id")
         if isinstance(comment_id, bool):
             comment_id = None
         if isinstance(comment_id, int) and comment_id >= 1:
-            return _write("PATCH", _comment_url(repo, comment_id), content)
-        return _write("POST", _comments_url(repo, pr_number), content)
+            try:
+                return _write("PATCH", _comment_url(repo, comment_id), content)
+            except GitHubError as exc:
+                if exc.status != 404:
+                    raise
+                # Stored comment deleted/migrated: clear the proven-dead id
+                # (so the creation lease is acquirable), then the item-8
+                # decision table via reconcile.
+                return _recover(content, comment_id)
+        return _recover(content, None)
 
     return publish
 
@@ -552,10 +669,12 @@ def _process_record(
                 creds=creds,
                 table=table,
                 pk=pk,
+                owner=envelope.delivery_guid,
+                clock=clock,
                 github_transport=github_transport,
             ),
         )
-    except (DiffError, LlmError, GitHubError, ConfigError, AssembleError) as exc:
+    except (DiffError, LlmError, GitHubError, ConfigError, AssembleError, ReconcileError) as exc:
         error_class = _error_class(exc)
         duration_ms = max(0, int((clock() - started) * 1000))
         if is_retryable(exc):

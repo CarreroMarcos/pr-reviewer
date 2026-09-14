@@ -14,6 +14,14 @@ expression parser):
 * ``generation = :expected_gen`` — establish (c) live-head confirm
 * ``head_sha = :reviewed AND generation = :gen AND (claim_until < :now OR
   attribute_not_exists(claim_owner))`` — claim (HLD §3.3 step 3 verbatim)
+* ``head_sha = :reviewed AND generation = :gen AND (claim_until < :now OR
+  attribute_not_exists(claim_owner) OR claim_owner = :owner) AND
+  attribute_not_exists(comment_id)`` — creation lease (HLD §3.4; the
+  `claim_owner = :owner` disjunct is the flagged self-holder reading
+  documented in `common.reconcile`)
+* ``head_sha = :reviewed AND generation = :gen AND comment_id = :dead`` —
+  dead-id clear (HLD §2.3 item 8 PATCH-404 row; builder
+  `common.state.build_clear_comment_expressions`)
 * ``head_sha = :reviewed AND generation = :gen`` — finalize (HLD §3.3 step 6)
 
 Any other condition (or a non-``SET`` update) raises ValueError loudly: a
@@ -41,6 +49,12 @@ _CLAIM_CONDITION = (
     "head_sha = :reviewed AND generation = :gen "
     "AND (claim_until < :now OR attribute_not_exists(claim_owner))"
 )
+_CREATION_LEASE_CONDITION = (
+    "head_sha = :reviewed AND generation = :gen "
+    "AND (claim_until < :now OR attribute_not_exists(claim_owner) "
+    "OR claim_owner = :owner) AND attribute_not_exists(comment_id)"
+)
+_CLEAR_COMMENT_CONDITION = "head_sha = :reviewed AND generation = :gen AND comment_id = :dead"
 _FINALIZE_CONDITION = "head_sha = :reviewed AND generation = :gen"
 
 
@@ -118,6 +132,25 @@ def _condition_holds(
             and current.get("generation") == values[":gen"]
             and (current.get("claim_until", 0) < values[":now"] or "claim_owner" not in current)
         )
+    if condition == _CREATION_LEASE_CONDITION:
+        return (
+            current is not None
+            and current.get("head_sha") == values[":reviewed"]
+            and current.get("generation") == values[":gen"]
+            and (
+                current.get("claim_until", 0) < values[":now"]
+                or "claim_owner" not in current
+                or current.get("claim_owner") == values[":owner"]
+            )
+            and "comment_id" not in current
+        )
+    if condition == _CLEAR_COMMENT_CONDITION:
+        return (
+            current is not None
+            and current.get("head_sha") == values[":reviewed"]
+            and current.get("generation") == values[":gen"]
+            and current.get("comment_id") == values[":dead"]
+        )
     if condition == _FINALIZE_CONDITION:
         return (
             current is not None
@@ -134,9 +167,16 @@ def _apply_update(
     names: dict[str, str],
     values: dict[str, Any],
 ) -> dict[str, Any]:
-    """Tiny `SET attr = :val[, ...][ REMOVE attr[, ...]]` applier for the
-    builder shapes (REMOVE of a non-existent attribute is a no-op, as in
-    real DynamoDB)."""
+    """Tiny `SET ... [REMOVE ...]` / `REMOVE ...` applier for the builder
+    shapes (REMOVE of a non-existent attribute is a no-op, as in real
+    DynamoDB)."""
+    if update.startswith("REMOVE ") and " = " not in update:
+        item = dict(current) if current is not None else {"pk": pk}
+        for attr in update[len("REMOVE ") :].split(", "):
+            if not attr:
+                raise ValueError(f"unsupported remove clause: {attr!r}")
+            item.pop(names.get(attr, attr), None)
+        return item
     if not update.startswith("SET "):
         raise ValueError(f"unsupported update expression: {update!r}")
     set_part, remove_sep, remove_part = update[4:].partition(" REMOVE ")
