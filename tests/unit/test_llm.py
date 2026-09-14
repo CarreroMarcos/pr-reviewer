@@ -158,6 +158,16 @@ def test_temperature_sent_exactly():
     assert isinstance(body["temperature"], float)
 
 
+def test_thinking_disabled_sent():
+    # GLM reasoning defaults on (~1.3K tokens, ~45s) and busts the ≤15s
+    # comment bar (HLD §2.2 (b)) — the payload must pin it off (surfaced
+    # live by the T035 acceptance run).
+    invoke()
+    _, request = last_request()
+    body = json.loads(request["body"])
+    assert body["thinking"] == {"type": "disabled"}
+
+
 def test_model_and_messages_sent():
     invoke()
     _, request = last_request()

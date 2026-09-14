@@ -29,14 +29,25 @@
 #    inventing one would be worse. The trust below names the account root
 #    gated on MFA (aws:MultiFactorAuthPresent) — tighten it to the SSO role
 #    ARN when that principal exists.
-# 4. LeadingKeys uses test "StringLike" — a wildcard match is required for
-#    the "delivery:*" pattern; the values list is exactly ["delivery:*"].
+# 4. LeadingKeys is a multivalued condition key, so it requires the
+#    ForAllValues modifier: bare "StringLike" never matches and every
+#    GetItem/PutItem is denied ("no identity-based policy allows …" —
+#    surfaced live by the T035 acceptance run on the scratch stack). The
+#    ingress only ever issues single-key GetItem/PutItem on delivery:*,
+#    so ForAllValues over that one key is exact; it does not issue
+#    Scan/Batch calls, where an empty key set would evaluate true.
 # 5. Ingress SSM is the singular ssm:GetParameter per HLD §5.1 (the worker
 #    uses the plural batched GetParameters, mirroring config.py). If ingress
 #    ever adopts the batched accessor, its grant needs the plural action too
 #    (future T030 concern — both handlers are still stubs).
 # 6. No kms:Decrypt grants: SecureStrings use the AWS-managed aws/ssm key and
 #    SSM decrypts server-side via WithDecryption (HLD §2.6).
+# 7. The worker role trusts lambda.amazonaws.com scoped to aws:SourceAccount,
+#    not the function ARN: CreateEventSourceMapping validates assumability
+#    for the QUEUE event source, so a function-ARN SourceArn condition fails
+#    it (seen live applying this stack — T035). SourceAccount keeps the
+#    confused-deputy guard; the ingress role keeps its function-ARN condition
+#    (no mapping; CreateFunction validated it fine).
 
 data "aws_caller_identity" "current" {}
 
@@ -110,7 +121,10 @@ resource "aws_iam_role_policy" "ingress" {
         ]
         Resource = [aws_dynamodb_table.state.arn]
         Condition = {
-          StringLike = { "dynamodb:LeadingKeys" = ["delivery:*"] }
+          # LeadingKeys is a multivalued condition key, so the ForAllValues
+          # modifier is mandatory — bare StringLike never matches and every
+          # data call is denied (see interpretation 4).
+          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["delivery:*"] }
         }
       },
     ]
@@ -127,7 +141,7 @@ resource "aws_iam_role" "worker" {
       Principal = { Service = "lambda.amazonaws.com" }
       Action    = "sts:AssumeRole"
       Condition = {
-        StringEquals = { "aws:SourceArn" = local.worker_function_arn }
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
       }
     }]
   })

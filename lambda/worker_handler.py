@@ -70,6 +70,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -125,10 +126,28 @@ class _BotoTable:
     def get_item(self, pk: str) -> dict[str, Any] | None:
         response = self._table.get_item(Key={"pk": pk})
         item = response.get("Item")
-        return dict(item) if item is not None else None
+        if item is None:
+            return None
+        # boto3 deserializes DynamoDB numbers as decimal.Decimal, but the
+        # table-port contract (mirrored by the state-machine stub) is plain
+        # ints: the publish port's `isinstance(comment_id, int)` gate and
+        # the §5.4 event's json.dumps both fail on Decimal — surfaced live
+        # by the T035 acceptance run (every ride POSTed a fresh comment
+        # instead of PATCHing the stored one).
+        return {
+            key: int(value) if isinstance(value, Decimal) else value for key, value in item.items()
+        }
 
     def update_item(self, **kwargs: Any) -> dict[str, Any]:
         from common.protocol import ConditionalCheckFailed
+
+        # Empty names must be OMITTED, never passed: the boto3 resource
+        # layer rejects `{}` server-side ("must not be empty") and `None`
+        # client-side (its condition-expression transformer calls
+        # `.update()` on the value unconditionally — surfaced live by the
+        # T035 acceptance run).
+        if not kwargs.get("ExpressionAttributeNames"):
+            kwargs.pop("ExpressionAttributeNames", None)
 
         try:
             return self._table.update_item(**kwargs)
@@ -575,18 +594,26 @@ def _env_allowed_hosts() -> tuple[str, ...]:
 def _load_system_prompt() -> str:
     """Production prompt source: the versioned contract file (T018).
 
-    Tests always inject `_system_prompt`. A missing file falls back to the
-    `SYSTEM_PROMPT` env var; absence of both is a permanent config fault
-    (complete, alert) — never an empty prompt.
+    Two layouts are resolved, zip first: the Lambda archive ships
+    `prompts/` beside the handler (`<dir>/prompts`), while a repo checkout
+    keeps it one level up (`<dir>/../prompts`). Tests always inject
+    `_system_prompt`. No layout match falls back to the `SYSTEM_PROMPT`
+    env var (dev only — never set in Terraform); absence of all three is a
+    permanent config fault (complete, alert) — never an empty prompt.
     """
-    candidate = Path(__file__).resolve().parent.parent / "prompts" / "system_prompt.md"
-    try:
-        return candidate.read_text(encoding="utf-8")
-    except OSError:
-        fallback = os.environ.get("SYSTEM_PROMPT", "")
-        if fallback:
-            return fallback
-        raise ConfigError("system_prompt", "missing") from None
+    here = Path(__file__).resolve().parent
+    for candidate in (
+        here / "prompts" / "system_prompt.md",
+        here.parent / "prompts" / "system_prompt.md",
+    ):
+        try:
+            return candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    fallback = os.environ.get("SYSTEM_PROMPT", "")
+    if fallback:
+        return fallback
+    raise ConfigError("system_prompt", "missing") from None
 
 
 def reset_config_cache() -> None:
