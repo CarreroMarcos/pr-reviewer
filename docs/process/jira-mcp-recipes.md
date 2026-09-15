@@ -65,6 +65,18 @@ const d = parse(await tools.jira.executeRead({ ... })).data ?? {};
 const list = d.comments ?? [];
 ```
 
+**Primary tools wrap too (verified 2026-09-14).** `getJiraIssue` /
+`searchJiraIssuesUsingJql` called directly return the same `data`-wrapped
+shape: issue fields at `data.fields` (e.g. `data.fields.status.name`),
+search hits at `data.issues[]`. Reading `r.fields.status` off the top
+level silently yields `undefined` and mimics a failed read.
+
+**JQL status quirk (verified 2026-09-14).** `status != Done` resolves on
+this site; `status = Done` returns 0 issues even when Done tickets exist.
+Board audits: run `project = SPR AND status != Done` (empty ⇒ all Done)
+and confirm individual tickets with per-key `getJiraIssue` →
+`data.fields.status.name`.
+
 ## Resume after a failed trail block
 
 An `execute` block that throws midway has usually already landed earlier
