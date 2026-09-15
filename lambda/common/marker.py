@@ -11,5 +11,6 @@ MARKER_VERSION = "v1"
 
 
 def build_marker(repo_full_name: str, pr_number: int) -> str:
-    """Build the canonical marker for a repo/PR pair."""
+    """Build the canonical marker for a repo/PR pair. Precondition: inputs
+    are envelope-validated per HLD §2.1 — no validation happens here."""
     return f"<!-- pr-reviewer:canonical:{MARKER_VERSION}:{repo_full_name}#{pr_number} -->"

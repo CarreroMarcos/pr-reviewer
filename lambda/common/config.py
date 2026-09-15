@@ -110,7 +110,9 @@ class ConfigProvider:
 
     def get(self) -> AppConfig:
         """Return the cached config, re-fetching on cold start, TTL expiry,
-        or after `invalidate()`/`bust()`."""
+        or after `invalidate()`/`bust()`. A backwards clock (negative
+        elapsed) simply yields no refetch — accepted; the HLD is silent
+        on clock behavior, so this documents rather than fixes it."""
         now = self._clock()
         if self._cached is None or (now - self._fetched_at) >= TTL_SECONDS:
             self._cached = self._fetch()

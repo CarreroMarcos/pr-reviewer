@@ -15,6 +15,10 @@ Reason codes: `missing_marker`, `marker_spoofed`, `not_text`, `over_length`,
 `control_directive`, `canary_leaked`, `mention`, `external_media`,
 `approval_verdict`.
 
+Non-string input is rejected with `not_text` before any other check. The
+`<!--` scan runs on marker-stripped text (every exact worker-injected
+marker removed first), so the legitimate marker never trips `hidden_html`.
+
 Pure stdlib, no I/O.
 """
 

@@ -443,6 +443,22 @@ def test_multi_page_accumulation_is_deterministic():
     assert first == second
 
 
+def test_cross_page_truncation_is_deterministic():
+    # SPR-61: the pre-model budget applies across accumulated pages in
+    # sorted-filename order — page one alone fits, pages one+two overflow
+    # MAX_CHANGED_LINES, and both runs agree byte-for-byte.
+    page_one = [file_entry(f"src/a{i:03d}.py", additions=200) for i in range(diff.FILES_PER_PAGE)]
+    page_two = [file_entry(f"src/b{i:03d}.py", additions=200) for i in range(diff.FILES_PER_PAGE)]
+    routes = multi_page_routes(page_one, page_two)
+    routes[diff.build_pr_files_url(REPO, PR_NUMBER, page=3)] = (200, files_body([]))
+    first = diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=FakeTransport(routes))
+    second = diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=FakeTransport(routes))
+    assert first.truncated is True
+    assert first == second
+    assert [f.filename for f in first.files] == sorted(f.filename for f in first.files)
+    assert first.total_additions + first.total_deletions <= diff.MAX_CHANGED_LINES
+
+
 def test_pagination_uses_constructed_urls_only_never_link_headers():
     evil_link = '<https://evil.example/c2>; rel="next", <https://evil.example/c3>; rel="last"'
     page_one = [file_entry(f"src/file{i:03d}.py") for i in range(diff.FILES_PER_PAGE)]

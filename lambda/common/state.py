@@ -169,7 +169,8 @@ def delivery_ttl(now: int) -> int:
 
 
 def build_delivery_item(guid: str, now: int) -> dict[str, Any]:
-    """Delivery dedup item shape: pk + 7-day TTL (HLD §2.4, data-model.md §2)."""
+    """Delivery dedup item shape: pk + 7-day TTL (HLD §2.4 item type 1;
+    table-side `ttl` block in terraform/state.tf; specs data-model.md §1)."""
     return {"pk": delivery_pk(guid), "ttl": delivery_ttl(now)}
 
 
@@ -220,13 +221,17 @@ def from_item(item: Any) -> ReviewState:
 
 def is_stale(claim_until: int, now: int) -> bool:
     """STALE derivation (HLD §3.1): a CLAIMED record whose `claim_until`
-    has passed is treated as stale and re-claimable."""
+    has passed is treated as stale and re-claimable. Callers must gate on
+    CLAIMED first — bare timestamps carry no status."""
     return claim_until < now
 
 
 def build_establish_first_write(state: ReviewState) -> ExprTriple:
     """Establish (a): first write — unconditional on content, guarded only
-    on record absence (HLD §3.3 step 1a)."""
+    on record absence (HLD §3.3 step 1a). First write is always CLAIMED:
+    the status is hardcoded, never taken from the argument."""
+    if state.status != "CLAIMED":
+        raise StateError("status", "bad_status")
     update = (
         "SET head_sha = :head, last_seen_sha = :seen, generation = :gen, "
         "#st = :status, claim_owner = :owner, claim_until = :until, "
@@ -237,7 +242,7 @@ def build_establish_first_write(state: ReviewState) -> ExprTriple:
         ":head": state.head_sha,
         ":seen": state.last_seen_sha,
         ":gen": state.generation,
-        ":status": state.status,
+        ":status": "CLAIMED",
         ":owner": state.claim_owner,
         ":until": state.claim_until,
         ":updated_at": state.updated_at,
