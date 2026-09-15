@@ -1,6 +1,6 @@
 # serverless-pr-reviewer — Lambda compute (T020, HLD §2.1–§2.3, §7.1).
 #
-# Two functions (ingress 5s/128MB/reserved 2; worker 120s/256MB/reserved 5),
+# Two functions (ingress 5s/512MB/reserved 2; worker 120s/256MB/reserved 5),
 # a public Function URL on ingress (AuthType NONE, CORS disabled by omission),
 # and the SQS event source mapping (batch_size = 1).
 #
@@ -64,10 +64,13 @@ resource "aws_lambda_function" "ingress" {
   # Storm-containment posture only (guaranteed webhook availability +
   # worker blast-radius cap), not a throughput need. Supersedes the HLD §5
   # value (25).
-  # Memory 128 MB (HLD §5; trimmed from the 512 MB scratch value — CPU
-  # scales with memory, so 128 is a tight-but-workable floor for the
-  # boto3-laden ingress; watch the first deploy for cold-start timeouts).
-  memory_size                    = 128
+  # Memory stays 512 MB (known-good): CPU scales with memory and the lazy
+  # boto3 import cannot fit a cold start into the 5 s budget at 128 MB
+  # (observed: Sandbox.Timedout on first invoke). 128 MB was re-attempted
+  # under SPR-60 and rejected by operator decision (2026-09-14) after the
+  # canonical review surfaced this prior failure — revert over accept-risk.
+  # The memory trim is worker-only.
+  memory_size                    = 512
   reserved_concurrent_executions = 2
 
   # WORK_QUEUE_URL has no safe default in the handler ("" → send fails, 500):
