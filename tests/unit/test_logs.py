@@ -10,6 +10,7 @@ unemittable.
 """
 
 import json
+import logging
 import uuid
 
 import pytest
@@ -17,12 +18,16 @@ import pytest
 from common.envelope import validate_envelope
 from common.logs import (
     FIXED_FIELDS,
+    INGRESS_FIXED_FIELDS,
     LogsError,
     RedactionError,
     assert_clean,
     build_event,
+    build_ingress_event,
     emit,
+    emit_ingress_event,
     event_from_envelope,
+    prompt_sha256,
 )
 
 HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -43,6 +48,7 @@ EXPECTED_FIELDS = frozenset(
         "stale_discarded",
         "failure_notice_published",
         "prompt_version",
+        "prompt_sha256",
     }
 )
 
@@ -187,6 +193,7 @@ def test_build_event_carries_exactly_fixed_fields():
     assert event["stale_discarded"] is False  # default: no stale work discarded
     assert event["failure_notice_published"] == "false"  # default: no notice published
     assert event["prompt_version"] is None
+    assert event["prompt_sha256"] is None
 
 
 def test_build_event_carries_optional_fields():
@@ -203,6 +210,7 @@ def test_build_event_carries_optional_fields():
         stale_discarded=True,
         failure_notice_published="true",
         prompt_version="v3",
+        prompt_sha256="ab" * 32,
     )
     assert set(event) == FIXED_FIELDS
     assert event["error_class"] == "TimeoutError"
@@ -210,6 +218,7 @@ def test_build_event_carries_optional_fields():
     assert event["stale_discarded"] is True
     assert event["failure_notice_published"] == "true"
     assert event["prompt_version"] == "v3"
+    assert event["prompt_sha256"] == "ab" * 32
 
 
 def test_emit_writes_single_json_line_with_fixed_keys():
@@ -335,8 +344,10 @@ def test_emit_scans_final_serialized_line():
     )
     tampered = dict(event)
     tampered["status"] = "bearer"
-    with pytest.raises(RedactionError):
+    with pytest.raises(RedactionError) as excinfo:
         emit(lines.append, tampered)
+    # The emit-time value re-run names the offending field (not "output").
+    assert excinfo.value.field == "status"
     assert lines == []
 
 
@@ -478,19 +489,37 @@ def test_build_event_accepts_uppercase_guid():
     assert build_event(**_valid_kwargs(delivery_guid=guid))["delivery_guid"] == guid
 
 
-def test_build_event_rejects_non_string_prompt_version():
-    with pytest.raises(LogsError) as excinfo:
-        build_event(**_valid_kwargs(prompt_version=123))
-    assert excinfo.value.field == "prompt_version"
-    assert excinfo.value.reason == "bad_prompt_version"
+def test_build_event_drops_non_string_prompt_version_with_warning(caplog):
+    # Given a non-string prompt version Then the field drops to None with a
+    # loud warning — never raised into the request path (SPR-62 hardening).
+    with caplog.at_level(logging.WARNING, logger="common.logs"):
+        event = build_event(**_valid_kwargs(prompt_version=123))
+    assert event["prompt_version"] is None
+    assert [r for r in caplog.records if r.getMessage() == "prompt_version_rejected"]
 
 
-@pytest.mark.parametrize("version", ["", "v" * 65])
-def test_build_event_rejects_empty_and_overlong_prompt_version(version):
-    with pytest.raises(LogsError) as excinfo:
-        build_event(**_valid_kwargs(prompt_version=version))
-    assert excinfo.value.field == "prompt_version"
-    assert excinfo.value.reason == "bad_prompt_version"
+@pytest.mark.parametrize("version", ["", "v" * 65, "v1; DROP", "v1\n", "v 1", "Bearer abc123"])
+def test_build_event_drops_off_charset_prompt_version_with_warning(caplog, version):
+    # Given an empty, overlong, charset-violating, or hostile prompt version
+    # Then the field drops to None with a loud warning carrying only a fixed
+    # reason code — never the offending value, never a raise.
+    with caplog.at_level(logging.WARNING, logger="common.logs"):
+        event = build_event(**_valid_kwargs(prompt_version=version))
+    assert event["prompt_version"] is None
+    warnings = [r for r in caplog.records if r.getMessage() == "prompt_version_rejected"]
+    assert warnings
+    if version:
+        for record in warnings:
+            assert version not in str(record.__dict__.get("reason", ""))
+            assert version not in caplog.text
+
+
+@pytest.mark.parametrize("version", ["v1", "v3", "v1.2-rc_3"])
+def test_build_event_passes_charset_clean_prompt_version(version):
+    # Given a charset-clean code-identity version Then it passes through
+    # untouched and no rejection warning fires.
+    event = build_event(**_valid_kwargs(prompt_version=version))
+    assert event["prompt_version"] == version
 
 
 def test_build_event_rejects_true_generation():
@@ -536,10 +565,13 @@ def test_bearer_smuggled_in_status_trips_guard():
         build_event(**_valid_kwargs(status="bearer_token"))
 
 
-def test_bearer_smuggled_in_prompt_version_trips_guard():
-    # Given a bearer-shaped prompt version Then the guard refuses instead of emitting
-    with pytest.raises(RedactionError):
-        build_event(**_valid_kwargs(prompt_version="Bearer abc123"))
+def test_charset_clean_bearer_shaped_prompt_version_dropped_with_warning(caplog):
+    # Given the lowercase "bearer" token (passes the charset, trips the
+    # redaction guard) Then the field still drops with a warning, never emits.
+    with caplog.at_level(logging.WARNING, logger="common.logs"):
+        event = build_event(**_valid_kwargs(prompt_version="bearer"))
+    assert event["prompt_version"] is None
+    assert [r for r in caplog.records if r.getMessage() == "prompt_version_rejected"]
 
 
 def test_nested_hostile_extras_never_emitted():
@@ -569,4 +601,136 @@ def test_emit_rejects_non_string_keys():
         emit(lines.append, tampered)
     assert excinfo.value.field == "event"
     assert excinfo.value.reason == "bad_fields"
+    assert lines == []
+
+
+# --- SPR-62: prompt_sha256 telemetry -----------------------------------------
+
+
+def test_prompt_sha256_matches_known_vector():
+    # Stable known-input → known sha256, lowercase hex (hash only, never text).
+    assert (
+        prompt_sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    )
+
+
+def test_prompt_sha256_is_lowercase_hex_64():
+    import re
+
+    digest = prompt_sha256("SYSTEM-PROMPT")
+    assert re.match(r"^[0-9a-f]{64}\Z", digest)
+    assert digest == digest.lower()
+
+
+@pytest.mark.parametrize(
+    "value", ["AB" * 32, "ab" * 31 + "!", "ab" * 32 + "ab", "", 123, b"ab" * 32]
+)
+def test_build_event_rejects_malformed_prompt_sha256(value):
+    with pytest.raises(LogsError) as excinfo:
+        build_event(**_valid_kwargs(prompt_sha256=value))
+    assert excinfo.value.field == "prompt_sha256"
+    assert excinfo.value.reason == "bad_prompt_sha256"
+
+
+def test_event_from_envelope_carries_prompt_sha256():
+    digest = prompt_sha256("SYSTEM-PROMPT")
+    event = event_from_envelope(_envelope(), **_metrics(), prompt_sha256=digest)
+    assert event["prompt_sha256"] == digest
+    lines = []
+    emit(lines.append, event)
+    assert json.loads(lines[0])["prompt_sha256"] == digest
+
+
+def test_emit_preserves_non_string_values_verbatim():
+    # The emit-time cleaner re-run is read-only: ints, None, and bools
+    # round-trip untouched (no double-mutation of non-string values).
+    event = build_event(
+        **_valid_kwargs(
+            generation=3, error_class=None, stale_discarded=True, prompt_sha256="ab" * 32
+        )
+    )
+    before = dict(event)
+    lines = []
+    emit(lines.append, event)
+    assert event == before
+    parsed = json.loads(lines[0])
+    assert parsed["generation"] == 3
+    assert parsed["error_class"] is None
+    assert parsed["stale_discarded"] is True
+    assert parsed["duration_ms"] == 1234
+    assert parsed["prompt_sha256"] == "ab" * 32
+
+
+# --- SPR-62: ingress status events (G6-F3) ------------------------------------
+
+
+def test_ingress_fixed_fields_are_pinned():
+    assert INGRESS_FIXED_FIELDS == frozenset({"statusCode", "decision", "reason"})
+
+
+def test_build_ingress_event_carries_exact_shape():
+    event = build_ingress_event(status_code=401, decision="rejected", reason="bad_signature")
+    assert event == {"statusCode": 401, "decision": "rejected", "reason": "bad_signature"}
+    assert set(event) == INGRESS_FIXED_FIELDS
+
+
+@pytest.mark.parametrize("code", [99, 600, 0, -1, "401", True, None, 401.0])
+def test_build_ingress_event_rejects_bad_status_code(code):
+    with pytest.raises(LogsError) as excinfo:
+        build_ingress_event(status_code=code, decision="rejected", reason="bad_signature")
+    assert excinfo.value.field == "statusCode"
+    assert excinfo.value.reason == "bad_status_code"
+
+
+@pytest.mark.parametrize("decision", ["nope", "", "ALLOWED", "ok", None, 200])
+def test_build_ingress_event_rejects_bad_decision(decision):
+    with pytest.raises(LogsError) as excinfo:
+        build_ingress_event(status_code=200, decision=decision, reason="enqueued")
+    assert excinfo.value.field == "decision"
+    assert excinfo.value.reason == "bad_decision"
+
+
+@pytest.mark.parametrize("reason", ["", "HAS SPACE", "UPPER", "x" * 65, "semi;colon", None, 401])
+def test_build_ingress_event_rejects_bad_reason(reason):
+    with pytest.raises(LogsError) as excinfo:
+        build_ingress_event(status_code=200, decision="discarded", reason=reason)
+    assert excinfo.value.field == "reason"
+    assert excinfo.value.reason == "bad_reason"
+
+
+def test_build_ingress_event_refuses_forbidden_reason():
+    # "bearer" passes the token charset but trips the redaction guard.
+    with pytest.raises(RedactionError):
+        build_ingress_event(status_code=401, decision="rejected", reason="bearer")
+
+
+def test_emit_ingress_event_writes_single_json_line():
+    lines = []
+    event = build_ingress_event(status_code=401, decision="rejected", reason="bad_signature")
+    emit_ingress_event(lines.append, event)
+    assert len(lines) == 1
+    assert lines[0].endswith("\n")
+    parsed = json.loads(lines[0])
+    # The 401-spike alarm's filter `{ $.statusCode = 401 }` matches this shape.
+    assert parsed == {"statusCode": 401, "decision": "rejected", "reason": "bad_signature"}
+    assert isinstance(parsed["statusCode"], int)
+
+
+def test_emit_ingress_event_rejects_wrong_shape():
+    lines = []
+    with pytest.raises(LogsError) as excinfo:
+        emit_ingress_event(lines.append, {"statusCode": 401})
+    assert excinfo.value.field == "event"
+    assert excinfo.value.reason == "bad_fields"
+    assert lines == []
+
+
+def test_emit_ingress_event_names_tampered_field():
+    lines = []
+    event = build_ingress_event(status_code=200, decision="allowed", reason="enqueued")
+    tampered = dict(event)
+    tampered["reason"] = "bearer"
+    with pytest.raises(RedactionError) as excinfo:
+        emit_ingress_event(lines.append, tampered)
+    assert excinfo.value.field == "reason"
     assert lines == []

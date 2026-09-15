@@ -95,7 +95,7 @@ from common.failure_notice import (
     should_publish_notice,
 )
 from common.llm import LlmError, review_diff
-from common.logs import build_event, emit
+from common.logs import build_event, emit, prompt_sha256
 from common.protocol import ConditionalCheckFailed, OutcomeKind, run_review
 from common.reconcile import PER_PAGE, CommentNotFound, ReconcileError, reconcile
 from common.state import build_clear_comment_expressions, expression_names, review_pk
@@ -892,6 +892,7 @@ def _emit(
     generation: int | None,
     stale_discarded: bool = False,
     failure_notice_published: str = "false",
+    prompt_sha256: str | None = None,
 ) -> None:
     """Best-effort structured log (HLD §5.4): emission never masks the
     record disposition — a logging fault is a plain warning, not a retry."""
@@ -911,6 +912,7 @@ def _emit(
                 stale_discarded=stale_discarded,
                 failure_notice_published=failure_notice_published,
                 prompt_version=PROMPT_VERSION,
+                prompt_sha256=prompt_sha256,
             ),
         )
     except Exception:  # observability must not mask disposition
@@ -957,6 +959,10 @@ def _process_record(
 
     started = clock()
     usage = {"tokens": 0}
+    # Prompt-hash telemetry (SPR-62): sha256 of the DELIVERED prompt text
+    # exactly as passed to the model — hash only, never prompt content.
+    # PROMPT_VERSION keeps describing the code (validate.py).
+    delivered_prompt_sha256 = prompt_sha256(system_prompt)
     creds = None
     try:
         creds = _Credentials(provider)
@@ -1019,6 +1025,7 @@ def _process_record(
                 error_class=error_class,
                 generation=None,
                 failure_notice_published=notice,
+                prompt_sha256=delivered_prompt_sha256,
             )
             raise
         _emit(
@@ -1030,6 +1037,7 @@ def _process_record(
             error_class=error_class,
             generation=None,
             failure_notice_published=notice,
+            prompt_sha256=delivered_prompt_sha256,
         )
         return "discarded_error"
     duration_ms = max(0, int((clock() - started) * 1000))
@@ -1044,6 +1052,7 @@ def _process_record(
         generation=outcome.generation,
         stale_discarded=outcome.kind in _STALE_DISCARDED_KINDS,
         failure_notice_published="false",
+        prompt_sha256=delivered_prompt_sha256,
     )
     return status
 

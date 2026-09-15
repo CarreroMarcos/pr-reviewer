@@ -41,6 +41,15 @@ TEMPERATURE = 0.2
 CONNECT_TIMEOUT_S = 2
 READ_TIMEOUT_S = 45
 
+# Thinking portability gate (SPR-62, Gate-1 advisory; open-questions Q1 stays
+# open): the `"thinking": {"type": "disabled"}` payload key is GLM-specific
+# and is sent ONLY when the model looks like a GLM model (`startswith "glm"`)
+# AND the endpoint host is a known GLM host below. Any other provider/model
+# may reject an unknown key, so the key is omitted entirely there (never an
+# `"enabled"` variant). The host set mirrors the worker's `GLM_ALLOWED_HOSTS`
+# environment (terraform/compute.tf); if infra adds a GLM host, update both.
+GLM_ALLOWED_HOSTS = frozenset({"api.z.ai"})
+
 logger = logging.getLogger(__name__)
 
 # Factory seam: mirrors `http.client.HTTPSConnection(host, port, timeout=…)`.
@@ -149,20 +158,24 @@ def review_diff(
     factory = _connection_factory if _connection_factory is not None else _default_factory
     clock = _clock if _clock is not None else time.monotonic
     start = clock()
+    # Thinking portability gate: GLM-only key (see GLM_ALLOWED_HOSTS) —
+    # omitted for every other provider so non-GLM endpoints never see it.
+    payload: dict[str, Any] = {
+        "model": model,
+        # Provider default runs GLM reasoning (~1.3K tokens, ~45s) before
+        # answering, which makes the quickstart ≤15s comment bar (HLD
+        # §2.2 (b)) unreachable and overruns READ_TIMEOUT_S — surfaced
+        # live by the T035 acceptance run. Thinking-off measured 5-8s.
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": diff_text},
+        ],
+        "temperature": TEMPERATURE,
+    }
+    if model.startswith("glm") and host.lower() in GLM_ALLOWED_HOSTS:
+        payload["thinking"] = {"type": "disabled"}
     body = json.dumps(
-        {
-            "model": model,
-            # Provider default runs GLM reasoning (~1.3K tokens, ~45s) before
-            # answering, which makes the quickstart ≤15s comment bar (HLD
-            # §2.2 (b)) unreachable and overruns READ_TIMEOUT_S — surfaced
-            # live by the T035 acceptance run. Thinking-off measured 5-8s.
-            "thinking": {"type": "disabled"},
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": diff_text},
-            ],
-            "temperature": TEMPERATURE,
-        },
+        payload,
         separators=(",", ":"),
         ensure_ascii=True,
     )

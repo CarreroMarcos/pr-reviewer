@@ -32,12 +32,10 @@ resource "aws_cloudwatch_log_group" "worker" {
 #   pr-reviewer-worker (percent per 5 minutes).
 # - DynamoDB throttling: ThrottledRequests on pr-reviewer-state (state.tf).
 # - Ingress 401 count: log metric filter on the ingress log group matching
-#   `statusCode = 401` — the exact shape ingress_handler.py `_respond`
-#   returns to the Function URL. ACTIVATION CONDITION (flagged, not silent):
-#   ingress currently returns that status in-band and emits no per-request
-#   log line, so this filter matches zero lines until ingress-side status
-#   logging lands (lambda/ lane owns that file; this lane must not touch it).
-#   The alarm is wired and quiet (notBreaching on missing data) meanwhile.
+#   `statusCode = 401` — the exact shape ingress_handler.py emits on every
+#   disposition via `common.logs` (`statusCode` + `decision` + `reason`;
+#   one structured line per request, so 401 outcomes match this filter).
+#   The alarm is live; missing data (no deliveries) stays notBreaching.
 # - Daily LLM spend: log metric filter summing the worker's structured
 #   `token_usage` field (emitted on every terminal path via worker_handler
 #   `_emit` to stdout, HLD §5.4 fixed field set), converted to spend by

@@ -174,11 +174,11 @@ def test_wrong_secret_rejected_end_to_end():
     assert len(sqs.calls) == 1
 
 
-def test_401_responses_log_structured_status_line(capsys):
-    """The 401-spike alarm's filter matches { $.statusCode = 401 } log lines.
-
-    Ingress emits no other log lines, so every 401 path must print exactly
-    one structured line (and non-401 dispositions none)."""
+def test_every_disposition_logs_structured_status_line(capsys):
+    """G6-F3 (SPR-62): every ingress disposition emits exactly one structured
+    status line (`statusCode` + `decision` + `reason` via `common.logs`), so
+    the 401-spike alarm's filter { $.statusCode = 401 } has signal to match
+    and gate decisions are queryable."""
     raw = raw_of(make_payload())
     bad_sig = handler(
         make_event(raw, "sha256=" + "0" * 64),
@@ -189,7 +189,9 @@ def test_401_responses_log_structured_status_line(capsys):
     )
     assert bad_sig == {"statusCode": 401, "body": ""}
     lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
-    assert [json.loads(line) for line in lines] == [{"statusCode": 401}]
+    assert [json.loads(line) for line in lines] == [
+        {"statusCode": 401, "decision": "rejected", "reason": "bad_signature"}
+    ]
 
     accepted = handler(
         make_event(raw, sign(raw)),
@@ -198,8 +200,85 @@ def test_401_responses_log_structured_status_line(capsys):
         _sqs=FakeSQS(),
         _secret=FIXED_SECRET,
     )
-    assert accepted["statusCode"] == 202  # accepted delivery emits no log line
-    assert capsys.readouterr().out.strip() == ""
+    assert accepted == {"statusCode": 202, "body": ""}
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert [json.loads(line) for line in lines] == [
+        {"statusCode": 202, "decision": "allowed", "reason": "enqueued"}
+    ]
+
+
+def test_ingress_status_lines_cover_gate_branches(capsys):
+    """Each gate branch logs its own decision/reason token (one line per
+    request, no secrets or payload content)."""
+    raw = raw_of(make_payload())
+
+    oversized = handler(
+        make_event(b"x" * (MAX_BODY_BYTES + 1), "sha256=" + "0" * 64),
+        None,
+        _table=FakeTable(),
+        _sqs=FakeSQS(),
+        _secret=FIXED_SECRET,
+    )
+    assert oversized == {"statusCode": 413, "body": ""}
+
+    non_pr = handler(
+        make_event(raw, sign(raw), event_type="ping"),
+        None,
+        _table=FakeTable(),
+        _sqs=FakeSQS(),
+        _secret=FIXED_SECRET,
+    )
+    assert non_pr == {"statusCode": 200, "body": ""}
+
+    seed = {f"delivery:{GUID_SEEN}": {"pk": f"delivery:{GUID_SEEN}", "ttl": 123}}
+    duplicate = handler(
+        make_event(raw, sign(raw), delivery=GUID_SEEN),
+        None,
+        _table=FakeTable(seed=seed),
+        _sqs=FakeSQS(),
+        _secret=FIXED_SECRET,
+    )
+    assert duplicate == {"statusCode": 200, "body": ""}
+
+    dispatch_failed = handler(
+        make_event(raw, sign(raw)),
+        None,
+        _table=FakeTable(),
+        _sqs=FakeSQS(fail=True),
+        _secret=FIXED_SECRET,
+    )
+    assert dispatch_failed == {"statusCode": 500, "body": ""}
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert lines == [
+        {"statusCode": 413, "decision": "rejected", "reason": "body_too_large"},
+        {"statusCode": 200, "decision": "discarded", "reason": "non_pr_event"},
+        {"statusCode": 200, "decision": "discarded", "reason": "duplicate_delivery"},
+        {"statusCode": 500, "decision": "error", "reason": "dispatch_failed"},
+    ]
+
+
+def test_ingress_401_lines_match_alarm_filter_shape(capsys):
+    """The alarm filter `{ $.statusCode = 401 }` needs a NUMERIC statusCode:
+    every 401 branch emits one, with distinct rejected reasons."""
+    raw = raw_of(make_payload())
+    cases = [
+        (make_event(b"!!!-not-base64-!!!", "sha256=" + "0" * 64), True, "undecodable_body"),
+    ]
+    event = make_event(raw, "sha256=" + "0" * 64)
+    del event["headers"]["X-Hub-Signature-256"]
+    cases.append((event, False, "missing_auth_headers"))
+    cases.append((make_event(raw, "sha256=" + "0" * 64), False, "bad_signature"))
+    for event, use_base64, _ in cases:
+        if use_base64:
+            event["isBase64Encoded"] = True
+        response = handler(event, None, _table=FakeTable(), _sqs=FakeSQS(), _secret=FIXED_SECRET)
+        assert response == {"statusCode": 401, "body": ""}
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert [(line["statusCode"], line["decision"], line["reason"]) for line in lines] == [
+        (401, "rejected", reason) for _, _, reason in cases
+    ]
+    assert all(isinstance(line["statusCode"], int) for line in lines)
 
 
 # --- 413 pre-decode ----------------------------------------------------------
