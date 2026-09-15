@@ -318,6 +318,7 @@ def build_finalize_expressions(
     *,
     head_sha: str,
     generation: int,
+    claim_owner: str,
     comment_id: int,
     updated_at: str,
 ) -> ExprTriple:
@@ -328,19 +329,47 @@ def build_finalize_expressions(
     # through finalize"). Leaving it set kept every same-SHA redelivery —
     # e.g. a quick reopen, acceptance (k) — DISCARDED_CLAIM_HELD for the
     # full 180s (surfaced live by the T035 acceptance run).
-    # Accepted race (deliberate): the REMOVE drops claim_owner/claim_until
-    # unconditionally while head_sha+generation still match, so a delayed
-    # older finalize can clear a newer claim's lease. Bounded because the
-    # claim is single-lease and generation is monotonic; a claim_owner
-    # condition guard is deliberately deferred to a future ticket.
+    # Owner-guarded release (SPR-63): the REMOVE drops claim_owner/claim_until
+    # only while the caller still holds the lease (`claim_owner = :owner`),
+    # so a delayed older finalize can neither clear a newer claim's lease
+    # nor overwrite its comment. A same-revision lease takeover (expiry +
+    # re-claim by another owner between this run's publish and finalize)
+    # fails the guard and takes the log-and-reconcile path.
     update = (
         "SET #st = :status, comment_id = :comment, updated_at = :updated_at "
         "REMOVE claim_owner, claim_until"
     )
-    condition = "head_sha = :reviewed AND generation = :gen"
+    condition = "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
     values: dict[str, Any] = {
         ":reviewed": head_sha,
         ":gen": generation,
+        ":owner": claim_owner,
+        ":status": "ACTIVE",
+        ":comment": comment_id,
+        ":updated_at": updated_at,
+    }
+    return update, condition, values
+
+
+def build_persist_expressions(
+    *,
+    head_sha: str,
+    generation: int,
+    claim_owner: str,
+    comment_id: int,
+    updated_at: str,
+) -> ExprTriple:
+    """Adoption persistence (HLD §3.4, via the §3.3 step-6 finalize
+    condition): record the adopted/created comment id, guarded on revision
+    plus lease holder — the lease itself is untouched, released only by the
+    protocol finalize. A persist by a lease loser fails closed (returns
+    False at the caller) instead of clearing the newer lease."""
+    update = "SET #st = :status, comment_id = :comment, updated_at = :updated_at"
+    condition = "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
+    values: dict[str, Any] = {
+        ":reviewed": head_sha,
+        ":gen": generation,
+        ":owner": claim_owner,
         ":status": "ACTIVE",
         ":comment": comment_id,
         ":updated_at": updated_at,

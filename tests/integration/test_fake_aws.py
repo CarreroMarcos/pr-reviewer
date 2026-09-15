@@ -558,7 +558,7 @@ def test_f_update_expression_grammar_against_moto(stack: SimpleNamespace) -> Non
     assert stack.table.get_item(Key={"pk": pk})["Item"]["claim_owner"] == GUID_1
 
     update, condition, values = build_finalize_expressions(
-        head_sha=SHA_B, generation=0, comment_id=POST_ID, updated_at=UPDATED_AT
+        head_sha=SHA_B, generation=0, claim_owner=GUID_1, comment_id=POST_ID, updated_at=UPDATED_AT
     )
     names = expression_names(update, condition)
     assert names == {"#st": "status"}

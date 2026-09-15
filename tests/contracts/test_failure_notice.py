@@ -95,7 +95,7 @@ _CLAIM = (
     "head_sha = :reviewed AND generation = :gen "
     "AND (claim_until < :now OR attribute_not_exists(claim_owner))"
 )
-_FINALIZE = "head_sha = :reviewed AND generation = :gen"
+_FINALIZE = "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
 _CREATION_LEASE = (
     "head_sha = :reviewed AND generation = :gen "
     "AND (claim_until < :now OR attribute_not_exists(claim_owner) "
@@ -162,6 +162,7 @@ class FakeTable:
                 current is not None
                 and current.get("head_sha") == values[":reviewed"]
                 and current.get("generation") == values[":gen"]
+                and current.get("claim_owner") == values[":owner"]
             )
         if condition == _CREATION_LEASE:
             return (

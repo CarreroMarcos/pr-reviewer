@@ -195,6 +195,7 @@ def run_review(
     update, condition, values = build_finalize_expressions(
         head_sha=head_sha,
         generation=generation,
+        claim_owner=owner,
         comment_id=comment_id,
         updated_at=_iso8601(now()),
     )
@@ -207,8 +208,9 @@ def run_review(
             ExpressionAttributeValues=values,
         )
     except ConditionalCheckFailed:
-        # A newer accepted revision landed concurrently: log-and-reconcile
-        # (comment_id retained) rather than overwrite.
+        # A newer accepted revision — or a same-revision lease takeover —
+        # landed concurrently: log-and-reconcile (comment_id retained)
+        # rather than overwrite.
         return Outcome(
             kind=OutcomeKind.PUBLISHED_FINALIZE_CONFLICT,
             head_sha=head_sha,

@@ -27,6 +27,7 @@ from common.state import (
     build_establish_equality,
     build_establish_first_write,
     build_finalize_expressions,
+    build_persist_expressions,
     delivery_pk,
     delivery_ttl,
     from_item,
@@ -371,16 +372,41 @@ def test_claim_condition_exact_string():
 
 def test_finalize_is_revision_only():
     update, condition, values = build_finalize_expressions(
-        head_sha=HEAD_A, generation=7, comment_id=COMMENT_ID, updated_at=UPDATED
+        head_sha=HEAD_A, generation=7, claim_owner=GUID, comment_id=COMMENT_ID, updated_at=UPDATED
     )
-    assert condition == "head_sha = :reviewed AND generation = :gen"
+    assert condition == "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
     assert values[":reviewed"] == HEAD_A
     assert values[":gen"] == 7
+    assert values[":owner"] == GUID
     assert values[":comment"] == COMMENT_ID
     assert "comment_id" in update
     # Lease lifecycle ends at finalize (HLD §3.2)
     assert "REMOVE claim_owner, claim_until" in update
     assert EXPRESSION_ATTRIBUTE_NAMES == {"#st": "status"}
+
+
+def test_finalize_guard_rejects_foreign_lease_holder():
+    """SPR-63 owner guard: the finalize condition carries the caller's
+    owner, so a delayed finalize by a superseded claimant fails the guard
+    instead of clearing the newer lease (state.py accepted-race closure)."""
+    _, condition, values = build_finalize_expressions(
+        head_sha=HEAD_A, generation=7, claim_owner=GUID, comment_id=COMMENT_ID, updated_at=UPDATED
+    )
+    assert "claim_owner = :owner" in condition
+    assert values[":owner"] == GUID
+
+
+def test_persist_is_owner_guarded_without_releasing_the_lease():
+    """SPR-63: adoption persistence carries the finalize owner guard but
+    its update never REMOVEs — the lease is released only by the protocol
+    finalize, so a persist and its finalize compose instead of racing."""
+    update, condition, values = build_persist_expressions(
+        head_sha=HEAD_A, generation=7, claim_owner=GUID, comment_id=COMMENT_ID, updated_at=UPDATED
+    )
+    assert condition == "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
+    assert "REMOVE" not in update
+    assert values[":owner"] == GUID
+    assert values[":comment"] == COMMENT_ID
 
 
 def test_establish_first_write_guards_absence():

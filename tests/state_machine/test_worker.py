@@ -27,7 +27,11 @@ Mapping (pipeline stage / ruling → test):
 * discard outcomes → `test_concurrent_different_owner_discards_claim_held`,
   `test_superseded_sha_discards_without_publish`,
   `test_fence_mismatch_discards_stale`,
-  `test_finalize_conflict_completes_without_retry`
+  `test_finalize_conflict_completes_without_retry`,
+  `test_finalize_loser_claim_aborts_without_clearing_newer_lease`
+* worker SQS client cache (SPR-63 G6-F2) →
+  `test_sqs_client_cached_across_warm_invocations`,
+  `test_reset_sqs_cache_forces_rebuild`
 * boundary table → `test_is_retryable_table` plus one behavior test per
   row (`test_assemble_refused_completes`, `test_llm_timeout_raises…`,
   `test_llm_invalid_output_raises…`, `test_diff_transport_error_raises…`,
@@ -431,6 +435,98 @@ def test_finalize_conflict_completes_without_retry():
     assert result == {"ok": True, "results": ["published_finalize_conflict"]}
     assert h.table.items[PK]["head_sha"] == SHA_C
     assert h.table.items[PK]["generation"] == 6
+
+
+def test_finalize_loser_claim_aborts_without_clearing_newer_lease():
+    """SPR-63 owner guard: a same-revision lease takeover (expiry +
+    re-claim by another owner) lands between publish and finalize → the
+    loser's finalize fails its guard → log-and-reconcile path; the newer
+    lease is NOT cleared and the loser's comment id never lands."""
+    landed = {}
+
+    def lease_takeover(call):
+        # The modeled race lands between publish (POST) and finalize: the
+        # reconcile list GETs that precede the POST must not trigger it.
+        if not landed and call["method"] == "POST":
+            landed["moved"] = True
+            h.table.items[PK]["claim_owner"] = GUID_OTHER
+            h.table.items[PK]["claim_until"] = NOW + 180
+
+    h = Harness(
+        meta=[(200, SHA_B), (200, SHA_B)],
+        github=FakeGitHub(on_write=lease_takeover),
+    )
+    _seed(h.table, head=SHA_A, gen=4, comment=111)
+    result = h.run(envelope(sha=SHA_B))
+    assert result == {"ok": True, "results": ["published_finalize_conflict"]}
+    item = h.table.items[PK]
+    assert item["head_sha"] == SHA_B
+    assert item["generation"] == 5
+    assert item["claim_owner"] == GUID_OTHER  # newer lease survives
+    assert item["claim_until"] == NOW + 180
+    assert "comment_id" not in item  # loser's id never landed
+
+
+# --- worker SQS client cache (SPR-63 G6-F2) ----------------------------------
+
+
+def _wireless_run(h):
+    """Drive the handler past SQS-client construction without pipeline work."""
+    return handler(
+        {"Records": []},
+        None,
+        _table=h.table,
+        _config_provider=h.provider,
+        _now=lambda: NOW,
+        _sink=h.sink.append,
+        _system_prompt="SYSTEM-PROMPT",
+    )
+
+
+def test_sqs_client_cached_across_warm_invocations(monkeypatch):
+    # Given the uninjected production SQS path Then one client serves both invocations
+    import boto3
+
+    worker_handler.reset_sqs_cache()
+    try:
+        calls = []
+        fake = object()
+
+        def fake_client(service, *args, **kwargs):
+            assert service == "sqs", service
+            calls.append(service)
+            return fake
+
+        monkeypatch.setattr(boto3, "client", fake_client)
+        h = Harness(meta=[(200, SHA_B)])
+        assert _wireless_run(h) == {"ok": True, "results": []}
+        assert _wireless_run(h) == {"ok": True, "results": []}
+        assert calls == ["sqs"]  # built once, cache hit on the second run
+    finally:
+        worker_handler.reset_sqs_cache()
+
+
+def test_reset_sqs_cache_forces_rebuild(monkeypatch):
+    # Given a warm SQS cache Then reset forces the next run to build again
+    import boto3
+
+    worker_handler.reset_sqs_cache()
+    try:
+        calls = []
+
+        def fake_client(service, *args, **kwargs):
+            assert service == "sqs", service
+            calls.append(service)
+            return object()
+
+        monkeypatch.setattr(boto3, "client", fake_client)
+        h = Harness(meta=[(200, SHA_B)])
+        assert _wireless_run(h) == {"ok": True, "results": []}
+        worker_handler.reset_sqs_cache()
+        assert _wireless_run(h) == {"ok": True, "results": []}
+        assert calls == ["sqs", "sqs"]
+    finally:
+        worker_handler.reset_sqs_cache()
 
 
 # --- envelope boundary: untrusted SQS input completes, never raises ---

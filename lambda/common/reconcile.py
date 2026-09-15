@@ -38,11 +38,13 @@ while making the mechanism operable. The condition string is:
          OR claim_owner = :owner)
     AND attribute_not_exists(comment_id)
 
-Adoption persistence reuses the §3.3 step-6 finalize expressions
-(`common.state.build_finalize_expressions`): revision-guarded, lease
-untouched. A lost persist race (newer revision landed concurrently)
-returns the id anyway — the protocol-level finalize then takes the
-log-and-reconcile path rather than overwriting.
+Adoption persistence uses the §3.3 step-6 finalize CONDITION with a
+lease-preserving update (`common.state.build_persist_expressions`):
+revision- and owner-guarded, lease untouched (released only by the
+protocol-level finalize). A lost persist race (newer revision landed
+concurrently, or the lease moved) returns the id anyway — the
+protocol-level finalize then takes the conflict path rather than
+overwriting.
 
 Absent record (DynamoDB state lost — the marker survives in GitHub per
 §2.8): no lease is attempted and nothing is persisted; a found winner is
@@ -67,7 +69,7 @@ from common.protocol import ConditionalCheckFailed
 from common.state import (
     CLAIM_LEASE_SECONDS,
     build_claim_expressions,
-    build_finalize_expressions,
+    build_persist_expressions,
     expression_names,
 )
 
@@ -135,17 +137,20 @@ def _list_all(list_page: Callable[[int], Any]) -> list[dict[str, Any]]:
     return comments
 
 
-def _persist(table: Any, pk: str, comment_id: int, now: Callable[[], int]) -> bool:
-    """Persist the adopted/created id via the revision-guarded finalize
-    expressions. False when no record exists (state lost — §2.8 marker
-    survival) or a newer revision owns the record (the protocol-level
-    finalize then takes the conflict path); never raises for races."""
+def _persist(table: Any, pk: str, owner: str, comment_id: int, now: Callable[[], int]) -> bool:
+    """Persist the adopted/created id via the owner-guarded persist
+    expressions (finalize condition, lease-preserving update). False when
+    no record exists (state lost — §2.8 marker survival), a newer revision
+    owns the record, or the lease moved to another owner (the
+    protocol-level finalize then takes the conflict path); never raises
+    for races."""
     item = table.get_item(pk)
     if item is None:
         return False
-    update, condition, values = build_finalize_expressions(
+    update, condition, values = build_persist_expressions(
         head_sha=item["head_sha"],
         generation=item["generation"],
+        claim_owner=owner,
         comment_id=comment_id,
         updated_at=_iso8601(now()),
     )
@@ -235,11 +240,11 @@ def reconcile(
             for comment in matches:
                 if comment["id"] != winner:
                     delete_comment(comment["id"])
-            _persist(table, pk, winner, now)
+            _persist(table, pk, owner, winner, now)
             return winner
         if _try_creation_lease(table, pk, owner, now):
             comment_id = create_comment(content)
-            _persist(table, pk, comment_id, now)
+            _persist(table, pk, owner, comment_id, now)
             # Re-check: a concurrent poster outside the lease (or manual
             # duplication) must not leave a second marker comment behind.
             for comment in _list_all(list_page):
