@@ -24,11 +24,14 @@
 # 2. The AWS redrive-allow policy object carries no principal field, so the
 #    "naming" of the operator role is structural (byQueue + DLQ ARN in
 #    messaging.tf) plus the StartMessageMoveTask grant here.
-# 3. HLD §5.1 names an SSO principal for the operator trust, but no SSO
-#    instance / permission-set ARN exists in the BOM or anywhere in the repo;
-#    inventing one would be worse. The trust below names the account root
-#    gated on MFA (aws:MultiFactorAuthPresent) — tighten it to the SSO role
-#    ARN when that principal exists.
+# 3. HLD §5.1 names an SSO principal for the operator trust; SPR-60
+#    (Mars decision 2026-09-14) pins it to the IAM user
+#    arn:aws:iam::395799817120:user/terraform-admin instead — Mars's
+#    deliberate choice over an SSO role. The pre-existing MFA condition
+#    (aws:MultiFactorAuthPresent) composes cleanly with the pinned
+#    principal and stays as tightening.
+#    (was: account root gated on MFA — interim until a named principal
+#    existed).
 # 4. LeadingKeys is a multivalued condition key, so it requires the
 #    ForAllValues modifier: bare "StringLike" never matches and every
 #    GetItem/PutItem is denied ("no identity-based policy allows …" —
@@ -206,7 +209,7 @@ resource "aws_iam_role" "operator" {
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root" }
+      Principal = { AWS = "arn:aws:iam::395799817120:user/terraform-admin" }
       Action    = "sts:AssumeRole"
       Condition = {
         Bool = { "aws:MultiFactorAuthPresent" = "true" }

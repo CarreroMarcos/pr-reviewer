@@ -1,6 +1,6 @@
 # serverless-pr-reviewer — Lambda compute (T020, HLD §2.1–§2.3, §7.1).
 #
-# Two functions (ingress 5s/128MB/reserved 25; worker 120s/256MB/reserved 5),
+# Two functions (ingress 5s/128MB/reserved 2; worker 120s/256MB/reserved 5),
 # a public Function URL on ingress (AuthType NONE, CORS disabled by omission),
 # and the SQS event source mapping (batch_size = 1).
 #
@@ -59,15 +59,16 @@ resource "aws_lambda_function" "ingress" {
   source_code_hash = data.archive_file.ingress.output_base64sha256
 
   timeout = 5
-  # Scratch stack: 512 MB because CPU scales with memory — the lazy boto3
-  # import cannot fit a cold start into the 5 s budget at 128 MB (observed:
-  # Sandbox.Timedout on first invoke). Restore the HLD §5 value (128) for
-  # production or after measured warm evidence.
-  memory_size = 512
-  # Scratch stack: account concurrency quota is 10 (new-account default), so
-  # any reservation is rejected. -1 = unreserved. Restore the HLD §5 value
-  # (25) when the quota is raised.
-  reserved_concurrent_executions = -1
+  # SPR-60 (Mars decision 2026-09-14): right-sized reservations — ingress 2,
+  # worker 5 (sum 7 of the account quota-10, leaving 3 floating).
+  # Storm-containment posture only (guaranteed webhook availability +
+  # worker blast-radius cap), not a throughput need. Supersedes the HLD §5
+  # value (25).
+  # Memory 128 MB (HLD §5; trimmed from the 512 MB scratch value — CPU
+  # scales with memory, so 128 is a tight-but-workable floor for the
+  # boto3-laden ingress; watch the first deploy for cold-start timeouts).
+  memory_size                    = 128
+  reserved_concurrent_executions = 2
 
   # WORK_QUEUE_URL has no safe default in the handler ("" → send fails, 500):
   # the queue URL is account-specific, so it must be wired (surfaced by the
@@ -91,13 +92,12 @@ resource "aws_lambda_function" "worker" {
   source_code_hash = data.archive_file.worker.output_base64sha256
 
   timeout = 120
-  # Scratch stack: 512 MB — same cold-start reasoning as ingress (lazy boto3
-  # import) and headroom for the LLM round-trip within the 15 s end-to-end
-  # budget. Restore the HLD §5 value (256) for production.
-  memory_size = 512
-  # Scratch stack: -1 = unreserved (account quota is 10). Restore the HLD §5
-  # value (5) when the quota is raised.
-  reserved_concurrent_executions = -1
+  # SPR-60 (Mars decision 2026-09-14): memory 256 MB (HLD §5; trimmed from
+  # the 512 MB scratch value, with headroom for the LLM round-trip within
+  # the 15 s end-to-end budget). Reserved concurrency 5 (right-sized;
+  # see the ingress note — sum 7 of quota-10).
+  memory_size                    = 256
+  reserved_concurrent_executions = 5
 
   environment {
     variables = {
