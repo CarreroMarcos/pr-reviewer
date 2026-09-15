@@ -43,6 +43,7 @@ and nothing raised; a test asserting "raises" also asserts the
 `retry_queued` log line was emitted first.
 """
 
+import hashlib
 import http.client
 import json
 
@@ -701,12 +702,15 @@ def test_is_retryable_table():
 
 def test_log_event_carries_fixed_fields_only():
     """Emitted lines carry exactly FIXED_FIELDS — no tokens, prompts, or
-    diffs — and name the prompt version."""
+    diffs — and name the prompt version plus the delivered-prompt hash
+    (SPR-62: sha256 of the exact prompt text passed to the model, hash
+    only, never content)."""
     h = Harness(meta=[(200, SHA_B)])
     h.run(envelope(sha=SHA_B))
     (line,) = h.log_lines()
     assert set(line) == set(FIXED_FIELDS)
     assert line["prompt_version"] == "v1"
+    assert line["prompt_sha256"] == hashlib.sha256(b"SYSTEM-PROMPT").hexdigest()
     assert line["repo_full_name"] == REPO
     assert line["pr_number"] == PR_NUMBER
     assert line["head_sha"] == SHA_B

@@ -159,14 +159,50 @@ def test_temperature_sent_exactly():
     assert isinstance(body["temperature"], float)
 
 
-def test_thinking_disabled_sent():
+def test_thinking_disabled_sent_for_glm_model_on_glm_host():
     # GLM reasoning defaults on (~1.3K tokens, ~45s) and busts the ≤15s
-    # comment bar (HLD §2.2 (b)) — the payload must pin it off (surfaced
-    # live by the T035 acceptance run).
-    invoke()
+    # comment bar (HLD §2.2 (b)) — the payload must pin it off for GLM
+    # endpoints (surfaced live by the T035 acceptance run).
+    invoke(endpoint="https://api.z.ai/v1/chat/completions")
     _, request = last_request()
     body = json.loads(request["body"])
     assert body["thinking"] == {"type": "disabled"}
+
+
+def test_thinking_omitted_for_glm_model_on_non_glm_host():
+    # Portability gate (SPR-62): the `thinking` key is GLM-specific — a GLM
+    # model pointed at a non-GLM host must not receive it.
+    invoke()
+    _, request = last_request()
+    body = json.loads(request["body"])
+    assert "thinking" not in body
+
+
+@pytest.mark.parametrize("model", ["other-model", "gpt-4o-mini", "GLM-5.3-flash"])
+def test_thinking_omitted_for_non_glm_model_on_glm_host(model):
+    # Gate condition is `model.startswith("glm") AND host in
+    # GLM_ALLOWED_HOSTS` — non-GLM models omit the key even on a GLM host
+    # (`GLM-5.3-flash` pins the case-sensitive proposal-literal: uppercase
+    # prefix does not match).
+    invoke(model=model, endpoint="https://api.z.ai/v1/chat/completions")
+    _, request = last_request()
+    body = json.loads(request["body"])
+    assert "thinking" not in body
+
+
+def test_thinking_sent_for_glm_host_case_insensitive():
+    # Host comparison is DNS case-insensitive; the model prefix is literal.
+    invoke(endpoint="https://API.Z.AI/v1/chat/completions")
+    _, request = last_request()
+    body = json.loads(request["body"])
+    assert body["thinking"] == {"type": "disabled"}
+
+
+def test_glm_allowed_hosts_pins_current_stack_host():
+    # The gate's host set must cover the deployed stack (terraform
+    # compute.tf `GLM_ALLOWED_HOSTS = "api.z.ai"`) so current-stack
+    # behavior (thinking disabled) is unchanged.
+    assert "api.z.ai" in llm.GLM_ALLOWED_HOSTS
 
 
 def test_model_and_messages_sent():

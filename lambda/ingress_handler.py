@@ -41,6 +41,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -49,7 +50,10 @@ from typing import Any
 
 from common.config import WEBHOOK_SECRET_NAME
 from common.envelope import EnvelopeError, validate_envelope
+from common.logs import build_ingress_event, emit_ingress_event
 from common.state import build_delivery_item, delivery_pk
+
+logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 1_048_576  # 1 MiB — enforced PRE-DECODE (HLD §2.1 step 1)
 
@@ -200,13 +204,23 @@ def build_envelope_body(payload: Any, delivery_guid: str) -> str | None:
     return json.dumps(asdict(envelope), separators=(",", ":"), sort_keys=True)
 
 
-def _respond(status: int) -> dict[str, Any]:
-    if status == 401:
-        # The ingress-401-spike alarm's metric filter matches
-        # `{ $.statusCode = 401 }` on structured log lines — the handler
-        # otherwise emits nothing (Function URL return values are not
-        # logged), so the 401 path logs itself (deploy-order add-on).
-        print(json.dumps({"statusCode": status}), flush=True)
+def _respond(status: int, *, decision: str, reason: str) -> dict[str, Any]:
+    """Return the empty-body response and emit one structured ingress status
+    line (G6-F3, SPR-62) via `common.logs` — the single logging path.
+
+    Every disposition logs (`statusCode` + `decision` + `reason`): the
+    ingress-401-spike alarm's metric filter matches
+    `{ $.statusCode = 401 }`, so 401 outcomes now carry signal instead of
+    leaving the alarm knowingly quiet. Emission is best-effort and never
+    masks the disposition.
+    """
+    try:
+        emit_ingress_event(
+            lambda line: print(line, end="", flush=True),
+            build_ingress_event(status_code=status, decision=decision, reason=reason),
+        )
+    except Exception:  # observability must not mask the disposition
+        logger.warning("ingress_status_failed", extra={"status": "ingress_status_failed"})
     return {"statusCode": status, "body": ""}
 
 
@@ -225,10 +239,10 @@ def handler(
     try:
         raw = normalize_body(event)
     except BodyTooLarge:
-        return _respond(413)
+        return _respond(413, decision="rejected", reason="body_too_large")
     except ValueError:
         # Undecodable wire bytes: authenticity cannot be established → 401.
-        return _respond(401)
+        return _respond(401, decision="rejected", reason="undecodable_body")
 
     headers = event.get("headers") or {}
     signature = get_header(headers, "x-hub-signature-256")
@@ -243,33 +257,33 @@ def handler(
         try:
             secret = _fetch_secret(_ssm, secret_name)  # tests: always fetch
         except Exception:
-            return _respond(500)
+            return _respond(500, decision="error", reason="secret_unavailable")
     else:
         import boto3  # deferred: import-time must not require credentials
 
         try:
             secret = get_webhook_secret(boto3.client("ssm"), secret_name)
         except Exception:
-            return _respond(500)
+            return _respond(500, decision="error", reason="secret_unavailable")
 
     # --- step 2: HMAC (missing/malformed signature or event headers → 401) ---
     if not signature or not event_type or not delivery_guid:
-        return _respond(401)
+        return _respond(401, decision="rejected", reason="missing_auth_headers")
     if not verify_signature(secret, raw, signature):
-        return _respond(401)
+        return _respond(401, decision="rejected", reason="bad_signature")
 
     # --- step 3: event-type gate (signed non-PR event → 200 discard) ---------
     if event_type != "pull_request":
-        return _respond(200)
+        return _respond(200, decision="discarded", reason="non_pr_event")
 
     # --- step 4: action filter + draft skip + schema validation → 200 -------
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        return _respond(200)
+        return _respond(200, decision="discarded", reason="unparseable_body")
     envelope_body = build_envelope_body(payload, delivery_guid)
     if envelope_body is None:
-        return _respond(200)
+        return _respond(200, decision="discarded", reason="not_actionable")
 
     # --- clients (lazy production wiring; injected doubles in tests) --------
     table = _table
@@ -290,22 +304,22 @@ def handler(
     try:
         existing = table.get_item(Key={"pk": delivery_key})
     except Exception:
-        return _respond(500)
+        return _respond(500, decision="error", reason="dedup_unavailable")
     seen = existing.get("Item") if isinstance(existing, dict) else existing
     if seen is not None:
-        return _respond(200)
+        return _respond(200, decision="discarded", reason="duplicate_delivery")
 
     # --- step 6: durable dispatch (failure → 500 WITHOUT marking) -----------
     try:
         sqs.send_message(QueueUrl=queue_url, MessageBody=envelope_body)
     except Exception:
-        return _respond(500)
+        return _respond(500, decision="error", reason="dispatch_failed")
 
     # --- step 7: mark processed (PutItem delivery:{guid}, 7-day TTL) ---------
     try:
         table.put_item(Item=build_delivery_item(delivery_guid, int(clock())))
     except Exception:
-        return _respond(500)
+        return _respond(500, decision="error", reason="mark_failed")
 
     # --- step 8: fast acknowledgment, empty-body 202 -------------------------
-    return _respond(202)
+    return _respond(202, decision="allowed", reason="enqueued")
