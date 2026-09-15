@@ -63,7 +63,7 @@ NOW = 1_750_000_000
 CONTENT = "fresh review content " + MARKER
 UPDATED_AT = "2026-09-12T10:00:00Z"
 
-_FINALIZE_CONDITION = "head_sha = :reviewed AND generation = :gen"
+_FINALIZE_CONDITION = "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
 _CREATION_LEASE_CONDITION = (
     "head_sha = :reviewed AND generation = :gen "
     "AND (claim_until < :now OR attribute_not_exists(claim_owner) "
@@ -121,6 +121,7 @@ def _holds(condition, current, values):
             current is not None
             and current.get("head_sha") == values[":reviewed"]
             and current.get("generation") == values[":gen"]
+            and current.get("claim_owner") == values[":owner"]
         )
     if condition == _CREATION_LEASE_CONDITION:
         return (
@@ -282,14 +283,18 @@ def test_creation_lease_winner_posts_persists_and_rechecks():
 def test_creation_lease_race_loser_adopts_winner():
     """B lists (empty) but loses the lease to live-holder A → B's lease
     write fails its condition → B re-runs, finds A's comment, adopts it.
-    B never POSTs: exactly one comment is created."""
+    B never POSTs: exactly one comment is created. B's persist is refused
+    by the finalize owner guard (SPR-63: B holds no lease), so the record
+    keeps A's lease — adoption returns the id, persistence stays with the
+    lease holder."""
     table = FakeTable()
     _seed(table, owner=GUID_A, until=NOW + 100)  # A holds a live lease
     ports = ScriptedPorts(list_rounds=[[], [_comment(100)]])
     assert _run(table, ports, owner=GUID_B) == 100
     assert ports.created == []  # loser never POSTs
     assert ports.updated == [(100, CONTENT)]
-    assert table.items[PK]["comment_id"] == 100
+    assert "comment_id" not in table.items[PK]  # loser persists nothing
+    assert table.items[PK]["claim_owner"] == GUID_A  # A's lease untouched
 
 
 def test_unparseable_comment_entry_is_non_retryable():

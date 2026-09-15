@@ -4,7 +4,7 @@ Stores plain dicts keyed by `pk` and evaluates the EXACT ConditionExpression
 strings emitted by the `common.state` expression builders (Gate 2 ruled those
 exact strings ARE the contract). Update application is a tiny
 `SET attr = :val` applier (resolving `#st` via ExpressionAttributeNames)
-covering the five builder update shapes — nothing more.
+covering the builder update shapes — nothing more.
 
 Evaluator vocabulary (exactly the builder vocabulary — NOT a general
 expression parser):
@@ -26,7 +26,9 @@ expression parser):
 * ``head_sha = :reviewed AND generation = :gen AND comment_id = :dead`` —
   dead-id clear (HLD §2.3 item 8 PATCH-404 row; builder
   `common.state.build_clear_comment_expressions`)
-* ``head_sha = :reviewed AND generation = :gen`` — finalize (HLD §3.3 step 6)
+* ``head_sha = :reviewed AND generation = :gen AND claim_owner = :owner`` —
+  finalize (HLD §3.3 step 6; SPR-63 owner guard: only the lease holder's
+  finalize releases the lease)
 
 Any other condition (or a non-``SET`` update) raises ValueError loudly: a
 builder-string change must break tests, never pass silently.
@@ -59,7 +61,7 @@ _CREATION_LEASE_CONDITION = (
     "OR claim_owner = :owner) AND attribute_not_exists(comment_id)"
 )
 _CLEAR_COMMENT_CONDITION = "head_sha = :reviewed AND generation = :gen AND comment_id = :dead"
-_FINALIZE_CONDITION = "head_sha = :reviewed AND generation = :gen"
+_FINALIZE_CONDITION = "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
 
 
 class InMemoryTable:
@@ -162,6 +164,7 @@ def _condition_holds(
             current is not None
             and current.get("head_sha") == values[":reviewed"]
             and current.get("generation") == values[":gen"]
+            and current.get("claim_owner") == values[":owner"]
         )
     raise ValueError(f"unsupported condition expression: {condition!r}")
 

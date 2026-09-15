@@ -35,6 +35,7 @@ MARKER = "<!-- pr-reviewer:canonical:v1:octo-org/hello-world#42 -->"
 SHA_A = "aa" * 20
 SHA_B = "bb" * 20
 SHA_C = "cc" * 20
+INJECTED_SHA = "ef" * 20
 BASE_SHA = "00" * 20
 GUID_A = "11111111-1111-4111-8111-111111111111"
 GUID_B = "22222222-2222-4222-8222-222222222222"
@@ -351,6 +352,31 @@ def test_stale_event_leaves_canonical_comment_untouched():
     assert h.github.methods() == []
     assert github.comments == [{"id": STORED_ID, "body": stored_body}]
     assert h.table.items[PK]["head_sha"] == SHA_B
+
+
+def test_injected_sha_ahead_of_api_consistency_discards_via_observation():
+    """Gate-10 advisory carry (fence-lag edge): a forged delivery whose SHA
+    was never pushed arrives while the record and the live head agree on
+    SHA_B — the injection beats GitHub API consistency, so establish cannot
+    confirm it. HLD-compliant discard as superseded with the observation
+    recorded: `last_seen_sha` advances to the injected SHA, head /
+    generation / comment / lease are untouched, review never runs, GitHub
+    is never touched, and the `stale_discarded` line is emitted."""
+    h = Harness(meta=[(200, SHA_B)])
+    before = _seed(h.table, head=SHA_B, gen=3, comment=STORED_ID)
+    assert h.run(INJECTED_SHA, GUID_B) == {"ok": True, "results": ["discarded_superseded"]}
+    item = h.table.items[PK]
+    assert item["last_seen_sha"] == INJECTED_SHA
+    assert item["head_sha"] == before["head_sha"] == SHA_B
+    assert item["generation"] == before["generation"] == 3
+    assert item["comment_id"] == before["comment_id"] == STORED_ID
+    assert item["claim_owner"] == before["claim_owner"]
+    assert item["claim_until"] == before["claim_until"]
+    assert h.llm_conns == []  # establish rejected before review
+    assert h.github.calls == []  # no publish of unconfirmed content
+    (line,) = h.log_lines()
+    assert line["status"] == "discarded_superseded"
+    assert line["stale_discarded"] is True
 
 
 def test_repeat_stale_sha_after_observation():

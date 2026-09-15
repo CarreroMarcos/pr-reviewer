@@ -48,7 +48,10 @@ in tests): every collaborator arrives keyword-only (`_table`, `_ssm` /
 `_github_transport`, `_sink`, `_system_prompt`, `_allowed_hosts`).
 Production passes nothing and boto3 clients are built lazily. The
 warm-container config cache (`_CONFIG_PROVIDER`) is used ONLY on the
-uninjected production path; tests always inject.
+uninjected production path; tests always inject. The SQS client cache
+(`_SQS_CLIENT`, G6-F2) shares that posture: production reuses one client
+per warm container, tests inject `_sqs` (or omit it — the queue default
+then applies).
 
 Ports (duck-typed — fakes mirror these exactly):
 
@@ -110,6 +113,14 @@ GITHUB_TIMEOUT_SECONDS = 10
 
 # Warm-container config cache — production path only (see module docstring).
 _CONFIG_PROVIDER: ConfigProvider | None = None
+
+# Warm-container SQS client cache — production path only (same posture as
+# `_CONFIG_PROVIDER` above: tests inject `_sqs` and never touch this).
+# Parallel-safety: the worker is single-record per invocation (ESM
+# `batch_size = 1`), and a boto3 client carries no per-record mutation, so
+# one cached client is shared across warm invocations without cross-record
+# state.
+_SQS_CLIENT: Any = None
 
 Clock = Callable[[], float]
 Sink = Callable[[str], None]
@@ -1093,6 +1104,12 @@ def reset_config_cache() -> None:
     _CONFIG_PROVIDER = None
 
 
+def reset_sqs_cache() -> None:
+    """Drop the warm-container SQS client cache (tests / rotation drills)."""
+    global _SQS_CLIENT
+    _SQS_CLIENT = None
+
+
 def handler(
     event: dict[str, Any],
     context: Any = None,
@@ -1152,13 +1169,18 @@ def handler(
     if sqs is None:
         # Best-effort edge: without a client (no region/credentials in unit
         # tests that predate the edge) the queue default applies and
-        # classification is unchanged.
-        try:
-            import boto3  # deferred: import-time must not require credentials
+        # classification is unchanged. Production caches one client per warm
+        # container (mirror `_CONFIG_PROVIDER`); a failed build leaves the
+        # cache empty so the next invocation retries.
+        global _SQS_CLIENT
+        if _SQS_CLIENT is None:
+            try:
+                import boto3  # deferred: import-time must not require credentials
 
-            sqs = boto3.client("sqs")
-        except Exception:
-            sqs = None
+                _SQS_CLIENT = boto3.client("sqs")
+            except Exception:
+                _SQS_CLIENT = None
+        sqs = _SQS_CLIENT
     queue_url = os.environ.get("WORK_QUEUE_URL", "")
 
     records = event.get("Records") if isinstance(event, dict) else None
