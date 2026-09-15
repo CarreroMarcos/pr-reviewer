@@ -122,6 +122,12 @@ _CONFIG_PROVIDER: ConfigProvider | None = None
 # state.
 _SQS_CLIENT: Any = None
 
+# Warm-container system-prompt cache — production path only (same posture as
+# `_CONFIG_PROVIDER` above: tests inject `_system_prompt` and never touch
+# this). The prompt ships deploy-static in worker.zip (zip-root `prompts/`),
+# so a warm-cached copy is semantically identical to a fresh disk read.
+_SYSTEM_PROMPT: str | None = None
+
 Clock = Callable[[], float]
 Sink = Callable[[str], None]
 
@@ -1110,6 +1116,12 @@ def reset_sqs_cache() -> None:
     _SQS_CLIENT = None
 
 
+def reset_prompt_cache() -> None:
+    """Drop the warm-container system-prompt cache (tests / rotation drills)."""
+    global _SYSTEM_PROMPT
+    _SYSTEM_PROMPT = None
+
+
 def handler(
     event: dict[str, Any],
     context: Any = None,
@@ -1163,7 +1175,16 @@ def handler(
     github_transport = (
         _github_transport if _github_transport is not None else _default_github_transport
     )
-    system_prompt = _system_prompt if _system_prompt is not None else _load_system_prompt()
+    if _system_prompt is not None:
+        system_prompt = _system_prompt
+    else:
+        # Production path: cache the deploy-static prompt per warm container
+        # (mirror `_CONFIG_PROVIDER`); a failed load leaves the cache empty
+        # so the next invocation retries.
+        global _SYSTEM_PROMPT
+        if _SYSTEM_PROMPT is None:
+            _SYSTEM_PROMPT = _load_system_prompt()
+        system_prompt = _SYSTEM_PROMPT
 
     sqs = _sqs
     if sqs is None:

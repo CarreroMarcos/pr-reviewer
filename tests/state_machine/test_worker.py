@@ -32,6 +32,10 @@ Mapping (pipeline stage / ruling → test):
 * worker SQS client cache (SPR-63 G6-F2) →
   `test_sqs_client_cached_across_warm_invocations`,
   `test_reset_sqs_cache_forces_rebuild`
+* worker system-prompt cache (audit R1) →
+  `test_system_prompt_cached_across_warm_invocations`,
+  `test_reset_prompt_cache_forces_reload`,
+  `test_injected_system_prompt_bypasses_cache`
 * boundary table → `test_is_retryable_table` plus one behavior test per
   row (`test_assemble_refused_completes`, `test_llm_timeout_raises…`,
   `test_llm_invalid_output_raises…`, `test_diff_transport_error_raises…`,
@@ -527,6 +531,79 @@ def test_reset_sqs_cache_forces_rebuild(monkeypatch):
         assert calls == ["sqs", "sqs"]
     finally:
         worker_handler.reset_sqs_cache()
+
+
+# --- worker system-prompt cache (audit R1) ----------------------------------
+
+
+def _uncached_run(h):
+    """Drive the handler past prompt resolution without pipeline work and
+    without injecting `_system_prompt` (the production path)."""
+    return handler(
+        {"Records": []},
+        None,
+        _table=h.table,
+        _config_provider=h.provider,
+        _now=lambda: NOW,
+        _sink=h.sink.append,
+        _sqs=object(),
+    )
+
+
+def test_system_prompt_cached_across_warm_invocations(monkeypatch):
+    # Given the uninjected production prompt path Then disk is hit once
+    worker_handler.reset_prompt_cache()
+    try:
+        calls = []
+
+        def counting_load():
+            calls.append(1)
+            return "CACHED-PROMPT"
+
+        monkeypatch.setattr(worker_handler, "_load_system_prompt", counting_load)
+        h = Harness(meta=[(200, SHA_B)])
+        assert _uncached_run(h) == {"ok": True, "results": []}
+        assert _uncached_run(h) == {"ok": True, "results": []}
+        assert calls == [1]  # loaded once, cache hit on the second run
+    finally:
+        worker_handler.reset_prompt_cache()
+
+
+def test_reset_prompt_cache_forces_reload(monkeypatch):
+    # Given a warm prompt cache Then reset forces the next run to load again
+    worker_handler.reset_prompt_cache()
+    try:
+        calls = []
+
+        def counting_load():
+            calls.append(1)
+            return "CACHED-PROMPT"
+
+        monkeypatch.setattr(worker_handler, "_load_system_prompt", counting_load)
+        h = Harness(meta=[(200, SHA_B)])
+        assert _uncached_run(h) == {"ok": True, "results": []}
+        worker_handler.reset_prompt_cache()
+        assert _uncached_run(h) == {"ok": True, "results": []}
+        assert calls == [1, 1]
+    finally:
+        worker_handler.reset_prompt_cache()
+
+
+def test_injected_system_prompt_bypasses_cache(monkeypatch):
+    # Given an explicitly injected prompt Then the loader never runs and the
+    # cache stays empty
+    worker_handler.reset_prompt_cache()
+    try:
+
+        def exploding_load():
+            raise AssertionError("injected path must not touch the loader")
+
+        monkeypatch.setattr(worker_handler, "_load_system_prompt", exploding_load)
+        h = Harness(meta=[(200, SHA_B)])
+        assert _wireless_run(h) == {"ok": True, "results": []}
+        assert worker_handler._SYSTEM_PROMPT is None
+    finally:
+        worker_handler.reset_prompt_cache()
 
 
 # --- envelope boundary: untrusted SQS input completes, never raises ---
