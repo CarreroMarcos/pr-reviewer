@@ -108,6 +108,11 @@ class ConfigProvider:
         self._cached: AppConfig | None = None
         self._fetched_at = 0.0
 
+    @property
+    def allowed_hosts(self) -> frozenset[str]:
+        """Env-configured endpoint host set, lowercased at ingest."""
+        return self._allowed_hosts
+
     def get(self) -> AppConfig:
         """Return the cached config, re-fetching on cold start, TTL expiry,
         or after `invalidate()`/`bust()`. A backwards clock (negative

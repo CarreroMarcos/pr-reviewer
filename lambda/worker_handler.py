@@ -418,9 +418,13 @@ def _make_review(
     diff_transport: Any,
     llm_factory: Any,
     system_prompt: str,
+    allowed_hosts: frozenset[str] | None = None,
 ) -> Callable[[], str]:
     """Protocol `review` port: diff → LLM (single 401 re-fetch) → assemble
-    + mandatory validate gate → publish-ready content (opaque string)."""
+    + mandatory validate gate → publish-ready content (opaque string).
+
+    `allowed_hosts` is the env-configured GLM host set (from the provider's
+    `allowed_hosts` accessor); `None` keeps `review_diff`'s module default."""
 
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
@@ -448,6 +452,7 @@ def _make_review(
                 endpoint=cfg.glm_endpoint,
                 system_prompt=system_prompt,
                 diff_text=diff_text,
+                allowed_hosts=allowed_hosts,
                 _connection_factory=llm_factory,
             )
         except LlmError as exc:
@@ -459,6 +464,7 @@ def _make_review(
                     endpoint=fresh.glm_endpoint,
                     system_prompt=system_prompt,
                     diff_text=diff_text,
+                    allowed_hosts=allowed_hosts,
                     _connection_factory=llm_factory,
                 )
             raise
@@ -997,6 +1003,7 @@ def _process_record(
                 diff_transport=diff_transport,
                 llm_factory=llm_factory,
                 system_prompt=system_prompt,
+                allowed_hosts=provider.allowed_hosts,
             ),
             fence=_make_fence(envelope=envelope, creds=creds, diff_transport=diff_transport),
             publish=_make_publish(

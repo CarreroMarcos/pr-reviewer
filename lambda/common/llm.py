@@ -46,8 +46,11 @@ READ_TIMEOUT_S = 45
 # and is sent ONLY when the model looks like a GLM model (`startswith "glm"`)
 # AND the endpoint host is a known GLM host below. Any other provider/model
 # may reject an unknown key, so the key is omitted entirely there (never an
-# `"enabled"` variant). The host set mirrors the worker's `GLM_ALLOWED_HOSTS`
-# environment (terraform/compute.tf); if infra adds a GLM host, update both.
+# `"enabled"` variant). The worker threads its env-configured host set
+# (`GLM_ALLOWED_HOSTS` environment, terraform/compute.tf) through
+# `review_diff(allowed_hosts=...)`; the set below is the default when the
+# caller passes nothing. If infra adds a GLM host, update the environment
+# (and this default to match).
 GLM_ALLOWED_HOSTS = frozenset({"api.z.ai"})
 
 logger = logging.getLogger(__name__)
@@ -138,12 +141,16 @@ def review_diff(
     endpoint: str,
     system_prompt: str,
     diff_text: str,
+    allowed_hosts: frozenset[str] | None = None,
     _connection_factory: ConnectionFactory | None = None,
     _clock: Clock | None = None,
 ) -> ReviewResult:
     """Run one chat-completions review; raise `LlmError` on any failure.
 
     `endpoint` is the full HTTPS chat-completions URL from SSM hydration.
+    `allowed_hosts` is the env-configured GLM host set threaded through by
+    the worker; `None` (default) falls back to `GLM_ALLOWED_HOSTS` so
+    existing callers behave exactly as before.
     """
     if not api_key or not model:
         raise LlmError("bad_endpoint")
@@ -172,7 +179,9 @@ def review_diff(
         ],
         "temperature": TEMPERATURE,
     }
-    if model.startswith("glm") and host.lower() in GLM_ALLOWED_HOSTS:
+    if model.startswith("glm") and host.lower() in (
+        GLM_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts
+    ):
         payload["thinking"] = {"type": "disabled"}
     body = json.dumps(
         payload,
