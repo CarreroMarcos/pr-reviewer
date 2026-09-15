@@ -5,10 +5,12 @@ comment and rejects each prohibited class with a machine-readable reason code.
 Fails with ModuleNotFoundError until T019 implements `common.validate`.
 """
 
+from pathlib import Path
+
 import pytest
 
 from common.marker import build_marker
-from common.validate import CANARY_SUBSTRING, validate_comment
+from common.validate import CANARY_SUBSTRING, PROMPT_VERSION, validate_comment
 
 REPO = "octo-org/hello-world"
 PR = 9
@@ -183,6 +185,17 @@ def test_reject_prompt_canary():
     verdict = check(make_valid() + f"\n{CANARY_SUBSTRING}\n")
     assert verdict.ok is False
     assert "canary_leaked" in verdict.reasons
+
+
+def test_prompt_canary_and_version_sync_with_system_prompt():
+    # SPR-61: the gate constants must match the live prompt file — a rotated
+    # canary or bumped version that misses either side silently disables
+    # the leakage tripwire or the version contract.
+    prompt = (
+        Path(__file__).resolve().parent.parent.parent / "prompts" / "system_prompt.md"
+    ).read_text(encoding="utf-8")
+    assert f"prompt_version: {PROMPT_VERSION}" in prompt
+    assert CANARY_SUBSTRING in prompt
 
 
 def test_reject_at_mentions():
