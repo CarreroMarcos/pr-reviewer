@@ -70,8 +70,13 @@ resource "aws_lambda_function" "ingress" {
   # under SPR-60 and rejected by operator decision (2026-09-14) after the
   # canonical review surfaced this prior failure — revert over accept-risk.
   # The memory trim is worker-only.
-  memory_size                    = 512
-  reserved_concurrent_executions = 2
+  #
+  # Reserved concurrency DROPPED (operator ruling 2026-09-15, live-apply
+  # evidence): the account's total Lambda concurrency is 10 and AWS
+  # enforces >=10 unreserved account-wide, so no reservation is landable
+  # until a quota raise. Restore the ingress/worker reserves (2/5) only
+  # after that raise (SPR-60 "at quota raise" intent).
+  memory_size = 512
 
   # WORK_QUEUE_URL has no safe default in the handler ("" → send fails, 500):
   # the queue URL is account-specific, so it must be wired (surfaced by the
@@ -97,10 +102,9 @@ resource "aws_lambda_function" "worker" {
   timeout = 120
   # SPR-60 (Mars decision 2026-09-14): memory 256 MB (HLD §5; trimmed from
   # the 512 MB scratch value, with headroom for the LLM round-trip within
-  # the 15 s end-to-end budget). Reserved concurrency 5 (right-sized;
-  # see the ingress note — sum 7 of quota-10).
-  memory_size                    = 256
-  reserved_concurrent_executions = 5
+  # the 15 s end-to-end budget). Reserved concurrency: see the ingress
+  # note — dropped at the 2026-09-15 ruling, restore 5 at quota raise.
+  memory_size = 256
 
   environment {
     variables = {
