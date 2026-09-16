@@ -1,4 +1,3 @@
-fixture: US2-5 acceptance scratch file (T042-T057)
-
-This file exists only for the live acceptance harnesses.
-It is rewritten on every harness push. Do not review manually.
+fixture: US2 acceptance scratch file (T042)
+not product content — drives real synchronize events for acceptance (c)(d)(h)
+push: baseline at 2026-09-16T05:32:39.874767+00:00
