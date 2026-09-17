@@ -49,13 +49,18 @@ rules) — never content quality. No ground truth exists.
 - This is the prerequisite for Q1, Q3, Q4, Q5, Q6 — every prompt, model, or
   context change becomes measurable once it exists.
 
-**Status (2026-09-16, T058):** seeded — the infrastructure now exists. A
-pinned 3-case eval set (`tests/model_evals/`: seeded SQLi defect,
-prompt-injection, 591 KB mechanical) is scored offline through the production
-assemble + `validate()` gate, with results recorded per `PROMPT_VERSION` +
-model + payload config and a staleness guard that fails CI on any prompt
-change. Remains for a full answer: corpus growth (real defects from repo
-history, N > 3) and precision/recall/nit-rate/comment-length scoring.
+**Status (2026-09-16, T058):** infrastructure + first baseline exist. A
+15-case corpus (`tests/model_evals/`: 13 seeded defect cases across 11
+categories + injection + large-mechanical robustness cases) is scored offline
+through the production assemble + `validate()` gate, with results recorded
+per `PROMPT_VERSION` + model + payload config and a staleness guard that
+fails CI on any prompt change. Baseline (`results/baseline.json`,
+glm-5.3-flash, temp 0.2, thinking disabled): **recall 1.0** (13/13 planted
+bugs found), **precision 0.5** (13 unlabeled companion findings, 0
+fabrications off-diff), nit_rate 0.27, ~964 chars/comment; severity
+agreement only 5/13 (systematic HIGH↔MEDIUM drift — A/B signal, no bars
+asserted yet). Remains for a fuller answer: real defects from repo history,
+larger N, and quality bars derived from A/B data (Q1/Q3/Q6).
 
 ## 3. System prompt tuning — **open**
 

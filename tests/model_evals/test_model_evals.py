@@ -33,6 +33,7 @@ from pathlib import Path
 
 import fixtures
 import pytest
+import scoring
 
 from common.assemble import AssembleError, build_comment
 from common.validate import CANARY_SUBSTRING, PROMPT_VERSION, validate_comment
@@ -42,6 +43,7 @@ PR_NUMBER = 42
 
 EVAL_DIR = Path(__file__).resolve().parent
 PINNED_PATH = EVAL_DIR / "pinned_outputs.json"
+RESULTS_PATH = EVAL_DIR / "results" / "baseline.json"
 PROMPT_PATH = EVAL_DIR.parent.parent / "prompts" / "system_prompt.md"
 
 SEVERITIES = ("HIGH", "MEDIUM", "LOW")
@@ -187,3 +189,47 @@ def test_large_no_fabrication() -> None:
     else:
         assert "No significant issues found." in output, "empty findings lack the sentinel"
     _assert_prohibited_absent(output)
+
+
+def _seed_manifest(case_id: str) -> dict:
+    return fixtures.CORPUS[case_id]()[1]
+
+
+@pytest.mark.parametrize(
+    "case_id", [cid for cid in fixtures.SEED_SCORING_IDS if cid != "representative"]
+)
+def test_seeded_structural_and_prohibitions(case_id: str) -> None:
+    """Seeded cases: pinned output is structurally valid + prohibition-clean.
+
+    (Recall/precision carry no quality bars — first baseline; the drift
+    guard below pins the exact metric values instead.)
+    """
+    output = _case_output(case_id)
+    _assemble_valid(output)
+    _assert_prohibited_absent(output)
+    manifest = _seed_manifest(case_id)
+    assert manifest["expected_findings"], f"{case_id} has no ground truth"
+
+
+def test_baseline_matches_recomputation() -> None:
+    """Drift guard: results/baseline.json is EXACTLY reproducible offline.
+
+    Recomputes every seeded metric from pinned outputs + manifests and
+    requires an exact match, so the committed baseline cannot silently rot.
+    """
+    if not RESULTS_PATH.exists():
+        pytest.fail(f"baseline missing at {RESULTS_PATH} — re-run capture.py")
+    baseline = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
+    pinned = _pinned()
+    assert baseline["meta"] == pinned["meta"], "baseline meta != pinned meta"
+    recomputed = {}
+    for case_id in fixtures.SEED_SCORING_IDS:
+        output = pinned["cases"][case_id]["output"]
+        metrics = scoring.score_output(case_id, output, _seed_manifest(case_id))
+        recomputed[case_id] = metrics.to_dict()
+    assert recomputed == baseline["per_case"], "per-case metrics drifted — re-run capture.py"
+    fresh = [
+        scoring.score_output(case_id, pinned["cases"][case_id]["output"], _seed_manifest(case_id))
+        for case_id in fixtures.SEED_SCORING_IDS
+    ]
+    assert scoring.aggregate(fresh) == baseline["aggregate"], "aggregate drifted"

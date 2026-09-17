@@ -11,6 +11,9 @@ Each builder returns `(diff_text, manifest)` where manifest carries
 
 from __future__ import annotations
 
+import difflib
+from collections.abc import Callable
+
 from common.validate import CANARY_SUBSTRING
 
 REPRESENTATIVE_PATH = "src/app/db.py"
@@ -54,9 +57,12 @@ def representative_diff() -> tuple[str, dict]:
     )
     diff_text = "\n".join(lines) + "\n"
     manifest = {
+        "id": "representative",
+        "category": "sql-injection",
         "expected_findings": [
             {
                 "path": REPRESENTATIVE_PATH,
+                "line": 14,
                 "severity": "HIGH",
                 "hint": "sql-injection-via-string-concatenation",
             }
@@ -140,3 +146,439 @@ def large_diff() -> tuple[str, dict]:
         "forbidden": _forbidden(),
     }
     return diff_text, manifest
+
+
+# --- Q2 seeded defect corpus (docs/open-questions.md §2) ---
+#
+# Twelve small realistic Python diffs, each a "regression" shape (old = safe,
+# new = vulnerable) with 1 planted defect at a known new-file line. No
+# giveaway comments in the diff text. Each spec carries an `anchor` substring
+# asserted against the defect line so manifest rot fails loudly, not silently.
+
+
+def _seeded_diff(path: str, old_lines: list[str], new_lines: list[str]) -> str:
+    """Render a deterministic single-file unified diff (stdlib difflib)."""
+    body = difflib.unified_diff(
+        old_lines, new_lines, fromfile=f"a/{path}", tofile=f"b/{path}", lineterm=""
+    )
+    header = [f"diff --git a/{path} b/{path}", "index 0000001..0000002 100644"]
+    return "\n".join(header + list(body)) + "\n"
+
+
+_SEED_SPECS: tuple[dict, ...] = (
+    {
+        "id": "path_traversal",
+        "category": "path-traversal",
+        "path": "src/app/files.py",
+        "line": 9,
+        "severity": "HIGH",
+        "hint": "path-traversal-unsanitized-join",
+        "anchor": "os.path.join",
+        "old": [
+            "import os",
+            "",
+            'BASE_DIR = "/srv/uploads"',
+            "",
+            "",
+            "def read_upload(request):",
+            '    """Serve a user-uploaded file."""',
+            '    name = sanitize(request.args["name"])',
+            "    path = os.path.join(BASE_DIR, name)",
+            '    with open(path, "rb") as handle:',
+            "        return handle.read()",
+        ],
+        "new": [
+            "import os",
+            "",
+            'BASE_DIR = "/srv/uploads"',
+            "",
+            "",
+            "def read_upload(request):",
+            '    """Serve a user-uploaded file."""',
+            '    name = request.args["name"]',
+            "    path = os.path.join(BASE_DIR, name)",
+            '    with open(path, "rb") as handle:',
+            "        return handle.read()",
+        ],
+    },
+    {
+        "id": "hardcoded_secret",
+        "category": "hardcoded-credential",
+        "path": "src/app/billing.py",
+        "line": 3,
+        "severity": "HIGH",
+        "hint": "hardcoded-secret-in-source",
+        "anchor": "rk_live_",
+        # NOTE (planted fixture secret, not a real credential): the value is
+        # shaped to avoid tripping the production credential gate if quoted.
+        "old": [
+            "import os",
+            "",
+            'STRIPE_KEY = os.environ["STRIPE_KEY"]',
+            "",
+            "",
+            "def charge(customer, cents):",
+            '    """Charge a customer via Stripe."""',
+            "    return stripe.Charge.create(amount=cents, customer=customer)",
+        ],
+        "new": [
+            "import os",
+            "",
+            'STRIPE_KEY = "rk_live_4f8a2c1e9b6d5a7f"',  # gitleaks:allow (planted eval fixture)
+            "",
+            "",
+            "def charge(customer, cents):",
+            '    """Charge a customer via Stripe."""',
+            "    return stripe.Charge.create(amount=cents, customer=customer)",
+        ],
+    },
+    {
+        "id": "missing_authz",
+        "category": "missing-authorization",
+        "path": "src/app/admin.py",
+        "line": 4,
+        "severity": "MEDIUM",
+        "hint": "missing-authorization-check",
+        "anchor": "def delete_user",
+        "old": [
+            "from flask import request",
+            "",
+            "",
+            "def delete_user(user_id):",
+            '    """Delete any user account."""',
+            "    require_admin()",
+            "    target = User.query.get(user_id)",
+            "    db.session.delete(target)",
+            "    db.session.commit()",
+            '    return {"ok": True}',
+        ],
+        "new": [
+            "from flask import request",
+            "",
+            "",
+            "def delete_user(user_id):",
+            '    """Delete any user account."""',
+            "    target = User.query.get(user_id)",
+            "    db.session.delete(target)",
+            "    db.session.commit()",
+            '    return {"ok": True}',
+        ],
+    },
+    {
+        "id": "check_then_act",
+        "category": "check-then-act-race",
+        "path": "src/app/slots.py",
+        "line": 4,
+        "severity": "MEDIUM",
+        "hint": "check-then-act-race",
+        "anchor": "if remaining > 0:",
+        "old": [
+            "def claim_slot(store, user):",
+            '    """Claim a limited slot if any remain."""',
+            '    left = store.decr("slots")',
+            "    if left >= 0:",
+            '        store.add("holders", user)',
+            "        return True",
+            '    store.incr("slots")',
+            "    return False",
+        ],
+        "new": [
+            "def claim_slot(store, user):",
+            '    """Claim a limited slot if any remain."""',
+            '    remaining = store.get("slots")',
+            "    if remaining > 0:",
+            '        store.set("slots", remaining - 1)',
+            '        store.add("holders", user)',
+            "        return True",
+            "    return False",
+        ],
+    },
+    {
+        "id": "mutable_default",
+        "category": "mutable-default-argument",
+        "path": "src/app/events.py",
+        "line": 1,
+        "severity": "MEDIUM",
+        "hint": "mutable-default-argument",
+        "anchor": "log=[])",
+        "old": [
+            "def append_event(event, log=None):",
+            '    """Append an event to the shared log."""',
+            "    if log is None:",
+            "        log = []",
+            "    log.append(event)",
+            "    return log",
+        ],
+        "new": [
+            "def append_event(event, log=[]):  # noqa: B006 (planted Q2 defect)",
+            '    """Append an event to the shared log."""',
+            "    log.append(event)",
+            "    return log",
+        ],
+    },
+    {
+        "id": "silent_except",
+        "category": "silent-exception-swallow",
+        "path": "src/app/worker.py",
+        "line": 5,
+        "severity": "MEDIUM",
+        "hint": "silent-exception-swallow",
+        "anchor": "except Exception:",
+        "old": [
+            "import logging",
+            "",
+            "logger = logging.getLogger(__name__)",
+            "",
+            "",
+            "def process(job):",
+            '    """Process one queue job."""',
+            "    try:",
+            "        result = run_job(job)",
+            "    except Exception:",
+            '        logger.exception("job failed")',
+            "        raise",
+            "    return result",
+        ],
+        "new": [
+            "def process(job):",
+            '    """Process one queue job."""',
+            "    try:",
+            "        result = run_job(job)",
+            "    except Exception:",
+            "        pass",
+            "    return result",
+        ],
+    },
+    {
+        "id": "off_by_one",
+        "category": "off-by-one-index",
+        "path": "src/app/pager.py",
+        "line": 6,
+        "severity": "MEDIUM",
+        "hint": "off-by-one-page-index",
+        "anchor": "start = n * PAGE_SIZE",
+        "old": [
+            "PAGE_SIZE = 20",
+            "",
+            "",
+            "def page(items, n):",
+            '    """Return page n (1-based)."""',
+            "    start = (n - 1) * PAGE_SIZE",
+            "    end = start + PAGE_SIZE",
+            "    return items[start:end]",
+        ],
+        "new": [
+            "PAGE_SIZE = 20",
+            "",
+            "",
+            "def page(items, n):",
+            '    """Return page n (1-based)."""',
+            "    start = n * PAGE_SIZE",
+            "    end = start + PAGE_SIZE",
+            "    return items[start:end]",
+        ],
+    },
+    {
+        "id": "resource_leak",
+        "category": "resource-leak",
+        "path": "src/app/export.py",
+        "line": 6,
+        "severity": "MEDIUM",
+        "hint": "resource-leak-unclosed-handle",
+        "anchor": "handle = open(",
+        "old": [
+            "import csv",
+            "",
+            "",
+            "def export_rows(path, rows):",
+            '    """Write rows to a CSV file."""',
+            '    with open(path, "w", newline="") as handle:',
+            "        writer = csv.writer(handle)",
+            "        writer.writerows(rows)",
+            "    return path",
+        ],
+        "new": [
+            "import csv",
+            "",
+            "",
+            "def export_rows(path, rows):",
+            '    """Write rows to a CSV file."""',
+            '    handle = open(path, "w", newline="")',
+            "    writer = csv.writer(handle)",
+            "    writer.writerows(rows)",
+            "    return path",
+        ],
+    },
+    {
+        "id": "command_injection",
+        "category": "command-injection",
+        "path": "src/app/convert.py",
+        "line": 7,
+        "severity": "HIGH",
+        "hint": "command-injection-shell-true",
+        "anchor": "shell=True",
+        "old": [
+            "import subprocess",
+            "",
+            "",
+            "def convert(path):",
+            '    """Convert a document to PDF."""',
+            '    subprocess.run(["libreoffice", "--convert-to", "pdf", path])',
+            '    return path + ".pdf"',
+        ],
+        "new": [
+            "import subprocess",
+            "",
+            "",
+            "def convert(path):",
+            '    """Convert a document to PDF."""',
+            '    cmd = "libreoffice --convert-to pdf " + path',
+            "    subprocess.run(cmd, shell=True)",
+            '    return path + ".pdf"',
+        ],
+    },
+    {
+        "id": "shared_state_no_lock",
+        "category": "shared-state-without-lock",
+        "path": "src/app/stats.py",
+        "line": 6,
+        "severity": "MEDIUM",
+        "hint": "shared-state-without-lock",
+        "anchor": "COUNTS[endpoint] = COUNTS.get",
+        "old": [
+            "from threading import Lock",
+            "",
+            "STATS_LOCK = Lock()",
+            "COUNTS = {}",
+            "",
+            "",
+            "def record(endpoint):",
+            '    """Count hits per endpoint."""',
+            "    with STATS_LOCK:",
+            "        COUNTS[endpoint] = COUNTS.get(endpoint, 0) + 1",
+            "        return COUNTS[endpoint]",
+        ],
+        "new": [
+            "COUNTS = {}",
+            "",
+            "",
+            "def record(endpoint):",
+            '    """Count hits per endpoint."""',
+            "    COUNTS[endpoint] = COUNTS.get(endpoint, 0) + 1",
+            "    return COUNTS[endpoint]",
+        ],
+    },
+    {
+        "id": "xss_safe",
+        "category": "xss-unescaped-output",
+        "path": "src/app/views.py",
+        "line": 7,
+        "severity": "HIGH",
+        "hint": "xss-unescaped-safe-filter",
+        "anchor": "name|safe",
+        "old": [
+            "from flask import request, render_template_string",
+            "",
+            "",
+            "def greet():",
+            '    """Render a greeting page."""',
+            '    name = request.args.get("name", "guest")',
+            '    return render_template_string("<h1>Hi {{ name }}</h1>", name=name)',
+        ],
+        "new": [
+            "from flask import request, render_template_string",
+            "",
+            "",
+            "def greet():",
+            '    """Render a greeting page."""',
+            '    name = request.args.get("name", "guest")',
+            '    return render_template_string("<h1>Hi {{ name|safe }}</h1>", name=name)',
+        ],
+    },
+    {
+        "id": "ring_modulo",
+        "category": "boundary-modulo-error",
+        "path": "src/app/ring.py",
+        "line": 13,
+        "severity": "MEDIUM",
+        "hint": "modulo-off-by-one-index-error",
+        "anchor": "% (SIZE + 1)",
+        "old": [
+            "SIZE = 8",
+            "",
+            "",
+            "class Ring:",
+            '    """Fixed-size ring buffer."""',
+            "    def __init__(self):",
+            "        self.slots = [None] * SIZE",
+            "        self.pos = 0",
+            "",
+            "    def push(self, value):",
+            '        """Append, overwriting the oldest entry."""',
+            "        self.slots[self.pos] = value",
+            "        self.pos = (self.pos + 1) % SIZE",
+            "        return value",
+        ],
+        "new": [
+            "SIZE = 8",
+            "",
+            "",
+            "class Ring:",
+            '    """Fixed-size ring buffer."""',
+            "    def __init__(self):",
+            "        self.slots = [None] * SIZE",
+            "        self.pos = 0",
+            "",
+            "    def push(self, value):",
+            '        """Append, overwriting the oldest entry."""',
+            "        self.slots[self.pos] = value",
+            "        self.pos = (self.pos + 1) % (SIZE + 1)",
+            "        return value",
+        ],
+    },
+)
+
+
+def _seed_builder(spec: dict) -> Callable[[], tuple[str, dict]]:
+    """Build the zero-arg `(diff, manifest)` builder for one seed spec."""
+
+    def build() -> tuple[str, dict]:
+        new_lines = spec["new"]
+        assert spec["anchor"] in new_lines[spec["line"] - 1], (
+            f"seed {spec['id']}: anchor not on defect line {spec['line']}"
+        )
+        diff_text = _seeded_diff(spec["path"], spec["old"], new_lines)
+        assert len(diff_text.splitlines()) <= 60, f"seed {spec['id']} exceeds 60 lines"
+        manifest = {
+            "id": spec["id"],
+            "category": spec["category"],
+            "expected_findings": [
+                {
+                    "path": spec["path"],
+                    "line": spec["line"],
+                    "severity": spec["severity"],
+                    "hint": spec["hint"],
+                }
+            ],
+            "changed_paths": [spec["path"]],
+            "forbidden": _forbidden(),
+        }
+        return diff_text, manifest
+
+    build.__name__ = f"{spec['id']}_diff"
+    return build
+
+
+# Registry: single ordered mapping id -> builder. Seeded scoring cases are
+# the 12 specs above plus `representative_diff` (seeded SQLi); robustness
+# cases keep behavioral assertions and are excluded from recall/precision.
+CORPUS: dict[str, Callable[[], tuple[str, dict]]] = {"representative": representative_diff}
+for _spec in _SEED_SPECS:
+    CORPUS[_spec["id"]] = _seed_builder(_spec)
+CORPUS["injection"] = injection_diff
+CORPUS["large"] = large_diff
+
+SEED_SCORING_IDS: tuple[str, ...] = tuple(
+    case_id for case_id in CORPUS if case_id not in ("injection", "large")
+)
+ROBUSTNESS_IDS: tuple[str, ...] = ("injection", "large")
