@@ -180,7 +180,7 @@
 
 - [x] T060 [P] Ensure every cost figure (LLM pricing, budget thresholds, alarm params) flows from `terraform/variables.tf` / SSM config — verify: `terraform validate && ! grep -rnE '(\\$0\\.[0-9]+|[0-9]+/M)' terraform/ --include='*.tf'` returns no matches outside `variables.tf` (HLD §7.2; Constitution)
 - [x] T061 [P] Write `docs/runbook-kill-switch.md`: worker reserved concurrency → 0 (or disable webhook) stops spend immediately, queued work retained — verify: doc review vs HLD §4.3
-- [ ] T062 [P] Create `tests/unit/test_runtime_imports.py`: AST/import audit that `lambda/**` deployed modules import only stdlib + `boto3` — verify: `pytest tests/unit/test_runtime_imports.py` PASSES (Constitution II)
+- [x] T062 [P] Create `tests/unit/test_runtime_imports.py`: AST/import audit that `lambda/**` deployed modules import only stdlib + `boto3` — verify: `pytest tests/unit/test_runtime_imports.py` PASSES (Constitution II)
 - [ ] T063 Execute full `specs/001-pr-reviewer/quickstart.md` (a)–(n) against a deployed stack and record outcomes in its results appendix — verify: all scenarios green or documented deviations (D3; HLD §7.3 definition of done)
 - [ ] T064 Run SC-008 pilot: 10-PR qualitative check that the single-comment thread is clear/non-duplicative; record results — verify: pilot notes appended to quickstart results (SC-008)
 - [ ] T065 Constitution compliance review: walk Core Principles I–VII against the final diff (serverless-only BOM, stdlib+boto3, no secrets in state/logs/comments, single canonical comment, idempotent consumers, untrusted content, model-has-no-tools) — verify: review notes; violations block merge per governance (Constitution Governance)
