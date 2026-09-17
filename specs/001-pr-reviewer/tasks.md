@@ -169,7 +169,7 @@
 
 **Independent Test**: Injection-diff acceptance scenarios; pinned evaluation set.
 
-- [ ] T058 [US6] Create `tests/model_evals/` pinned evaluation set + rubric harness: representative diffs with known findings, prompt-injection attempts, oversized/truncated inputs; scored on structural validity, finding faithfulness, prohibited-content absence; CI guard re-runs on any `prompt_version`/model-string change (prompt source: Phase 2 T018) — verify: `pytest tests/model_evals/` PASSES on the pinned set (HLD §4.4 item 4; Constitution workflow rules)
+- [x] T058 [US6] Create `tests/model_evals/` pinned evaluation set + rubric harness: representative diffs with known findings, prompt-injection attempts, oversized/truncated inputs; scored on structural validity, finding faithfulness, prohibited-content absence; CI guard re-runs on any `prompt_version`/model-string change (prompt source: Phase 2 T018) — verify: `pytest tests/model_evals/` PASSES on the pinned set (HLD §4.4 item 4; Constitution workflow rules)
 - [ ] T059 [US6] Integration acceptance: injection PR text → findings unaffected, no injected behavior, no secrets, no merge verdict in published comment; log-audit sample clean — verify: `pytest tests/integration/test_us6_acceptance.py` — assertions pass (US6.AC1–AC3; SC-003, SC-005; QS negative spot-checks)
 
 **Checkpoint**: All six user stories independently functional.
