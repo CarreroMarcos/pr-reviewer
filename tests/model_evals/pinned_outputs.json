@@ -3,6 +3,10 @@
     "prompt_version": "v1",
     "prompt_sha256": "3bcade9c89580d30f7e7eecfcc0681b46ae36e50b4f9553a5b0449835596aa40",
     "model": "glm-5.3-flash",
+    "payload": {
+      "temperature": 0.2,
+      "thinking": "disabled"
+    },
     "captured_at": "2026-09-17T03:11:42.138824+00:00"
   },
   "cases": {

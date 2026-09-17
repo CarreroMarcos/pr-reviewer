@@ -146,6 +146,14 @@ def main(argv: list[str] | None = None) -> int:
             "prompt_version": PROMPT_VERSION,
             "prompt_sha256": hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(),
             "model": model,
+            "payload": {
+                "temperature": TEMPERATURE,
+                "thinking": (
+                    "disabled"
+                    if urlsplit(endpoint).netloc.lower() in GLM_HOSTS
+                    else "provider-default"
+                ),
+            },
             "captured_at": datetime.datetime.now(datetime.UTC).isoformat(),
         },
         "cases": cases,

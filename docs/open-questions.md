@@ -30,6 +30,11 @@ Decision that follows: if thinking-on wins big, either raise the latency
 budget (a review is asynchronous from the user's point of view anyway) or
 revisit model choice (Q6).
 
+**Status (2026-09-16):** unblocked mechanically — the T058 capture + rubric
+(`tests/model_evals/`) can A/B thinking variants and score them; a meaningful
+recall measurement still needs the Q2 corpus first (3 fixtures is a smoke,
+not a corpus).
+
 ## 2. How do we evaluate review quality at all? — **prereq**
 
 The acceptance harness asserts plumbing (exactly one comment, ≤15 s, discard
@@ -44,6 +49,14 @@ rules) — never content quality. No ground truth exists.
 - This is the prerequisite for Q1, Q3, Q4, Q5, Q6 — every prompt, model, or
   context change becomes measurable once it exists.
 
+**Status (2026-09-16, T058):** seeded — the infrastructure now exists. A
+pinned 3-case eval set (`tests/model_evals/`: seeded SQLi defect,
+prompt-injection, 591 KB mechanical) is scored offline through the production
+assemble + `validate()` gate, with results recorded per `PROMPT_VERSION` +
+model + payload config and a staleness guard that fails CI on any prompt
+change. Remains for a full answer: corpus growth (real defects from repo
+history, N > 3) and precision/recall/nit-rate/comment-length scoring.
+
 ## 3. System prompt tuning — **open**
 
 `prompts/system_prompt.md` (v1, ~3.7 KB) is untested against alternatives:
@@ -56,6 +69,10 @@ rules) — never content quality. No ground truth exists.
 
 A/B against the Q2 eval set; keep versions (`PROMPT_VERSION`) with recorded
 results.
+
+**Status (2026-09-16):** the A/B rail exists (T058 eval set + versioned,
+staleness-guarded results); prompt variants currently need a manual re-capture
+per variant.
 
 ## 4. More context for the reviewer — **deferred**
 
@@ -80,6 +97,10 @@ model.
 reasoning) model with asynchronous delivery better overall? Also unmeasured:
 temperature 0.2 vs 0 (determinism vs exploration).
 
+**Status (2026-09-16):** same rail as Q1/Q3; per-model comparison needs a
+`--model` flag on `tests/model_evals/capture.py` (pins are single-model
+today).
+
 ## 7. Smaller questions — **open**
 
 - `assemble_approval_verdict`: seen live once (a real-webhook ride discarded
@@ -92,7 +113,10 @@ temperature 0.2 vs 0 (determinism vs exploration).
   deep-dives flagged regions. Cost/quality frontier unexplored.
 - Large-diff fidelity: the diff budget truncates — what does the model
   actually see past the cap, and does the ~1 K-char completion cap make
-  comments too shallow for big diffs?
+  comments too shallow for big diffs? First data point (T058, 2026-09-16):
+  on a 591 KB mechanical diff the model returned one LOW nit, no fabricated
+  findings, shape-valid output — direction is reassuring but one mechanical
+  diff answers nothing about depth on real large diffs.
 - Non-English PRs and non-code files: behavior untested.
 - **PT timestamp in bot comments** (Mars, 2026-09-14): every reviewer comment
   should carry a Pacific-time stamp so Mars can see when it was posted. NOT
