@@ -30,10 +30,14 @@ Decision that follows: if thinking-on wins big, either raise the latency
 budget (a review is asynchronous from the user's point of view anyway) or
 revisit model choice (Q6).
 
-**Status (2026-09-16):** unblocked mechanically — the T058 capture + rubric
-(`tests/model_evals/`) can A/B thinking variants and score them; a meaningful
-recall measurement still needs the Q2 corpus first (3 fixtures is a smoke,
-not a corpus).
+**Status (2026-09-17):** first A/B run on the 13-case corpus — thinking-on
+buys nothing here: recall identical (1.0 everywhere), no precision gain
+(0.57 vs 0.65), nit-rate highest of all variants, at 2.4× latency (318 s vs
+130 s mean/case). Ops alarm folded out of the same run: thinking-OFF calls
+measured ~130 s/case on the live endpoint (HLD assumed 5–8 s; product bar is
+≤15 s) — possibly provider load at run time; re-probe before concluding, but
+if it stands the latency budget is the real problem, not model choice.
+Variant data: `tests/model_evals/results/*.json`.
 
 ## 2. How do we evaluate review quality at all? — **prereq**
 
@@ -102,9 +106,11 @@ model.
 reasoning) model with asynchronous delivery better overall? Also unmeasured:
 temperature 0.2 vs 0 (determinism vs exploration).
 
-**Status (2026-09-16):** same rail as Q1/Q3; per-model comparison needs a
-`--model` flag on `tests/model_evals/capture.py` (pins are single-model
-today).
+**Status (2026-09-17):** the `--model` flag exists and the first comparison
+ran: glm-5.3 (non-flash) ≈ flash on this corpus — identical recall, same
+unlabeled count, same ~127 s latency. Not an upgrade, not a regression.
+Temperature 0.0 vs 0.2 also indistinguishable (decode temperature is not a
+lever here). Remaining: stronger non-GLM models, repo-history corpus.
 
 ## 7. Smaller questions — **open**
 
