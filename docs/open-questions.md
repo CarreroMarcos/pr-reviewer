@@ -35,7 +35,8 @@ buys nothing here: recall identical (1.0 everywhere), no precision gain
 (0.57 vs 0.65), nit-rate highest of all variants, at 2.4× latency (318 s vs
 130 s mean/case). Ops alarm folded out of the same run: thinking-OFF calls
 measured ~130 s/case on the live endpoint (HLD assumed 5–8 s; product bar is
-≤15 s) — possibly provider load at run time; re-probe before concluding, but
+≤15 s) — possibly provider load at run time; re-probe before concluding
+(still pending as of 2026-09-18; HLD v6.8 §4.2 now carries the measurement), but
 if it stands the latency budget is the real problem, not model choice.
 Variant data: `tests/model_evals/results/*.json`.
 

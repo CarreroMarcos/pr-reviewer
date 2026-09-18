@@ -2,7 +2,7 @@
 
 **Input**: Design documents from `/specs/001-pr-reviewer/`
 
-**Prerequisites**: plan.md ✅, spec.md ✅ (clarified 2026-09-12), research.md ✅, data-model.md ✅, contracts/ ✅, quickstart.md ✅ — architecture authority: `docs/HLD.md` v6.7 (plan deltas D1 `reopened`, D2 FR-028 failure state, D3 test mapping).
+**Prerequisites**: plan.md ✅, spec.md ✅ (clarified 2026-09-12), research.md ✅, data-model.md ✅, contracts/ ✅, quickstart.md ✅ — architecture authority: `docs/HLD.md` v6.8 (plan deltas D1 `reopened`, D2 FR-028 failure state, D3 test mapping).
 
 **Revision 2 (post-`/speckit.analyze` remediation)**: validation gate + prompt contract moved into Foundational (ORD1); Terraform BOM split per file; every verify target has an explicit test-first creator task; terminology normalized to "failure-state notice" (contracts); integration verify forms normalized; spec/plan/quickstart drift fixed in those files.
 

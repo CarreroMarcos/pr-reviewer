@@ -2,7 +2,7 @@
 
 ## Autonomous Serverless PR Reviewer
 
-**Version:** 6.7 (Final — Implementation-Ready)
+**Version:** 6.8 (Final — Implementation-Ready)
 **Status:** Approved for Implementation
 **Owner:** Marcos Carrero
 **Region:** `us-west-2` (US West — Oregon)
@@ -30,7 +30,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 
 ### 1.4 Design Principles
 
-- **Decouple ingress from processing** — GitHub requires 2xx within 10 seconds; inference takes 6–15+ seconds.
+- **Decouple ingress from processing** — GitHub requires 2xx within 10 seconds; inference takes 6–15+ seconds (measured 2026-09-17 on the live endpoint: ~130 s/case thinking-off — see §4.2; re-probe pending).
 - **Durable queue between ingress and work** — SQS is the durability boundary; the live GitHub PR head, not webhook arrival order and not SHA string comparison, is the source of revision truth.
 - **At-least-once delivery, idempotent consumer** — every consumer path is safe under re-execution.
 - **Least privilege** — three IAM roles (ingress, worker, operator-redrive).
@@ -306,6 +306,8 @@ Binding constraints at load: DynamoDB throughput, worker concurrency, GitHub rat
 
 Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 120s. Per-call timeouts (§2.3) define actual behavior.
 
+**Measured reality (2026-09-17, live endpoint, 13-case eval corpus):** thinking-off LLM calls ran ~130 s/case mean (max ~140 s); thinking-on ~318 s — roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar. Single time-window measurement; provider load not ruled out (re-probe pending as of 2026-09-18). If it stands, this budget — not model choice — is the binding product constraint: the eval A/B found no quality lever that pays for the latency (`tests/model_evals/results/`). Future agents and operators: do not assume sub-15s LLM legs against the current endpoint.
+
 ### 4.3 Observability
 
 Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget. Kill switch (v6.6): set worker reserved concurrency to 0 (or disable the webhook) — spend stops immediately and queued work is retained.
@@ -428,11 +430,13 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **v6.6 → v6.7 deltas (updated engineering-principles alignment: §9 agentic evaluations, §3 single-implementation scope, §5 retry ownership — zero architectural change):** pinned model-evaluation set with rerun-on-`prompt_version`/model-change rule added to the test strategy (§4.4 item 4); retry ownership stated — queue owns retries, single in-request 401 re-fetch (§2.2); time-based recovery paths (credential TTL, rotation convergence) exercised via injected clocks (§4.4 item 3); `lambda/common/` scope strengthened — security-sensitive and must-stay-identical helpers single-implemented, typed envelope adapter + handler annotations (§7.1); deployment provenance + rollback sentence, and SSM parameter count corrected four → five (§7.3).
 
+**v6.7 → v6.8 deltas (measurement-only revision — zero architectural, budget, or AC change):** live-endpoint LLM latency measured 2026-09-17 — ~130 s/case thinking-off (max ~140 s), ~318 s thinking-on, roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar (§4.2 measured-reality note; §2 rationale annotated; §7.3 AC (b) flagged currently-unmet). Single time-window measurement, re-probe pending; companion A/B found model choice, thinking, and temperature buy no quality on the eval corpus at material latency cost (`tests/model_evals/results/`).
+
 ### 7.3 Deployment Sequence
 
 Unchanged: populate the five SSM parameters (§2.6) → `terraform init && terraform apply` → register webhook (Pull requests only) → acceptance testing. Apply from a clean, reviewed revision — the `archive_file` zips embed the source they were built from. Rollback is re-applying the previous revision: no data migrations exist, and comment state is fenced and converges.
 
-**Acceptance criteria:** (a) delivery log 202 in seconds; (b) one canonical comment in 6–15s; (c) second push updates the same comment; (d) two rapid pushes leave only the latest head SHA reflected; (e) bad-signature webhook → 401, nothing enqueued; (f) DLQ empty on happy path; (g) artificially stale head SHA redriven into the queue must **not** mutate the canonical comment; (h) deleting the bot comment + new push must converge to exactly one new marker-bearing comment; (i) **concurrent workers on the same PR** (forced by temporarily lowering visibility or injecting duplicate messages) must still converge to a single comment with the correct head SHA; (j) **redrive drill**: a DLQ message moved back to the work queue after a fix converges without duplicate comments (§2.5).
+**Acceptance criteria:** (a) delivery log 202 in seconds; (b) one canonical comment in 6–15s (measured 2026-09-17: currently unmet — live endpoint ~130 s/case; §4.2); (c) second push updates the same comment; (d) two rapid pushes leave only the latest head SHA reflected; (e) bad-signature webhook → 401, nothing enqueued; (f) DLQ empty on happy path; (g) artificially stale head SHA redriven into the queue must **not** mutate the canonical comment; (h) deleting the bot comment + new push must converge to exactly one new marker-bearing comment; (i) **concurrent workers on the same PR** (forced by temporarily lowering visibility or injecting duplicate messages) must still converge to a single comment with the correct head SHA; (j) **redrive drill**: a DLQ message moved back to the work queue after a fix converges without duplicate comments (§2.5).
 
 ### 7.4 Production Roadmap
 
