@@ -65,7 +65,7 @@ resource "aws_iam_role" "hcp_plan" {
         StringEquals = {
           "app.terraform.io:aud" = "aws.workload.identity"
         }
-        StringLike = {
+        StringEquals = {
           "app.terraform.io:sub" = "organization:mars-net:project:pr-reviewer:workspace:pr-reviewer:run_phase:plan"
         }
       }
@@ -88,7 +88,7 @@ resource "aws_iam_role" "hcp_apply" {
         StringEquals = {
           "app.terraform.io:aud" = "aws.workload.identity"
         }
-        StringLike = {
+        StringEquals = {
           "app.terraform.io:sub" = "organization:mars-net:project:pr-reviewer:workspace:pr-reviewer:run_phase:apply"
         }
       }
@@ -364,15 +364,22 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
         ]
       },
       {
-        Sid    = "AlarmsTopicRead"
+        Sid    = "AlarmsRead"
         Effect = "Allow"
         Action = [
           "cloudwatch:DescribeAlarms",
           "cloudwatch:ListTagsForResource",
+        ]
+        Resource = "arn:${local.partition}:cloudwatch:${local.region}:${local.account_id}:alarm:${local.prefix}-*"
+      },
+      {
+        Sid    = "AlertsTopicRead"
+        Effect = "Allow"
+        Action = [
           "sns:GetTopicAttributes",
           "sns:ListTagsForResource",
         ]
-        Resource = "*"
+        Resource = "arn:${local.partition}:sns:${local.region}:${local.account_id}:${local.prefix}-alerts"
       },
       {
         Sid      = "CallerIdentity"

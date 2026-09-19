@@ -149,8 +149,10 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   compute ≈ 6 × 900 s × 1.769 GB ≈ **$0.16** at us-west-2 on-demand rates
   (LLM cost is the larger share) — per-message math; fan-out is bounded by
   account Lambda concurrency and reversible via the kill-switch runbook
-  (T061). The 5400 s visibility widens the worst poisoned-message cycle
-  from ~72 min to ~9 h; deterministic payload failures fail fast through
+  (T061) and watched by the pr-reviewer-worker-invocation-spike alarm
+  (normal cadence: 1 invocation per review). The 5400 s visibility widens
+  the worst poisoned-message cycle from ~72 min to ~9 h; deterministic
+  payload failures fail fast through
   the failure-state path (FR-028), so the budget is consumed only by
   persistent mid-flight failures. Idempotency-before-retry deliberately
   deferred — a separate decision if abuse patterns appear.
