@@ -156,6 +156,16 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   the failure-state path (FR-028), so the budget is consumed only by
   persistent mid-flight failures. Idempotency-before-retry deliberately
   deferred — a separate decision if abuse patterns appear.
+- **Ingress flood starvation (self-review round 6, accepted):** ingress is
+  unreserved behind a public Function URL; a flood can consume account
+  Lambda concurrency and starve the worker. A reserved pool is blocked by
+  the standing >=10-unreserved account quota ruling — revisit at the quota
+  raise. Mitigations: worker-invocation-spike alarm + kill-switch runbook.
+- **HCP run-role scope (round 6, verified):** SNS subscriptions are
+  console-managed (no terraform subscription resource — `sns:Subscribe*`
+  intentionally omitted from the apply policy); the DynamoDB state table
+  manages neither PITR nor SSE (terraform/state.tf, PROVISIONED billing
+  only), so no continuous-backups/KMS actions are needed.
 - **State migration is one-way-ish:** do M3 in a quiet moment; the local
   `terraform.tfstate` + `.backup` stay until acceptance passes.
 - **Cost floor:** AWS side unchanged in free tier (analysis 2026-09-19); HCP

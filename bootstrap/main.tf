@@ -64,8 +64,6 @@ resource "aws_iam_role" "hcp_plan" {
       Condition = {
         StringEquals = {
           "app.terraform.io:aud" = "aws.workload.identity"
-        }
-        StringEquals = {
           "app.terraform.io:sub" = "organization:mars-net:project:pr-reviewer:workspace:pr-reviewer:run_phase:plan"
         }
       }
@@ -87,8 +85,6 @@ resource "aws_iam_role" "hcp_apply" {
       Condition = {
         StringEquals = {
           "app.terraform.io:aud" = "aws.workload.identity"
-        }
-        StringEquals = {
           "app.terraform.io:sub" = "organization:mars-net:project:pr-reviewer:workspace:pr-reviewer:run_phase:apply"
         }
       }
