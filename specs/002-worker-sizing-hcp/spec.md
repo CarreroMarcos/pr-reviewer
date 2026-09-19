@@ -140,8 +140,9 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   (terraform/iam.tf) — a compromised run widening operator's permissions via
   `PutRolePolicy` gains no assumable path to them.
 - **Retry LLM spend (self-review 2026-09-19, accepted):** worst redrive cycle
-  = 6 LLM invocations before the DLQ (`maxReceiveCount = 5`), bounded to
-  cents at 512MB-class pricing; idempotency-before-retry deliberately
+  = 6 LLM invocations before the DLQ (`maxReceiveCount = 5`); worst-case
+  compute ≈ 6 × 900 s × 1.769 GB ≈ **$0.16** at us-west-2 on-demand rates
+  (LLM cost is the larger share). Idempotency-before-retry deliberately
   deferred — a separate decision if abuse patterns appear.
 - **State migration is one-way-ish:** do M3 in a quiet moment; the local
   `terraform.tfstate` + `.backup` stay until acceptance passes.
