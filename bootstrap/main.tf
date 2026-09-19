@@ -28,11 +28,16 @@ locals {
   region     = "us-west-2"
   prefix     = "pr-reviewer"
 
-  # NOTE (apply-time): the AWS CreateOpenIDConnectProvider API requires a
-  # thumbprint_list (root CA SHA-1 for app.terraform.io). It is intentionally
-  # left out here so this file validates offline; Mars adds the live
-  # thumbprint at M2 apply time per the current HCP dynamic-credentials docs
-  # (or via a tls_certificate data source fetching it at apply).
+  # thumbprint_list is intentionally omitted: optional since AWS made
+  # IAM auto-retrieval the default (ThumbprintList "Required: No" — IAM
+  # stores the top intermediate CA thumbprint itself). app.terraform.io
+  # chains to Amazon-trusted CAs (leaf <- Amazon RSA 2048 M04 <- Amazon
+  # Root CA 1, verified 2026-09-19), and current HCP dynamic-credentials
+  # docs instruct no thumbprint. Stored thumbprints are fallback-only
+  # (non-trusted chains). Manual pin, only if ever needed — AWS IAM docs
+  # procedure: openssl s_client -servername app.terraform.io -showcerts
+  # -connect app.terraform.io:443, take the LAST cert block, then
+  # openssl x509 -fingerprint -sha1 -noout (strip colons).
 }
 
 resource "aws_iam_openid_connect_provider" "hcp" {
