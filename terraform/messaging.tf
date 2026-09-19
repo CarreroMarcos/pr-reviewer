@@ -11,7 +11,7 @@
 
 resource "aws_sqs_queue" "work" {
   name                       = "pr-reviewer-work"
-  visibility_timeout_seconds = 5400   # = 6 x worker timeout 900 s (AWS-recommended ratio; was 6 x 120 = 720)
+  visibility_timeout_seconds = 5400   # = 6 x worker timeout 900 s (AWS-recommended ratio; was 6 x 120 = 720). Supersedes SPR-60 trim (spec-002, Mars ruling 2026-09-19).
   message_retention_seconds  = 345600 # 4 days
 
   redrive_policy = jsonencode({
