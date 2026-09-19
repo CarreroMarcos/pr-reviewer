@@ -148,3 +148,9 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   `docs/process/batch-loop.md`.
 - **PR body edits:** `gh pr edit` fails on this repo (Projects-classic
   GraphQL). Use `gh api repos/CarreroMarcos/pr-reviewer/pulls/N -X PATCH -f body=...`.
+- **Self-review recheck (Mars law, 2026-09-19):** after every push to an
+  open PR, wait ~2 minutes (`sleep 120`) and re-fetch the pr-reviewer's
+  canonical comment (marker `pr-reviewer:canonical`) — it re-reviews on
+  `synchronize` and updates the comment in place. Disposition changed
+  findings before continuing; the loop is stable when only accepted
+  residuals remain.
