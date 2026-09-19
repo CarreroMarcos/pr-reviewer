@@ -46,14 +46,12 @@ resource "aws_iam_openid_connect_provider" "hcp" {
   thumbprint_list = ["e7b8b5a6743ce1b2f17b041de59558a41472d70c"]
 }
 
-# sub is pinned to the exact project AND workspace created by M1/M3
-# (project "pr-reviewer", workspace "pr-reviewer" — spec-002): only that
-# one workspace can assume this role. run_phase stays * deliberately: a
-# single RUN role serves plan + apply (split TFC_AWS_PLAN_ROLE_ARN /
-# TFC_AWS_APPLY_ROLE_ARN is the tighter shape; deferred — solo-operator
-# org, single stack).
-resource "aws_iam_role" "hcp_run" {
-  name = "pr-reviewer-hcp-run"
+# Two roles split by run phase (self-review round 4): plan runs get a
+# read-only policy, apply runs the full apply policy — a compromised plan
+# run can no longer mutate stack resources. sub pins the exact project AND
+# workspace (created by M1/M3, spec-002) and the exact run phase per role.
+resource "aws_iam_role" "hcp_plan" {
+  name = "pr-reviewer-hcp-plan"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -68,7 +66,30 @@ resource "aws_iam_role" "hcp_run" {
           "app.terraform.io:aud" = "aws.workload.identity"
         }
         StringLike = {
-          "app.terraform.io:sub" = "organization:mars-net:project:pr-reviewer:workspace:pr-reviewer:run_phase:*"
+          "app.terraform.io:sub" = "organization:mars-net:project:pr-reviewer:workspace:pr-reviewer:run_phase:plan"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role" "hcp_apply" {
+  name = "pr-reviewer-hcp-apply"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.hcp.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "app.terraform.io:aud" = "aws.workload.identity"
+        }
+        StringLike = {
+          "app.terraform.io:sub" = "organization:mars-net:project:pr-reviewer:workspace:pr-reviewer:run_phase:apply"
         }
       }
     }]
@@ -80,9 +101,9 @@ resource "aws_iam_role" "hcp_run" {
 # (2 queues + redrive-allow attribute), dynamodb (state table), iam (3 roles
 # + inline policies, PassRole on the two function roles only), logs (2 groups
 # + 2 metric filters), cloudwatch (7 alarms), sns (alerts topic).
-resource "aws_iam_role_policy" "hcp_run_apply" {
-  name = "pr-reviewer-hcp-run-apply"
-  role = aws_iam_role.hcp_run.id
+resource "aws_iam_role_policy" "hcp_apply_policy" {
+  name = "pr-reviewer-hcp-apply"
+  role = aws_iam_role.hcp_apply.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -257,6 +278,101 @@ resource "aws_iam_role_policy" "hcp_run_apply" {
           "sns:UntagResource",
         ]
         Resource = "arn:${local.partition}:sns:${local.region}:${local.account_id}:${local.prefix}-alerts"
+      },
+      {
+        Sid      = "CallerIdentity"
+        Effect   = "Allow"
+        Action   = ["sts:GetCallerIdentity"]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+# Read-only policy for PLAN-phase runs (self-review round 4): every read
+# path the apply policy needs for refresh/plan, no mutations, no PassRole.
+resource "aws_iam_role_policy" "hcp_plan_policy" {
+  name = "pr-reviewer-hcp-plan"
+  role = aws_iam_role.hcp_plan.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "LambdaRead"
+        Effect = "Allow"
+        Action = [
+          "lambda:GetFunction",
+          "lambda:GetFunctionConfiguration",
+          "lambda:GetFunctionUrlConfig",
+          "lambda:GetPolicy",
+          "lambda:ListEventSourceMappings",
+          "lambda:ListTags",
+        ]
+        Resource = [
+          "arn:${local.partition}:lambda:${local.region}:${local.account_id}:function:${local.prefix}-ingress",
+          "arn:${local.partition}:lambda:${local.region}:${local.account_id}:function:${local.prefix}-worker",
+        ]
+      },
+      {
+        Sid    = "QueueRead"
+        Effect = "Allow"
+        Action = [
+          "sqs:GetQueueAttributes",
+          "sqs:GetQueueUrl",
+          "sqs:ListQueueTags",
+        ]
+        Resource = [
+          "arn:${local.partition}:sqs:${local.region}:${local.account_id}:${local.prefix}-work",
+          "arn:${local.partition}:sqs:${local.region}:${local.account_id}:${local.prefix}-dlq",
+        ]
+      },
+      {
+        Sid    = "StateTableRead"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:DescribeTable",
+          "dynamodb:DescribeTimeToLive",
+          "dynamodb:ListTagsOfResource",
+        ]
+        Resource = "arn:${local.partition}:dynamodb:${local.region}:${local.account_id}:table/${local.prefix}-state"
+      },
+      {
+        Sid    = "StackRolesRead"
+        Effect = "Allow"
+        Action = [
+          "iam:GetRole",
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies",
+        ]
+        Resource = [
+          "arn:${local.partition}:iam::${local.account_id}:role/${local.prefix}-ingress",
+          "arn:${local.partition}:iam::${local.account_id}:role/${local.prefix}-worker",
+          "arn:${local.partition}:iam::${local.account_id}:role/${local.prefix}-operator",
+        ]
+      },
+      {
+        Sid    = "LogsRead"
+        Effect = "Allow"
+        Action = [
+          "logs:DescribeLogGroups",
+          "logs:DescribeMetricFilters",
+        ]
+        Resource = [
+          "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-ingress:*",
+          "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-worker:*",
+        ]
+      },
+      {
+        Sid    = "AlarmsTopicRead"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:DescribeAlarms",
+          "cloudwatch:ListTagsForResource",
+          "sns:GetTopicAttributes",
+          "sns:ListTagsForResource",
+        ]
+        Resource = "*"
       },
       {
         Sid      = "CallerIdentity"
