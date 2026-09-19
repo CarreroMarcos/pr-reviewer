@@ -102,13 +102,10 @@ resource "aws_lambda_function" "worker" {
   source_code_hash = data.archive_file.worker.output_base64sha256
 
   timeout = 900
-  # SPR-60 (Mars decision 2026-09-14): memory 256 MB (HLD §5; trimmed from
-  # the 512 MB scratch value, with headroom for the LLM round-trip within
-  # the 15 s end-to-end budget). Reserved concurrency: see the ingress
-  # note — dropped at the 2026-09-15 ruling, restore 5 at quota raise.
-  # Superseded 2026-09-19 (spec-002, Mars ruling): memory 1769 MB /
-  # timeout 900 s (1 full vCPU); sizing rationale and free-tier math in
-  # specs/002-worker-sizing-hcp/spec.md.
+  # SPR-60's 256 MB trim was superseded 2026-09-19 (spec-002, Mars ruling):
+  # 900 s / 1769 MB (1 full vCPU); sizing rationale and free-tier math in
+  # specs/002-worker-sizing-hcp/spec.md. Reserved concurrency: see the
+  # ingress note — dropped at the 2026-09-15 ruling, restore 5 at quota raise.
   memory_size = 1769
 
   environment {

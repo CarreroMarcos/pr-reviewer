@@ -28,16 +28,12 @@ locals {
   region     = "us-west-2"
   prefix     = "pr-reviewer"
 
-  # thumbprint_list is intentionally omitted: optional since AWS made
-  # IAM auto-retrieval the default (ThumbprintList "Required: No" — IAM
-  # stores the top intermediate CA thumbprint itself). app.terraform.io
-  # chains to Amazon-trusted CAs (leaf <- Amazon RSA 2048 M04 <- Amazon
-  # Root CA 1, verified 2026-09-19), and current HCP dynamic-credentials
-  # docs instruct no thumbprint. Stored thumbprints are fallback-only
-  # (non-trusted chains). Manual pin, only if ever needed — AWS IAM docs
-  # procedure: openssl s_client -servername app.terraform.io -showcerts
-  # -connect app.terraform.io:443, take the LAST cert block, then
-  # openssl x509 -fingerprint -sha1 -noout (strip colons).
+  # thumbprint_list IS pinned on the resource below (defense in depth;
+  # top intermediate CA, chain verified live 2026-09-19). IAM auto-retrieval
+  # remains the primary trust mechanism for Amazon-trusted chains — the
+  # stored value is consulted only if the cert ever falls outside AWS's
+  # trusted-root library. Current HCP dynamic-credentials docs instruct
+  # no thumbprint.
 }
 
 resource "aws_iam_openid_connect_provider" "hcp" {
