@@ -53,12 +53,15 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   workspace named `pr-reviewer` inside the `pr-reviewer` project** (so the
   trust policy's project pin matches — implicit init creation would land in
   Default Project). Then `terraform init` in `terraform/`: it links to that
-  workspace and copies the local state per the prompt. Verify state appears
-  in the HCP UI; keep `terraform.tfstate` + `.backup` locally until
-  acceptance passes.
+  workspace and copies the local state per the prompt. **Guard before any
+  remote apply (M6):** `terraform workspace show` must print `pr-reviewer`,
+  and the HCP UI must show the workspace under project `pr-reviewer` — a
+  name mismatch only surfaces as an `AssumeRoleWithWebIdentity` denial.
+  Keep `terraform.tfstate` + `.backup` locally until acceptance passes.
 - **M4 — Workspace variables** (workspace `pr-reviewer` → Variables →
   Environment): `TFC_AWS_PROVIDER_AUTH = true`,
-  `TFC_AWS_RUN_ROLE_ARN = arn:aws:iam::395799817120:role/pr-reviewer-hcp-run`.
+  `TFC_AWS_PLAN_ROLE_ARN = arn:aws:iam::395799817120:role/pr-reviewer-hcp-plan`,
+  `TFC_AWS_APPLY_ROLE_ARN = arn:aws:iam::395799817120:role/pr-reviewer-hcp-apply`.
   Provider region is hardcoded (`us-west-2`) — nothing else needed.
 - **M5 — GitHub link.** HCP → Settings → Version Control → GitHub.com (GitHub
   App): authorize user, install on `CarreroMarcos/pr-reviewer`. Workspace
@@ -146,8 +149,11 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   compute ≈ 6 × 900 s × 1.769 GB ≈ **$0.16** at us-west-2 on-demand rates
   (LLM cost is the larger share) — per-message math; fan-out is bounded by
   account Lambda concurrency and reversible via the kill-switch runbook
-  (T061). Idempotency-before-retry deliberately deferred — a separate
-  decision if abuse patterns appear.
+  (T061). The 5400 s visibility widens the worst poisoned-message cycle
+  from ~72 min to ~9 h; deterministic payload failures fail fast through
+  the failure-state path (FR-028), so the budget is consumed only by
+  persistent mid-flight failures. Idempotency-before-retry deliberately
+  deferred — a separate decision if abuse patterns appear.
 - **State migration is one-way-ish:** do M3 in a quiet moment; the local
   `terraform.tfstate` + `.backup` stay until acceptance passes.
 - **Cost floor:** AWS side unchanged in free tier (analysis 2026-09-19); HCP
