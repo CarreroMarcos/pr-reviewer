@@ -43,6 +43,11 @@ locals {
 resource "aws_iam_openid_connect_provider" "hcp" {
   url            = "https://app.terraform.io"
   client_id_list = ["aws.workload.identity"]
+  # Defense in depth (self-review round 2): IAM auto-retrieval remains the
+  # primary trust mechanism for Amazon-trusted chains; this stored thumbprint
+  # (top intermediate CA, chain verified live 2026-09-19) is the fallback AWS
+  # uses only if the cert ever falls outside its trusted-root library.
+  thumbprint_list = ["e7b8b5a6743ce1b2f17b041de59558a41472d70c"]
 }
 
 # sub is pinned to the exact project AND workspace created by M1/M3
