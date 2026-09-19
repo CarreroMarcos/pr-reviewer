@@ -45,6 +45,12 @@ resource "aws_iam_openid_connect_provider" "hcp" {
   client_id_list = ["aws.workload.identity"]
 }
 
+# sub is pinned to the exact project AND workspace created by M1/M3
+# (project "pr-reviewer", workspace "pr-reviewer" — spec-002): only that
+# one workspace can assume this role. run_phase stays * deliberately: a
+# single RUN role serves plan + apply (split TFC_AWS_PLAN_ROLE_ARN /
+# TFC_AWS_APPLY_ROLE_ARN is the tighter shape; deferred — solo-operator
+# org, single stack).
 resource "aws_iam_role" "hcp_run" {
   name = "pr-reviewer-hcp-run"
 
@@ -61,7 +67,7 @@ resource "aws_iam_role" "hcp_run" {
           "app.terraform.io:aud" = "aws.workload.identity"
         }
         StringLike = {
-          "app.terraform.io:sub" = "organization:mars-net:project:*:workspace:pr-reviewer:run_phase:*"
+          "app.terraform.io:sub" = "organization:mars-net:project:pr-reviewer:workspace:pr-reviewer:run_phase:*"
         }
       }
     }]
