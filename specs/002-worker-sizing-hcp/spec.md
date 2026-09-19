@@ -138,12 +138,16 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   omits `iam:UpdateAssumeRolePolicy`, and the operator role trusts only
   `user/terraform-admin` gated on `aws:MultiFactorAuthPresent`
   (terraform/iam.tf) — a compromised run widening operator's permissions via
-  `PutRolePolicy` gains no assumable path to them.
+  `PutRolePolicy` gains no assumable path to them. Inline-policy widening on
+  `-operator` stays an accepted residual: the role is stack-managed, so it
+  cannot leave StackRoles.
 - **Retry LLM spend (self-review 2026-09-19, accepted):** worst redrive cycle
   = 6 LLM invocations before the DLQ (`maxReceiveCount = 5`); worst-case
   compute ≈ 6 × 900 s × 1.769 GB ≈ **$0.16** at us-west-2 on-demand rates
-  (LLM cost is the larger share). Idempotency-before-retry deliberately
-  deferred — a separate decision if abuse patterns appear.
+  (LLM cost is the larger share) — per-message math; fan-out is bounded by
+  account Lambda concurrency and reversible via the kill-switch runbook
+  (T061). Idempotency-before-retry deliberately deferred — a separate
+  decision if abuse patterns appear.
 - **State migration is one-way-ish:** do M3 in a quiet moment; the local
   `terraform.tfstate` + `.backup` stay until acceptance passes.
 - **Cost floor:** AWS side unchanged in free tier (analysis 2026-09-19); HCP

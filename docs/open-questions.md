@@ -161,3 +161,8 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
   (deterministic scheduler over scripted step boundaries) is a bigger
   investment than any current AC demands; US4.AC2/T050 cover the deploy-side.
   Decide whether to invest or keep the seed-based model.
+- **Split HCP PLAN/APPLY run roles** (PR 63 self-review round 3, 2026-09-19):
+  the bootstrap OIDC role serves both run phases (`run_phase:*`), so plan
+  runs hold apply-grade IAM. Accepted for a solo operator; when the stack
+  gains collaborators, split `TFC_AWS_PLAN_ROLE_ARN` (read-only plan) /
+  `TFC_AWS_APPLY_ROLE_ARN` per the HCP dynamic-credentials docs.
