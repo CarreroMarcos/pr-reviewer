@@ -169,7 +169,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `worker_handler.handler` |
 | Timeout / Memory | 900s / 1769 MB (v6.9: supersedes the 120s / 256 MB SPR-60 trim — Mars ruling 2026-09-19; sizing rationale in specs/002-worker-sizing-hcp/spec.md) |
-| Reserved concurrency | 5 |
+| Reserved concurrency | Unreserved (dropped at the 2026-09-15 ruling — account ≥10-unreserved constraint; restore 5 at quota raise) |
 | Trigger | SQS event source mapping (no public exposure) |
 
 **Responsibilities:**
@@ -432,7 +432,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **v6.7 → v6.8 deltas (measurement-only revision — zero architectural, budget, or AC change):** live-endpoint LLM latency measured 2026-09-17 — ~130 s/case thinking-off (max ~140 s), ~318 s thinking-on, roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar (§4.2 measured-reality note; §2 rationale annotated; §7.3 AC (b) flagged currently-unmet). Single time-window measurement, re-probe pending; companion A/B found model choice, thinking, and temperature buy no quality on the eval corpus at material latency cost (`tests/model_evals/results/`).
 
-**v6.8 → v6.9 deltas (measurement/config-only revision — zero architectural, budget, or AC change):** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19; sizing rationale and free-tier math in specs/002-worker-sizing-hcp/spec.md); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed).
+**v6.8 → v6.9 deltas (measurement/config-only revision — zero architectural, budget, or AC change):** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19; sizing rationale and free-tier math in specs/002-worker-sizing-hcp/spec.md); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
 
 ### 7.3 Deployment Sequence
 
