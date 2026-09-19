@@ -300,3 +300,33 @@ resource "aws_cloudwatch_metric_alarm" "daily_llm_spend" {
     Owner = var.alert_owner
   }
 }
+
+# 8. Worker invocation spike (spec-002 self-review round 5): the worker is
+# unreserved with a 900 s timeout, so a flood holds account Lambda
+# concurrency for up to 15 min per invocation before any DLQ/depth signal.
+# Normal cadence: 1 invocation per review (max 6 across a full redrive
+# cycle, hours apart) — 10 in 10 minutes is abuse; kill-switch runbook if
+# confirmed.
+
+resource "aws_cloudwatch_metric_alarm" "worker_invocation_spike" {
+  alarm_name        = "pr-reviewer-worker-invocation-spike"
+  alarm_description = "Worker invocations >= 10 in 10 min (normal: 1/review, max 6 across a redrive cycle) — possible flood/abuse; kill-switch runbook if confirmed. Owner: ${var.alert_owner}."
+  namespace         = "AWS/Lambda"
+  metric_name       = "Invocations"
+  dimensions = {
+    FunctionName = aws_lambda_function.worker.function_name
+  }
+  statistic           = "Sum"
+  period              = 600
+  evaluation_periods  = 1
+  threshold           = 10
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    Owner = var.alert_owner
+  }
+}

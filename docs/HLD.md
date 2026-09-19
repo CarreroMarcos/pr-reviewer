@@ -2,7 +2,7 @@
 
 ## Autonomous Serverless PR Reviewer
 
-**Version:** 6.8 (Final — Implementation-Ready)
+**Version:** 6.9 (Final — Implementation-Ready)
 **Status:** Approved for Implementation
 **Owner:** Marcos Carrero
 **Region:** `us-west-2` (US West — Oregon)
@@ -155,7 +155,7 @@ The worker **constructs** `diff_url` and `comments_url` from `repo_full_name` + 
 | Attribute | Specification |
 | :--- | :--- |
 | Queue | `pr-reviewer-work`, Standard |
-| Visibility timeout | 720s = 6 × 120s Lambda timeout |
+| Visibility timeout | 5400s = 6 × 900s Lambda timeout (v6.9: was 720s = 6 × 120s; spec-002 carries the 6× invariant forward) |
 | Message retention | 4 days |
 | Redrive policy | `maxReceiveCount = 5` → DLQ |
 | Event source mapping | `batch_size = 1` |
@@ -168,8 +168,8 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | Attribute | Specification |
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `worker_handler.handler` |
-| Timeout / Memory | 120s / 256 MB |
-| Reserved concurrency | 5 |
+| Timeout / Memory | 900s / 1769 MB (v6.9: supersedes the 120s / 256 MB SPR-60 trim — Mars ruling 2026-09-19; sizing rationale in specs/002-worker-sizing-hcp/spec.md) |
+| Reserved concurrency | Unreserved (dropped at the 2026-09-15 ruling — account ≥10-unreserved constraint; restore 5 at quota raise) |
 | Trigger | SQS event source mapping (no public exposure) |
 
 **Responsibilities:**
@@ -431,6 +431,8 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 **v6.6 → v6.7 deltas (updated engineering-principles alignment: §9 agentic evaluations, §3 single-implementation scope, §5 retry ownership — zero architectural change):** pinned model-evaluation set with rerun-on-`prompt_version`/model-change rule added to the test strategy (§4.4 item 4); retry ownership stated — queue owns retries, single in-request 401 re-fetch (§2.2); time-based recovery paths (credential TTL, rotation convergence) exercised via injected clocks (§4.4 item 3); `lambda/common/` scope strengthened — security-sensitive and must-stay-identical helpers single-implemented, typed envelope adapter + handler annotations (§7.1); deployment provenance + rollback sentence, and SSM parameter count corrected four → five (§7.3).
 
 **v6.7 → v6.8 deltas (measurement-only revision — zero architectural, budget, or AC change):** live-endpoint LLM latency measured 2026-09-17 — ~130 s/case thinking-off (max ~140 s), ~318 s thinking-on, roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar (§4.2 measured-reality note; §2 rationale annotated; §7.3 AC (b) flagged currently-unmet). Single time-window measurement, re-probe pending; companion A/B found model choice, thinking, and temperature buy no quality on the eval corpus at material latency cost (`tests/model_evals/results/`).
+
+**v6.8 → v6.9 deltas (measurement/config-only revision — zero architectural, budget, or AC change):** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19; sizing rationale and free-tier math in specs/002-worker-sizing-hcp/spec.md); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
 
 ### 7.3 Deployment Sequence
 

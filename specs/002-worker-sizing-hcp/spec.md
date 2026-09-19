@@ -42,19 +42,26 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
 
 ## Mars steps (human-only, in order)
 
-- **M1 — HCP org + login.** In app.terraform.io: create organization (suggested
-  name: `pr-reviewer` or your personal org). Locally: `terraform login`
+- **M1 — HCP org + project + login.** In app.terraform.io: create organization
+  `mars-net`, then create a **project named `pr-reviewer`** inside it (the
+  OIDC trust policy pins this exact project name). Locally: `terraform login`
   (creates `~/.terraform.d/credentials.tfrc.json`).
 - **M2 — Bootstrap AWS OIDC trust (one-time, local apply).** See appendix
   policy. Run `terraform apply` inside `bootstrap/` once; never managed by HCP
   (avoids circularity). Keep the state file it produces as the backup.
-- **M3 — `terraform init` in `terraform/`** after T104 lands: implicit
-  workspace `pr-reviewer` is created and local state is copied per the init
-  prompt. Verify state appears in the HCP UI; keep `terraform.tfstate.backup`
-  locally until acceptance passes.
+- **M3 — Workspace + state migration.** In the HCP UI: create a **CLI-driven
+  workspace named `pr-reviewer` inside the `pr-reviewer` project** (so the
+  trust policy's project pin matches — implicit init creation would land in
+  Default Project). Then `terraform init` in `terraform/`: it links to that
+  workspace and copies the local state per the prompt. **Guard before any
+  remote apply (M6):** `terraform workspace show` must print `pr-reviewer`,
+  and the HCP UI must show the workspace under project `pr-reviewer` — a
+  name mismatch only surfaces as an `AssumeRoleWithWebIdentity` denial.
+  Keep `terraform.tfstate` + `.backup` locally until acceptance passes.
 - **M4 — Workspace variables** (workspace `pr-reviewer` → Variables →
   Environment): `TFC_AWS_PROVIDER_AUTH = true`,
-  `TFC_AWS_RUN_ROLE_ARN = arn:aws:iam::395799817120:role/pr-reviewer-hcp-run`.
+  `TFC_AWS_PLAN_ROLE_ARN = arn:aws:iam::395799817120:role/pr-reviewer-hcp-plan`,
+  `TFC_AWS_APPLY_ROLE_ARN = arn:aws:iam::395799817120:role/pr-reviewer-hcp-apply`.
   Provider region is hardcoded (`us-west-2`) — nothing else needed.
 - **M5 — GitHub link.** HCP → Settings → Version Control → GitHub.com (GitHub
   App): authorize user, install on `CarreroMarcos/pr-reviewer`. Workspace
@@ -125,6 +132,40 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   the cloud block and go back to local state from `terraform.tfstate.backup`).
 - **Bootstrap circularity:** the OIDC role must exist before any HCP run; that
   is why M2 is a local, Mars-run apply outside the managed stack.
+- **Event-source-mapping wildcard (self-review 2026-09-19, accepted):** ES
+  mapping ARNs are not function-restrictable at `CreateEventSourceMapping`;
+  `event-source-mapping:*` is required to manage the stack's own mapping.
+  Accepted on a dedicated account; add a permissions boundary if the account
+  ever hosts unrelated workloads.
+- **Operator-role escalation (self-review 2026-09-19, ruled out):** StackRoles
+  omits `iam:UpdateAssumeRolePolicy`, and the operator role trusts only
+  `user/terraform-admin` gated on `aws:MultiFactorAuthPresent`
+  (terraform/iam.tf) — a compromised run widening operator's permissions via
+  `PutRolePolicy` gains no assumable path to them. Inline-policy widening on
+  `-operator` stays an accepted residual: the role is stack-managed, so it
+  cannot leave StackRoles.
+- **Retry LLM spend (self-review 2026-09-19, accepted):** worst redrive cycle
+  = 6 LLM invocations before the DLQ (`maxReceiveCount = 5`); worst-case
+  compute ≈ 6 × 900 s × 1.769 GB ≈ **$0.16** at us-west-2 on-demand rates
+  (LLM cost is the larger share) — per-message math; fan-out is bounded by
+  account Lambda concurrency and reversible via the kill-switch runbook
+  (T061) and watched by the pr-reviewer-worker-invocation-spike alarm
+  (normal cadence: 1 invocation per review). The 5400 s visibility widens
+  the worst poisoned-message cycle from ~72 min to ~9 h; deterministic
+  payload failures fail fast through
+  the failure-state path (FR-028), so the budget is consumed only by
+  persistent mid-flight failures. Idempotency-before-retry deliberately
+  deferred — a separate decision if abuse patterns appear.
+- **Ingress flood starvation (self-review round 6, accepted):** ingress is
+  unreserved behind a public Function URL; a flood can consume account
+  Lambda concurrency and starve the worker. A reserved pool is blocked by
+  the standing >=10-unreserved account quota ruling — revisit at the quota
+  raise. Mitigations: worker-invocation-spike alarm + kill-switch runbook.
+- **HCP run-role scope (round 6, verified):** SNS subscriptions are
+  console-managed (no terraform subscription resource — `sns:Subscribe*`
+  intentionally omitted from the apply policy); the DynamoDB state table
+  manages neither PITR nor SSE (terraform/state.tf, PROVISIONED billing
+  only), so no continuous-backups/KMS actions are needed.
 - **State migration is one-way-ish:** do M3 in a quiet moment; the local
   `terraform.tfstate` + `.backup` stay until acceptance passes.
 - **Cost floor:** AWS side unchanged in free tier (analysis 2026-09-19); HCP

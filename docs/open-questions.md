@@ -161,3 +161,8 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
   (deterministic scheduler over scripted step boundaries) is a bigger
   investment than any current AC demands; US4.AC2/T050 cover the deploy-side.
   Decide whether to invest or keep the seed-based model.
+- **Split HCP PLAN/APPLY run roles** (PR 63 self-review, 2026-09-19) —
+  **resolved same day**: round-4 review argued the split was cheap, so the
+  bootstrap now ships `pr-reviewer-hcp-plan` (read-only) +
+  `pr-reviewer-hcp-apply`, trust-pinned to `run_phase:plan` /
+  `run_phase:apply`; spec M4 sets both `TFC_AWS_*_ROLE_ARN` vars.

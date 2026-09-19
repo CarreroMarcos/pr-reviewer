@@ -1,6 +1,6 @@
 # serverless-pr-reviewer — SQS messaging (T021, HLD §2.2, §2.5).
 #
-# Work queue (visibility 720s, retention 4d, maxReceiveCount 5 -> DLQ) +
+# Work queue (visibility 5400s, retention 4d, maxReceiveCount 5 -> DLQ) +
 # DLQ (14-day retention) + redrive-allow policy on the source queue.
 #
 # Interpretation (flagged, not silently decided): the AWS redrive-allow
@@ -11,7 +11,7 @@
 
 resource "aws_sqs_queue" "work" {
   name                       = "pr-reviewer-work"
-  visibility_timeout_seconds = 720
+  visibility_timeout_seconds = 5400   # = 6 x worker timeout 900 s (AWS-recommended ratio; was 6 x 120 = 720). Supersedes SPR-60 trim (spec-002, Mars ruling 2026-09-19).
   message_retention_seconds  = 345600 # 4 days
 
   redrive_policy = jsonencode({
