@@ -154,3 +154,8 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   `synchronize` and updates the comment in place. Disposition changed
   findings before continuing; the loop is stable when only accepted
   residuals remain.
+- **tf-* tags are the HCP apply trigger (Mars, 2026-09-19):** agents may
+  push `tf-*` tags only with Mars's explicit approval — ask when >=90%
+  confident the tagged commit should be applied, and wait for his yes.
+  Tag exactly one commit (`git tag tf-<reason> <sha>`, push that tag
+  only); never `git push --tags`.
