@@ -1,6 +1,8 @@
 # serverless-pr-reviewer — Lambda compute (T020, HLD §2.1–§2.3, §7.1).
 #
-# Two functions (ingress 5s/512MB/reserved 2; worker 120s/256MB/reserved 5),
+# Two functions (ingress 5s/512MB; worker 900s/1769MB), both unreserved
+# (reserved concurrency dropped at the 2026-09-15 ruling — see the ingress
+# note below; restore 2/5 only after a quota raise),
 # a public Function URL on ingress (AuthType NONE, CORS disabled by omission),
 # and the SQS event source mapping (batch_size = 1).
 #
@@ -99,12 +101,15 @@ resource "aws_lambda_function" "worker" {
   filename         = data.archive_file.worker.output_path
   source_code_hash = data.archive_file.worker.output_base64sha256
 
-  timeout = 120
+  timeout = 900
   # SPR-60 (Mars decision 2026-09-14): memory 256 MB (HLD §5; trimmed from
   # the 512 MB scratch value, with headroom for the LLM round-trip within
   # the 15 s end-to-end budget). Reserved concurrency: see the ingress
   # note — dropped at the 2026-09-15 ruling, restore 5 at quota raise.
-  memory_size = 256
+  # Superseded 2026-09-19 (spec-002, Mars ruling): memory 1769 MB /
+  # timeout 900 s (1 full vCPU); sizing rationale and free-tier math in
+  # specs/002-worker-sizing-hcp/spec.md.
+  memory_size = 1769
 
   environment {
     variables = {
