@@ -478,3 +478,23 @@ def test_no_notice_rows_skip():
     assert should_publish_notice(NoticeTrigger.LIST_FORBIDDEN, receive_count=5) is False
     assert should_publish_notice(NoticeTrigger.INVALID_ENVELOPE, receive_count=1) is False
     assert should_publish_notice(NoticeTrigger.NON_FAILURE, receive_count=5) is False
+
+
+# --- 003-T1: review-port signature conformance (header-free proof) -----------
+
+
+def test_notice_path_runs_under_new_review_signature_without_header():
+    """The D2 notice path runs through `run_review` under the 003-T1 review
+    signature (the closure accepts the established pair, ignored) and the
+    notice body carries NO review header (fixed system template)."""
+    table, github = (
+        FakeTable(),
+        ScriptedGitHub(comments=[{"id": STORED_ID, "body": "old review " + MARKER}]),
+    )
+    _seed_active(table, head=SHA_B, gen=2, comment=STORED_ID)
+    result = _publish(table, github)
+    assert result.disposition == NoticeDisposition.PUBLISHED_TRUE
+    body = github.comments[0]["body"]
+    assert body.startswith(MARKER)
+    assert "**Review #" not in body
+    assert "updated" not in body

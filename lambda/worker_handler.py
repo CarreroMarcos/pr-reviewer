@@ -419,7 +419,8 @@ def _make_review(
     llm_factory: Any,
     system_prompt: str,
     allowed_hosts: frozenset[str] | None = None,
-) -> Callable[[], str]:
+    clock: Clock | None = None,
+) -> Callable[[str, int], str]:
     """Protocol `review` port: diff → LLM (single 401 re-fetch) → assemble
     + mandatory validate gate → publish-ready content (opaque string).
 
@@ -469,7 +470,7 @@ def _make_review(
                 )
             raise
 
-    def review() -> str:
+    def review(head_sha: str, generation: int) -> str:
         diff_result = _fetch_diff()
         result = _call_llm(render_diff_text(diff_result))
         usage["tokens"] = result.total_tokens
@@ -478,6 +479,8 @@ def _make_review(
             pr_number=pr_number,
             review_content=result.content,
             truncated=diff_result.truncated,
+            review_number=generation + 1,
+            now=(clock if clock is not None else time.time)(),
         )
         return comment.content
 
@@ -1004,6 +1007,7 @@ def _process_record(
                 llm_factory=llm_factory,
                 system_prompt=system_prompt,
                 allowed_hosts=provider.allowed_hosts,
+                clock=clock,
             ),
             fence=_make_fence(envelope=envelope, creds=creds, diff_transport=diff_transport),
             publish=_make_publish(

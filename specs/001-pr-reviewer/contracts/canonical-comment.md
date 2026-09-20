@@ -14,6 +14,7 @@
 - Assembled from model output conforming to the Model I/O contract (§2.7): `## Summary`, bounded `## Findings` (severity ∈ {HIGH, MEDIUM, LOW}, `path:LINE`, issue, suggested fix), `## Risk Notes`; empty-finding sentinel: "No significant issues found."
 - Structural validation before publication (§2.3 item 7): marker present, bounded length, expected sections, no credential-like strings, no hidden HTML/script, no control-plane directives, prompt canary absent, no `@mentions`/external image URLs/approval verdicts (FR-020, FR-025).
 - Content always corresponds to the reviewed revision (FR-013) and is fully regenerated each cycle (FR-004).
+- Revision header (worker-injected, deterministic): directly under the marker, `**Review #N · updated {Mon D, H:MM AM/PM} PT**` where `#N` = established `generation + 1` (first review = #1; a same-SHA replay keeps `#N` with a refreshed stamp) and the stamp is the publish instant rendered in code (`America/Los_Angeles`, never by the model). Gate-safe wording (no HTML comments, no `@` strings, no approval phrases); the FR-028 failure notice carries no header.
 
 ## Content form 2 — Failure-state notice **[D2 — new, FR-028]**
 

@@ -158,7 +158,7 @@ def _llm_payload(*, hosts, model="glm-5.3-flash", endpoint=ENDPOINT, allowed_hos
             else {"allowed_hosts": allowed_hosts}
         ),
     )
-    review()
+    review("bb" * 20, 0)
     assert len(seen) == 1
     return seen[0]
 
