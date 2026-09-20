@@ -183,6 +183,7 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
         Action = [
           "dynamodb:CreateTable",
           "dynamodb:DeleteTable",
+          "dynamodb:DescribeContinuousBackups",
           "dynamodb:DescribeTable",
           "dynamodb:DescribeTimeToLive",
           "dynamodb:ListTagsOfResource",
@@ -202,6 +203,7 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
           "iam:DeleteRolePolicy",
           "iam:GetRole",
           "iam:GetRolePolicy",
+          "iam:ListAttachedRolePolicies",
           "iam:ListRolePolicies",
           "iam:PutRolePolicy",
           "iam:TagRole",
@@ -220,7 +222,6 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
           "logs:CreateLogGroup",
           "logs:DeleteLogGroup",
           "logs:DeleteRetentionPolicy",
-          "logs:DescribeLogGroups",
           "logs:PutRetentionPolicy",
           "logs:TagLogGroup",
           "logs:UntagLogGroup",
@@ -231,6 +232,18 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
           "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-worker",
           "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-worker:*",
         ]
+      },
+      {
+        # DescribeLogGroups is an account-list action: AWS evaluates it
+        # against "log-group::log-stream:", so resource-level scoping never
+        # matches (denied at the first HCP plan, 2026-09-20). No IAM
+        # condition can filter a list response (aws:ResourceTag evaluates
+        # the request, not the returned items), so this accepted trade-off
+        # grants read-only group-name disclosure account-wide.
+        Sid      = "LogGroupsList"
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
       },
       {
         Sid    = "MetricFilters"
@@ -311,6 +324,15 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
         ]
       },
       {
+        # Mappings carry UUID ARNs (opaque, minted at creation), so neither
+        # the refresh path nor IAM can scope by function — mapping-level
+        # wildcard is the tightest addressable form (read-only).
+        Sid      = "EsMappingRead"
+        Effect   = "Allow"
+        Action   = ["lambda:GetEventSourceMapping"]
+        Resource = "arn:${local.partition}:lambda:${local.region}:${local.account_id}:event-source-mapping:*"
+      },
+      {
         Sid    = "QueueRead"
         Effect = "Allow"
         Action = [
@@ -327,6 +349,7 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
         Sid    = "StateTableRead"
         Effect = "Allow"
         Action = [
+          "dynamodb:DescribeContinuousBackups",
           "dynamodb:DescribeTable",
           "dynamodb:DescribeTimeToLive",
           "dynamodb:ListTagsOfResource",
@@ -339,6 +362,7 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
         Action = [
           "iam:GetRole",
           "iam:GetRolePolicy",
+          "iam:ListAttachedRolePolicies",
           "iam:ListRolePolicies",
         ]
         Resource = [
@@ -350,14 +374,19 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
       {
         Sid    = "LogsRead"
         Effect = "Allow"
-        Action = [
-          "logs:DescribeLogGroups",
-          "logs:DescribeMetricFilters",
-        ]
+        Action = ["logs:DescribeMetricFilters"]
         Resource = [
           "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-ingress:*",
           "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-worker:*",
         ]
+      },
+      {
+        # DescribeLogGroups is an account-list action (see LogGroupsList on
+        # the apply policy) — resource-level scoping never matches.
+        Sid      = "LogGroupsListRead"
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
       },
       {
         Sid    = "AlarmsRead"
