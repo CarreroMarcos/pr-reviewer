@@ -2,7 +2,7 @@
 
 ## Autonomous Serverless PR Reviewer
 
-**Version:** 6.9 (Final — Implementation-Ready)
+**Version:** 6.10 (Final — Implementation-Ready)
 **Status:** Approved for Implementation
 **Owner:** Marcos Carrero
 **Region:** `us-west-2` (US West — Oregon)
@@ -49,8 +49,8 @@ The invariant is honest about distributed-systems reality: a database cannot ato
                                   ▼
                   ┌──────────────────────────────────┐
                   │         INGRESS LAMBDA           │──── HTTP 202 (< 250ms) ───> GitHub
-                  │  Timeout: 5s │ 128MB              │
-                  │  Reserved concurrency: 25        │
+                  │  Timeout: 5s │ 512MB              │
+                  │  Reserved: none (quota ruling)   │
                   │  a. Base64-decode if flagged     │
                   │  b. HMAC verify (sha256= prefix) │
                   │  c. X-GitHub-Event == pull_request│
@@ -90,6 +90,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
   SSM PARAMETER STORE (SecureString, out-of-band):
   /pr-reviewer/github-token  /pr-reviewer/webhook-secret
   /pr-reviewer/glm-api-key   /pr-reviewer/glm-model
+  /pr-reviewer/glm-endpoint
 ```
 
 ---
@@ -101,8 +102,8 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | Attribute | Specification |
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `ingress_handler.handler` |
-| Timeout / Memory | 5s / 128 MB |
-| Reserved concurrency | 25 (~250 RPS Function URL ceiling; reserved concurrency is free) |
+| Timeout / Memory | 5s / 512 MB (memory buys CPU: the lazy boto3 cold start cannot fit the 5 s budget at 128 MB — observed Sandbox.Timedout on first invoke; the 128 MB trim was re-attempted under SPR-60 and rejected by operator decision 2026-09-14, per compute.tf) |
+| Reserved concurrency | none — unreserved per the 2026-09-15 quota ruling (account ≥10-unreserved constraint); restore reserves of 2 (ingress) and 5 (worker) only after a quota raise |
 | Trigger | Lambda Function URL, `AuthType: NONE` |
 
 **Responsibilities (in strict order):**
@@ -110,7 +111,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 1. **Body normalization.** Reject bodies > 1 MiB with HTTP 413 **before** decoding — legitimate PR webhooks are metadata-only and far smaller; this bounds memory work on a public endpoint. Otherwise, if `event["isBase64Encoded"]`, `base64.b64decode` first; verify HMAC over the decoded raw bytes — never parsed JSON.
 2. **HMAC verification.** Constant-time compare of the complete `"sha256=" + hexdigest` string against `X-Hub-Signature-256` via `hmac.compare_digest`; case-insensitive header lookup. Failures: HTTP 401.
 3. **Event type validation.** `X-GitHub-Event == "pull_request"` before body interpretation; other signed events return 200 and are discarded.
-4. **Action filtering.** Allow-list `opened`, `synchronize`, `ready_for_review`; skip drafts. Others: HTTP 200, no enqueue.
+4. **Action filtering.** Allow-list `opened`, `reopened`, `synchronize`, `ready_for_review`; skip drafts. Others: HTTP 200, no enqueue. `reopened` [D1 — defined in specs/001-pr-reviewer/contracts/ingress-webhook.md] flows like `opened`; establish (§3.3) decides currency, so a reopen with an **unchanged head** is an idempotent re-delivery of an already-reviewed head and runs no new review — the canonical comment for that head already stands.
 5. **Dedup check (read-only GetItem).** Already-processed GUIDs return HTTP 200.
 6. **Durable dispatch.** `SendMessage` to SQS; on failure, HTTP 500 **without** marking processed (delivery stays recoverable via manual redelivery within GitHub's 3-day window).
 7. **Mark processed.** PutItem the delivery GUID with 7-day TTL — outliving GitHub's 3-day redelivery window by design.
@@ -131,9 +132,9 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | Missing/malformed signature or event headers | 401 | nothing enqueued |
 | HMAC-valid but body unparseable or payload fields schema-invalid | 200 | discarded, nothing enqueued — permanent failure; a 4xx would trigger pointless GitHub redelivery |
 | SQS `SendMessage` failure | 500 | delivery **not** marked (recoverable via redelivery) |
-| Admission ceiling exceeded | 429 | nothing enqueued; GitHub records a failed delivery |
+| Account concurrency throttle (unreserved) | 429 | nothing enqueued; GitHub records a failed delivery |
 
-**Admission semantics:** lossless up to the Function URL ceiling (~250 RPS at concurrency 25, subject to account-level concurrency interactions under bursty multi-repo traffic). Beyond that: HTTP 429, GitHub records a failed delivery, and the **only** recovery path is admin redelivery within 3 days. The zero-silent-loss property applies to deliveries that reach the handler, not the admission edge.
+**Admission semantics:** both functions run unreserved (2026-09-15 quota ruling), so the loss boundary is the **account-level** concurrency pool (quota 10, shared with the worker) — not a per-function reservation. A sustained ingress flood can starve the worker; this is the accepted §6 failure-mode-5 residual, surfaced by the invocation-spike alarm (§4.3) and stoppable by the kill switch. Beyond the account ceiling: HTTP 429, GitHub records a failed delivery, and the **only** recovery path is admin redelivery within 3 days. The zero-silent-loss property applies to deliveries that reach the handler, not the admission edge.
 
 **Envelope (< 1 KB, typed schema):**
 
@@ -141,7 +142,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | :--- | :--- | :--- |
 | `envelope_version` | string | constant `v1` — additive evolution only (One-Version Rule) |
 | `event_type` | string | constant `pull_request` |
-| `action` | enum | `opened` \| `synchronize` \| `ready_for_review` |
+| `action` | enum | `opened` \| `reopened` [D1] \| `synchronize` \| `ready_for_review` |
 | `repo_full_name` | string | `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`, ≤ 128 chars |
 | `pr_number` | integer | > 0, ≤ 10⁹ |
 | `head_sha`, `base_sha` | string | 40-char lowercase hex |
@@ -169,7 +170,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `worker_handler.handler` |
 | Timeout / Memory | 900s / 1769 MB (v6.9: supersedes the 120s / 256 MB SPR-60 trim — Mars ruling 2026-09-19; sizing rationale in specs/002-worker-sizing-hcp/spec.md) |
-| Reserved concurrency | Unreserved (dropped at the 2026-09-15 ruling — account ≥10-unreserved constraint; restore 5 at quota raise) |
+| Reserved concurrency | Unreserved (dropped at the 2026-09-15 ruling — account ≥10-unreserved constraint; restore reserves of 5 (worker) and 2 (ingress) at quota raise) |
 | Trigger | SQS event source mapping (no public exposure) |
 
 **Responsibilities:**
@@ -195,7 +196,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | LLM request-construction fault — malformed credential/header material rejected at header validation, before the request is sent (e.g. control characters in the API key; deterministic, retry cannot succeed) | Client-side construction failure | Typed `LlmError("invalid_key")`; non-retryable: complete; publish the failure notice immediately per the D2 trigger table (contracts/canonical-comment.md); log `status=llm_error` with `error_class=invalid_key` and duration |
 | Assembled comment fails structural validation (§2.3 item 7) | Invalid output at the publish boundary | Non-retryable: complete and alert — invalid content is never published |
 
-**HTTP timeout policy:** GitHub connect 2s / read 10s; LLM connect 2s / read 45s. The Lambda timeout (900s, spec-002) is a backstop.
+**HTTP timeout policy:** GitHub: a single 10s socket timeout (stdlib urllib cannot express a connect/read split — the historical 2s/10s split is documented intent, never implemented; the unit suite pins the single 10s constant); LLM: connect 2s / read 45s, both constants implemented (llm.py) and re-derived against measured case latency at the §4.2 re-probe. The Lambda timeout (900s, spec-002) is a backstop.
 
 ### 2.4 DynamoDB State Store
 
@@ -206,7 +207,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | Item type 1 | `pk = delivery:{guid}` — TTL 7 days |
 | Item type 2 | `pk = review:{repo_full_name}#{pr_number}` — state record (§3.1) |
 
-**Capacity budget:** per new-revision review ≈ 4 WCU + 1.5–3 RCU (delivery PutItem + establish + claim + finalize; items ≤ 1 KB so each write bills 1 WCU); the superseded-event path writes ≈ 2 WCU (delivery + `last_seen_sha`) and the GUID-dedup fast path writes 0; peak steady-state ≈ 1 WCU/s; worst-case burst ≤ 20 WCU/s at concurrency 5 (4 writes each) — under the 25 ceiling, with the reduced margin that justifies worker reserved concurrency 5.
+**Capacity budget:** per new-revision review ≈ 4 WCU + 1.5–3 RCU (delivery PutItem + establish + claim + finalize; items ≤ 1 KB so each write bills 1 WCU); the superseded-event path writes ≈ 2 WCU (delivery + `last_seen_sha`) and the GUID-dedup fast path writes 0; peak steady-state ≈ 1 WCU/s; worst-case burst ≤ 20 WCU/s at concurrency 5 (4 writes each) — under the 25 ceiling; with both functions unreserved (2026-09-15 ruling) the true worker pool is the account quota (10), so a full flood can press the 25 WCU ceiling and throttling resolves via the §6 failure-mode-14 retry path.
 
 ### 2.5 SQS DLQ + Operator Redrive
 
@@ -294,7 +295,7 @@ Exactly-one is a **convergence property**: on missing `comment_id`, 404 recovery
 
 | Service | Allowance (scoped) | Steady-State Usage |
 | :--- | :--- | :--- |
-| Lambda | 1M requests + 400,000 GB-s/month | 2 invocations, 1.5–3.75 GB-s per review |
+| Lambda | 1M requests + 400,000 GB-s/month | 2 invocations; ≈ 225 GB-s per review at the spec-002 sizing (1769 MB × ~130 s measured, §4.2); free-tier math in specs/002-worker-sizing-hcp/spec.md |
 | DynamoDB | Always Free: 25 GB + 25 WCU/RCU provisioned | ~4 WCU + ~2 RCU per new-revision review; burst ≤ 20 WCU/s (§2.4) |
 | SQS | 1M requests/month | 1 send + ~1 receive per review |
 | SSM Standard | $0, 40 TPS default | 4 parameters, batched |
@@ -310,7 +311,7 @@ Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec
 
 ### 4.3 Observability
 
-Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget. Kill switch (v6.6): set worker reserved concurrency to 0 (or disable the webhook) — spend stops immediately and queued work is retained.
+Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary — secondary in the unreserved era: the invocation-spike alarm is the primary flood signal); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop). Eight alarms shipped. Kill switch (v6.6; restated for the unreserved era): set the worker's reserved concurrency to 0 — valid on an unreserved function; invocations refuse immediately — spend stops and queued work is retained up to the 4-day retention; disable the webhook (or the event source mapping) as well if ingress should stop enqueuing, since an active ingress against a dead worker grows the queue silently to retention expiry.
 
 ### 4.4 Testing & Verification Strategy (v6.4)
 
@@ -328,8 +329,17 @@ Gates: no commit without the installed pre-commit hooks (hygiene, ruff, gitleaks
 ### 5.1 IAM Roles (Three)
 
 ```text
-Trust policies (v6.6): both execution roles trust lambda.amazonaws.com, scoped with
-aws:SourceArn conditions; the operator role trusts a named SSO principal gated on MFA.
+Trust policies (v6.6): the ingress role trusts lambda.amazonaws.com scoped to its
+function ARN (aws:SourceArn); the worker role trusts on aws:SourceAccount — a
+function-ARN SourceArn condition fails CreateEventSourceMapping validation (seen
+live, T035); the operator role trusts the terraform-admin IAM user gated on MFA
+(SPR-60, Mars decision 2026-09-14). The worker's aws:SourceAccount scope trusts
+any future Lambda in the account — accepted for this single-operator account
+(IaC-only; no untrusted path creates functions). The concrete tightening path
+is a permissions boundary on the worker role (roadmap); trust-policy conditions
+cannot substitute — the event source mapping's assumability validation carries
+no function ARN in context (the T035 mechanism), so no aws:SourceArn form can
+match for the worker role.
 
 INGRESS ROLE:  logs; ssm:GetParameter (webhook-secret ARN);
                sqs:SendMessage (work queue); dynamodb:GetItem, PutItem on state table
@@ -349,9 +359,11 @@ OPERATOR ROLE: sqs:StartMessageMoveTask, ReceiveMessage, DeleteMessage, GetQueue
                — named in the source queue's redrive allow policy
 ```
 
+Bootstrap OIDC trust stack (HCP plan/apply roles, `StringEquals` exact sub pins — applied once locally, never HCP-managed): `bootstrap/main.tf`; contract in `specs/002-worker-sizing-hcp/spec.md`.
+
 ### 5.2 Ingress Threat Model
 
-Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded at the documented RPS ceiling with the 3-day manual redelivery window as the only recovery — stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction. Cost abuse (v6.4): PR floods — including fork PRs — convert directly into LLM spend, bounded by design to worker concurrency × per-review cost (§2.7), with 4-day queue retention shedding sustained backlog and queue-depth/DLQ alarms surfacing abnormal volume. Replay residual (v6.6): the GUID-dedup TTL (7 d) is the replay window; HMAC carries no timestamp, so a captured payload replayed after TTL expiry is accepted as new — stale-head replays are discarded by establish, but a current-head replay passes the fence and burns one bounded LLM review; accepted knowingly (bounded spend, no incorrect state).
+Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded by the account-level concurrency pool (quota 10, both functions unreserved — §2.1), with the 3-day manual redelivery window as the only recovery; a sustained flood can additionally starve the worker (§6 failure mode 5 — spike alarm + kill switch). Stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction. Cost abuse (v6.4): PR floods — including fork PRs — convert directly into LLM spend, bounded by design to worker concurrency × per-review cost (§2.7), with 4-day queue retention shedding sustained backlog and queue-depth/DLQ alarms surfacing abnormal volume. Replay residual (v6.6): the GUID-dedup TTL (7 d) is the replay window; HMAC carries no timestamp, so a captured payload replayed after TTL expiry is accepted as new — stale-head replays are discarded by establish, but a current-head replay passes the fence and burns one bounded LLM review; accepted knowingly (bounded spend, no incorrect state).
 
 ### 5.3 AI Input Security
 
@@ -371,7 +383,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 2 | HMAC prefix bug | Full-string constant-time compare |
 | 3 | Non-PR signed event | Event-type gate |
 | 4 | Claim-before-dispatch loss | Dispatch-before-mark; 500 leaves delivery unconsumed |
-| 5 | Admission-edge 429 loss | Ingress concurrency 25; boundary documented; 3-day redelivery is recovery |
+| 5 | Admission-edge 429 loss | Unreserved: the account concurrency quota (10) is the only bound — a flood can starve the worker (accepted residual: spike alarm + kill switch); 3-day redelivery is recovery |
 | 6 | Out-of-order webhook delivery | Establish gated on live GitHub head (defined comparison); fence after claim |
 | 7 | Read-then-PATCH stale write | Conditional claim/finalize; fence-after-claim ordering |
 | 8 | First-post race | Claim state machine, 180s fixed lease (claim→finalize, no renewal) |
@@ -380,7 +392,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 11 | Premature message redelivery | Visibility 5400s; ChangeMessageVisibility for Retry-After |
 | 12 | Transient provider failures | maxReceiveCount 5, then DLQ |
 | 13 | PATCH 404 ambiguity | Explicit decision table (§2.3 item 8) |
-| 14 | DynamoDB throttling | Capacity derivation; concurrency 5; ≤ 1 KB items |
+| 14 | DynamoDB throttling | Capacity derivation; worker pool account-quota-bounded (unreserved, 2026-09-15); ≤ 1 KB items |
 | 15 | Oversized envelope | < 1 KB metadata-only |
 | 16 | Diff budget nondeterminism | Byte/line/file limits pre-model; deterministic lockfile summaries |
 | 17 | Credential rotation | 401-triggered invalidation + 30-min periodic refresh; cold start always fetches |
@@ -391,7 +403,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 22 | Secrets in state/logs | IAM-only Terraform; logging prohibitions |
 | 23 | DynamoDB billing surprise | PROVISIONED mode |
 | 24 | Failed work silent | DLQ + alarm + tested, permissioned redrive |
-| 25 | PR flood cost abuse (v6.4) | Concurrency cap bounds spend; 4 d retention sheds sustained backlog; depth/DLQ alarms surface abnormal volume |
+| 25 | PR flood cost abuse (v6.4) | Account concurrency pool (10, unreserved) bounds spend; 4 d retention sheds sustained backlog; depth/DLQ/spike alarms surface abnormal volume |
 
 ---
 
@@ -399,7 +411,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 ### 7.1 Terraform BOM
 
-`aws_lambda_function` ×2; `aws_lambda_function_url`; `aws_lambda_event_source_mapping` (batch 1); `aws_sqs_queue` ×2 + redrive policy (maxReceiveCount 5) + **redrive allow policy naming the operator role**; `aws_dynamodb_table` (provisioned 25/25); IAM roles ×3 with inline policies; `aws_cloudwatch_log_group` ×2 (7-day retention); DLQ-depth alarm; `archive_file` ×2. **Absent:** API Gateway, VPC, NAT, S3 backend (MVP), SSM parameter resources, Secrets Manager, EventBridge, Lambda async-invoke config.
+`aws_lambda_function` ×2; `aws_lambda_function_url`; `aws_lambda_event_source_mapping` (batch 1); `aws_sqs_queue` ×2 + redrive policy (maxReceiveCount 5) + **redrive allow policy naming the operator role**; `aws_dynamodb_table` (provisioned 25/25); IAM roles ×3 with inline policies; `aws_cloudwatch_log_group` ×2 (7-day retention); 8 `aws_cloudwatch_metric_alarm` (incl. DLQ-depth and worker-invocation-spike) + SNS topic + 2 log metric filters; `archive_file` ×2. **Absent:** API Gateway, VPC, NAT, S3 backend (MVP), SSM parameter resources, Secrets Manager, EventBridge, Lambda async-invoke config.
 
 **Repository layout & packaging (v6.4):** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **both** deployment zips, and `lambda/ingress_handler.py` / `lambda/worker_handler.py` stay thin entry points. This is a shared contract, not an abstraction — no further layering until a third consumer exists (Rule of Three). Security-sensitive helpers (log redaction, input sanitization) and behaviorally-identical logic (marker construction, envelope validation) are single-implemented here from the first duplication — one implementation is a security requirement, not a style choice. The validator returns a typed envelope (stdlib `dataclass`), and public handlers carry type annotations (stdlib `typing`).
 
@@ -409,7 +421,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 | Component | Value |
 | :--- | :--- |
-| Ingress reserved concurrency | 25 |
+| Ingress reserved concurrency | none (unreserved, 2026-09-15 ruling) |
 | SQS visibility timeout | 5400s |
 | maxReceiveCount | 5 |
 | Claim lease | 180s, fixed (claim→finalize, no renewal), decoupled |
@@ -433,6 +445,8 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 **v6.7 → v6.8 deltas (measurement-only revision — zero architectural, budget, or AC change):** live-endpoint LLM latency measured 2026-09-17 — ~130 s/case thinking-off (max ~140 s), ~318 s thinking-on, roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar (§4.2 measured-reality note; §2 rationale annotated; §7.3 AC (b) flagged currently-unmet). Single time-window measurement, re-probe pending; companion A/B found model choice, thinking, and temperature buy no quality on the eval corpus at material latency cost (`tests/model_evals/results/`).
 
 **v6.8 → v6.9 deltas (measurement/config-only revision — zero architectural, budget, or AC change):** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19; sizing rationale and free-tier math in specs/002-worker-sizing-hcp/spec.md); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
+
+**v6.9 → v6.10 deltas (documentation-only — no infrastructure change; aligns the HLD with shipped reality, including the account-level starvation residual of the unreserved posture, §6 failure mode 5):** ingress memory corrected 128 MB → 512 MB (compute.tf documents the cold-start history); unreserved reality documented across admission semantics (§2.1), §4.1, §6 failure modes 5/14, and the §7.2 table (2026-09-15 ruling); `reopened` added to the allow-list and envelope enum [D1]; §4.1 Lambda row re-derived at spec-002 sizing (~225 GB-s/review); trust-policy mechanism corrected (worker `aws:SourceAccount`, operator terraform-admin + MFA); GitHub timeout restated as a single 10s; alarm list updated to the shipped 8-alarm set; §5.1 cites the bootstrap OIDC stack; the 2026-09-20 #68 drift pass is covered by this entry (it added no v6.9 delta).
 
 ### 7.3 Deployment Sequence
 

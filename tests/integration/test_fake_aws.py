@@ -128,7 +128,9 @@ def stack(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     work_url = sqs.create_queue(
         QueueName=WORK_QUEUE_NAME,
         Attributes={
-            "VisibilityTimeout": "720",
+            # 6 x 900 worker timeout — spec-002 invariant (HLD §2.2);
+            # the 900 source of truth is terraform/compute.tf.
+            "VisibilityTimeout": str(6 * 900),
             "MessageRetentionPeriod": "345600",
             "RedrivePolicy": json.dumps({"deadLetterTargetArn": dlq_arn, "maxReceiveCount": "5"}),
         },
