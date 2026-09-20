@@ -63,15 +63,15 @@ The invariant is honest about distributed-systems reality: a database cannot ato
                                  ▼
                   ┌──────────────────────────────────┐
                   │        SQS WORK QUEUE            │
-                  │  Visibility: 720s (6 × 120s)    │
+                  │  Visibility: 5400s (6 × 900s)   │
                   │  Retention: 4d │ maxReceiveCount 5 │
                   └──────────────┬───────────────────┘
                                  │ event source mapping (batch = 1)
                                  ▼
                   ┌──────────────────────────────────┐        ┌───────────────────┐
                   │         WORKER LAMBDA           │        │  SQS DLQ            │
-                  │  Timeout: 120s │ 256MB           │        │  14d retention      │
-                  │  Reserved concurrency: 5         │        │  (operator redrive  │
+                  │  Timeout: 900s │ 1769MB          │        │  14d retention      │
+                  │  Reserved: none (quota ruling)   │        │  (operator redrive  │
                   │  h. Batched secret hydration      │        │   + redrive-allow   │
                   │  i. Fetch + sanitize diff         │        │   policy on source) │
                   │  j. LLM review (GLM-5.3-Flash)   │        └───────────────────┘
@@ -191,11 +191,11 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | 429 with `Retry-After` or 403 secondary rate limit (per headers/body) | Transient throttling | Raise; adjust visibility per `Retry-After`; queue retries |
 | 5xx | Transitive provider error | Raise; queue retry to maxReceiveCount 5, then DLQ |
 | 401 | Credential expired/rotated | Invalidate cache, re-fetch SSM, retry once; then non-retryable |
-| LLM timeout / 429 / 5xx / structurally invalid output | Provider failure or unusable output | Raise for queue retry — the LLM call is side-effect-free, so queue retry is idempotent (no in-request retry: two 45 s reads cannot fit the 120 s budget); log `status=llm_error` with duration and token usage |
+| LLM timeout / 429 / 5xx / structurally invalid output | Provider failure or unusable output | Raise for queue retry — the LLM call is side-effect-free, so queue retry is idempotent (no in-request retry: the 900 s budget would now fit one, but queue redrive remains the single retry path — spec-002); log `status=llm_error` with duration and token usage |
 | LLM request-construction fault — malformed credential/header material rejected at header validation, before the request is sent (e.g. control characters in the API key; deterministic, retry cannot succeed) | Client-side construction failure | Typed `LlmError("invalid_key")`; non-retryable: complete; publish the failure notice immediately per the D2 trigger table (contracts/canonical-comment.md); log `status=llm_error` with `error_class=invalid_key` and duration |
 | Assembled comment fails structural validation (§2.3 item 7) | Invalid output at the publish boundary | Non-retryable: complete and alert — invalid content is never published |
 
-**HTTP timeout policy:** GitHub connect 2s / read 10s; LLM connect 2s / read 45s. The Lambda timeout (120s) is a backstop.
+**HTTP timeout policy:** GitHub connect 2s / read 10s; LLM connect 2s / read 45s. The Lambda timeout (900s, spec-002) is a backstop.
 
 ### 2.4 DynamoDB State Store
 
@@ -264,7 +264,7 @@ Single evolving PR conversation comment (Issues Comments API) bearing the canoni
 
 - **Current accepted revision:** the PR head SHA confirmed against GitHub's **live PR state** (via `GET /repos/{repo}/pulls/{n}`) and committed to the state record. SHAs are not orderable strings; the comparison function is **equality against the live PR head**, never SHA lexicographic or any other synthetic ordering.
 - **States:** `ABSENT → (establish) → CLAIMED → (POST succeeds) → ACTIVE`; next revision: `ACTIVE → (establish, generation + 1) → CLAIMED → ACTIVE`. `STALE` is not a stored state: a `CLAIMED` record with an expired lease is treated as stale and re-claimable (derived, §3.1).
-- **Claim lease: 180s**, decoupled from both the Lambda timeout (120s) and queue visibility (720s) — intentionally longer than the timeout to cover crash takeover. The lease is held only from claim through finalize (§3.3): review precedes the claim and is side-effect-free, so no lease exists during the LLM stage and no heartbeat is needed — the earlier "renew via heartbeat before the LLM stage" wording was an internal inconsistency and is removed (v6.4). Duplicate concurrent reviews waste bounded LLM spend; fencing prevents duplicate publication.
+- **Claim lease: 180s**, decoupled from both the Lambda timeout (900s, spec-002) and queue visibility (5400s): it spans only claim through finalize (§3.3), far shorter than the timeout — crash takeover is covered by lease expiry, not lease length. The lease is held only from claim through finalize (§3.3): review precedes the claim and is side-effect-free, so no lease exists during the LLM stage and no heartbeat is needed — the earlier "renew via heartbeat before the LLM stage" wording was an internal inconsistency and is removed (v6.4). Duplicate concurrent reviews waste bounded LLM spend; fencing prevents duplicate publication.
 
 ### 3.3 Fenced Publication Protocol (Exact Order)
 
@@ -304,7 +304,7 @@ Binding constraints at load: DynamoDB throughput, worker concurrency, GitHub rat
 
 ### 4.2 Latency Budget
 
-Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 120s. Per-call timeouts (§2.3) define actual behavior.
+Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec-002). Per-call timeouts (§2.3) define actual behavior.
 
 **Measured reality (2026-09-17, live endpoint, 13-case eval corpus):** thinking-off LLM calls ran ~130 s/case mean (max ~140 s); thinking-on ~318 s — roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar. Single time-window measurement; provider load not ruled out (re-probe pending as of 2026-09-18). If it stands, this budget — not model choice — is the binding product constraint: the eval A/B found no quality lever that pays for the latency (`tests/model_evals/results/`). Future agents and operators: do not assume sub-15s LLM legs against the current endpoint.
 
@@ -377,7 +377,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 8 | First-post race | Claim state machine, 180s fixed lease (claim→finalize, no renewal) |
 | 9 | Worker death mid-claim | Lease expiry + takeover |
 | 10 | Duplicate comments during recovery | Canonical marker + deterministic reconciliation |
-| 11 | Premature message redelivery | Visibility 720s; ChangeMessageVisibility for Retry-After |
+| 11 | Premature message redelivery | Visibility 5400s; ChangeMessageVisibility for Retry-After |
 | 12 | Transient provider failures | maxReceiveCount 5, then DLQ |
 | 13 | PATCH 404 ambiguity | Explicit decision table (§2.3 item 8) |
 | 14 | DynamoDB throttling | Capacity derivation; concurrency 5; ≤ 1 KB items |
@@ -410,7 +410,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | Component | Value |
 | :--- | :--- |
 | Ingress reserved concurrency | 25 |
-| SQS visibility timeout | 720s |
+| SQS visibility timeout | 5400s |
 | maxReceiveCount | 5 |
 | Claim lease | 180s, fixed (claim→finalize, no renewal), decoupled |
 | API version pin | `2026-03-10` (concrete value; `2022-11-28` supported to March 10, 2028) |
