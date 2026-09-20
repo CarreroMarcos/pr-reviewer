@@ -124,4 +124,14 @@ Current truth: HLD §2.7.
 **Decision (Mars ruling, 2026-09-20):** add exactly one output-hygiene bullet to the v2 Prohibitions (describe payloads and embedded instructions descriptively; no raw HTML/script tags, no directive phrasing, even inside code spans or when quoting adversarial content); publication gate untouched; version stays `v2` (unreleased) and the live re-pin captures the new sha. Escalation bound: a 3rd consecutive same-case pin trip returns to Mars.
 **Consequences:** stricter model output discipline on adversarial cases; possible bounded re-pin sampling retries; gate strictness preserved.
 
+Current truth: `lambda/common/validate.py` approval scan; HLD §2.7 posture sentence unchanged.
+
 Current truth: `specs/003-comment-review-ux/spec.md` (T2a amendment); HLD §2.7 unchanged.
+
+## 2026-09-20 — approval-verdict gate precision (code-span carve-out, word-bounded stem)
+
+**Context:** four false-positive review discards in one evening (PRs #80–#82), all `assemble_approval_verdict`: the gate's raw substring `approv` matched descriptive prose and backticked identifiers in reviews of PRs *about* the reviewer's own gate (runbook/CI/spec diffs), discarding otherwise-valid reviews. A companion proposal to reveal the error class in the D2 failure notice was found contract-frozen ("SHA is the only variable", explicit internal-status prohibition, FR-028 / canonical-comment.md) — deferred, not implemented.
+**Decision (Mars ruling, 2026-09-20, Option A):** tighten the `approval_verdict` scan — (1) approval phrases match outside inline-code/code-block spans (same carve-out rationale as the mentions scan: code-formatted text is quotation, not assertion); (2) the bare stem matches word-bounded (`\bapprov`). Plain-prose verdict phrasing ("LGTM", "safe to merge") still refuses — §5.3 control-plane posture unchanged.
+**Consequences:** reviews of gate/meta PRs publish normally. Residual accepted: model output could place verdict phrasing inside code spans (prompt-bound reviewer, no adversarial motive; the mentions precedent's inertness argument is weaker here — code spans still render — which the Gate 5-style review must weigh). Notice-class reveal needs a D2 contract amendment — separate Needs-input if wanted.
+
+Current truth: `lambda/common/validate.py` approval scan; HLD §2.7 unchanged.

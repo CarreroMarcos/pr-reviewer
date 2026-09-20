@@ -106,13 +106,19 @@ _APPROVAL_PHRASES = (
     "ok to merge",
     "okay to merge",
     "good to merge",
-    "approv",
     "lgtm",
     "looks good to me",
     "ship it",
     "merge this",
     "merge when ready",
 )
+
+_APPROVAL_STEM_RE = re.compile(r"\bapprov")
+# The bare approval stem matches word-bounded ("approve"/"approved" trip;
+# degenerate mid-word runs do not). Precision ruling (Mars, 2026-09-20):
+# four same-evening false-positive discards on PRs about this reviewer's own
+# gate — reviews legitimately quote identifiers like
+# `assemble_approval_verdict` in code formatting.
 
 
 @dataclass(frozen=True)
@@ -198,8 +204,11 @@ def validate_comment(
     if _IMAGE_MD_RE.search(content) or _IMG_TAG_RE.search(content):
         reasons.append("external_media")
 
-    lowered = content.lower()
-    if any(phrase in lowered for phrase in _APPROVAL_PHRASES):
+    # Mentions carve-out precedent (above): code-formatted text is
+    # quotation, not assertion — the approval scan runs on code-span-stripped
+    # content. A plain-prose "LGTM / safe to merge" still refuses (§5.3).
+    lowered = _INLINE_CODE_RE.sub("", _CODE_BLOCK_RE.sub("", content)).lower()
+    if _APPROVAL_STEM_RE.search(lowered) or any(phrase in lowered for phrase in _APPROVAL_PHRASES):
         reasons.append("approval_verdict")
 
     return ValidationVerdict(ok=not reasons, reasons=tuple(reasons))

@@ -245,6 +245,26 @@ def test_reject_approval_merge_verdicts(snippet):
     assert "approval_verdict" in verdict.reasons
 
 
+def test_approval_vocabulary_in_code_formatting_is_not_a_verdict():
+    """Quoted identifiers inside code spans/fences are vocabulary under
+    review, not merge verdicts (mentions carve-out precedent, Mars ruling
+    2026-09-20 after four same-evening false-positive discards)."""
+    snippet = (
+        "Gate change: `assemble_approval_verdict` is the tripwire class.\n\n"
+        "```text\nlgtm et al.\n```"
+    )
+    verdict = check(make_valid() + f"\n{snippet}\n")
+    assert verdict.ok is True
+
+
+def test_approval_stem_in_plain_prose_still_refuses():
+    """The stem still trips outside code formatting (control-plane posture
+    §5.3 unchanged by the precision fix)."""
+    verdict = check(make_valid() + "\nThe workflow auto-approves dependency bumps.\n")
+    assert verdict.ok is False
+    assert "approval_verdict" in verdict.reasons
+
+
 # --- marker spoofing (boundary 7: model output is untrusted, §9) ---------------
 # The worker injects exactly one canonical marker at assembly; any further
 # marker-shaped string is model-emitted spoof and must refuse publication so
