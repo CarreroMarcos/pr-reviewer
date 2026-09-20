@@ -6,6 +6,8 @@
 
 **Append-only discipline:** entries are never edited in place — a superseded entry is superseded by a new dated entry that names it. Entries exist only for behavior/config/accepted-risk changes and measurements; typo and wording fixes are silent. Every entry ends with a "Current truth" pointer into the HLD so a reader can jump from history to the normative statement. HLD § numbering is frozen — sections are added, never renamed or renumbered (specs and this log cite §X.Y) — so pointers stay stable; an entry written against an older HLD notes the version current at entry time when the section's content has since moved.
 
+**Fidelity convention:** the 2026-09-11/09-12 planning-revision entries are verbatim migrations from HLD §7.2; entries created during or after the migration may be enriched summaries (references expanded). Neither is authoritative over the HLD.
+
 ## Entry format
 
 ```text
@@ -18,8 +20,6 @@
 
 Current truth: HLD §X.Y.
 ```
-
-<!-- Entries land here: first the Configuration Baseline delta paragraphs migrate out of docs/HLD.md (its "Configuration Baseline" section), then inline ruling/measurement asides (HLD restructure PR-2/PR-3, approved 2026-09-20). -->
 
 ## 2026-09-11 — v6.1 → v6.2 — interface-contract clarifications only, zero architectural change (landed in the initial scaffold dbea837; authored pre-repository)
 
