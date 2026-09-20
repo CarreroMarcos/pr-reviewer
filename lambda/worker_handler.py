@@ -420,7 +420,7 @@ def _make_review(
     system_prompt: str,
     allowed_hosts: frozenset[str] | None = None,
     clock: Clock | None = None,
-) -> Callable[..., str]:
+) -> Callable[[str, int], str]:
     """Protocol `review` port: diff → LLM (single 401 re-fetch) → assemble
     + mandatory validate gate → publish-ready content (opaque string).
 
