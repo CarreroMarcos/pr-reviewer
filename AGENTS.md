@@ -26,7 +26,7 @@ Never add runtime deps other than boto3. If `pyproject.toml` changes, `uv lock` 
 
 ## Layout (do not invent folders)
 
-HLD / `plan.md` own the tree: `lambda/common/` (shared contract), thin `lambda/ingress_handler.py` + `lambda/worker_handler.py`, `terraform/`, `tests/{unit,state_machine,contracts,model_evals,integration}/`, `prompts/`, `docs/`, `specs/001-pr-reviewer/`. Doc authority: HLD owns architecture (current truth); `docs/DECISIONS.md` owns history/why (append-only); runbooks own procedure; specs own task contracts — see the HLD header for the authority rule.
+HLD / `plan.md` own the tree: `lambda/common/` (shared contract), thin `lambda/ingress_handler.py` + `lambda/worker_handler.py`, `terraform/`, `tests/{unit,state_machine,contracts,model_evals,integration}/`, `prompts/`, `docs/`, `specs/001-pr-reviewer/`. Doc authority: HLD owns architecture (current truth); `docs/DECISIONS.md` owns history/why (append-only); runbooks own procedure; specs own task contracts. Precedence on conflict: HLD wins current behavior, DECISIONS wins why/history; disagreements are Needs-input questions, never silent edits.
 Runtime: Python 3.12 stdlib + `boto3` only. No model tools.
 
 ## Jira (MCP)
