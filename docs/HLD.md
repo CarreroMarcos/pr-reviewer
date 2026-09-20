@@ -103,7 +103,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | Attribute | Specification |
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `ingress_handler.handler` |
-| Timeout / Memory | 5s / 512 MB (memory buys CPU: the lazy boto3 cold start cannot fit the 5 s budget at 128 MB — DECISIONS 2026-09-14) |
+| Timeout / Memory | 5s / 512 MB (memory buys CPU: the lazy boto3 cold start cannot fit the 5 s budget at 128 MB — DECISIONS 2026-09-14; deployed value: terraform/compute.tf) |
 | Reserved concurrency | none — unreserved (2026-09-15 ruling, DECISIONS); restore reserves of 2 (ingress) and 5 (worker) only after a quota raise |
 | Trigger | Lambda Function URL, `AuthType: NONE` |
 
