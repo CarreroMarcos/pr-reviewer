@@ -163,10 +163,12 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   only); never `git push --tags`.
 - **Worker-log diagnosis (2026-09-20):** worker logs are lowercase
   structured JSON — a CloudWatch `--filter-pattern ERROR` matches nothing.
-  Pull the window (`aws --region us-west-2 logs filter-log-events
-  --log-group-name /aws/lambda/pr-reviewer-worker --start-time <epoch-ms>`)
-  and grep fields
-  locally (`"error_class"`, `"status"`).
+  Filter by field: `--filter-pattern '{ $.error_class =
+  "assemble_approval_verdict" }'`, or pull the window and grep locally —
+  `aws --region us-west-2 logs filter-log-events --log-group-name
+  /aws/lambda/pr-reviewer-worker --start-time <epoch-ms>`, then grep
+  `error_class` / `status` (`retry_queued` redelivers, `discarded_error`
+  is terminal).
 - **Clean shell after cred export (2026-09-20):** exported AWS session creds
   (`aws configure export-credentials`) make 8 fake-AWS integration tests
   error — run `capture.py`/terraform and full pytest in separate shells.
