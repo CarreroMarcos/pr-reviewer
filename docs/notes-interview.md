@@ -1,6 +1,6 @@
 # Notes: HLD Interview Talking Points
 
-**Status:** Non-normative, parked 2026-09-20 from HLD §8 (HLD restructure PR-4). Not architecture, not authority — reference notes only. Authority rule: see the HLD header; current truth is `docs/HLD.md`.
+**Status:** Non-normative, parked 2026-09-20 from HLD §8 (HLD restructure PR-4). Reference notes only — doc authority: see `docs/HLD.md` (header).
 
 - **Distributed-systems correctness:** SHA-authoritative fencing with a **defined** comparison function (live-head confirmation, never SHA ordering), conditional publication, and an honest convergence invariant.
 - **AWS configuration discipline:** the 6× visibility rule, decoupled fixed leases (claim→finalize, no renewal), capacity derivations from item sizes, admission-boundary loss analysis, concrete API version pinning.

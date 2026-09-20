@@ -7,7 +7,7 @@
 **Owner:** Marcos Carrero
 **Region:** `us-west-2` (US West — Oregon)
 **Cost Baseline:** Expected AWS service charges of $0 under the applicable AWS Free Tier / Always Free allowances for the documented workload, assuming eligible account status, no paid features, and no quota overages. LLM pricing figures are approximate (provider listings vary); per-review cost estimates are order-of-magnitude only and must not be hard-coded into alarms or budgets — they are configuration parameters.
-**Document authority:** this HLD states what the system **is** — normative, present-tense current truth only. History, rulings, supersedes, and measurements live in [docs/DECISIONS.md](DECISIONS.md) (non-normative); redrive procedure in `docs/runbook-redrive.md`; task scope in `specs/**`. On current behavior the HLD wins; on why, DECISIONS wins.
+**Document authority:** this HLD states what the system **is** — normative, present-tense current truth only. History, rulings, supersedes, and measurements live in [docs/DECISIONS.md](DECISIONS.md) (non-normative); redrive procedure in `docs/runbook-redrive.md`; task scope in `specs/**`. On current behavior the HLD wins; on why, DECISIONS wins. Parked non-normative notes (e.g., interview talking points) live in `docs/notes-interview.md`.
 
 ---
 
