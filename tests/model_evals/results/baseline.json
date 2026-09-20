@@ -1,7 +1,7 @@
 {
   "meta": {
     "prompt_version": "v2",
-    "prompt_sha256": "f62cc03a9dd1dcc9a4a18e810075d1a8cf4a87c8d215dc54862d299f61f8c807",
+    "prompt_sha256": "2227575b08945ab6b1ab9b73b5295cdf0ee7ea34aaf09a29c5bcd56ff20711db",
     "model": "glm-5.3-flash",
     "payload": {
       "temperature": 0.2,
@@ -9,10 +9,10 @@
       "cases": "all",
       "timeout_s": 60
     },
-    "latency_mean_ms": 133424.3,
-    "latency_max_ms": 160423,
-    "wall_s": 2001.4,
-    "captured_at": "2026-09-20T09:44:42.352679+00:00"
+    "latency_mean_ms": 133335.3,
+    "latency_max_ms": 166683,
+    "wall_s": 2000.1,
+    "captured_at": "2026-09-20T17:44:52.174394+00:00"
   },
   "per_case": {
     "representative": {
@@ -24,13 +24,12 @@
       "unlabeled": 2,
       "unparsable": 0,
       "findings_count": 3,
-      "low_count": 1,
-      "nit_rate": 0.3333,
+      "low_count": 2,
+      "nit_rate": 0.6667,
       "severity_agreement": "1/1",
-      "comment_length": 1352,
+      "comment_length": 1109,
       "recall": 1.0,
-      "precision": 0.3333,
-      "latency_ms": 130509
+      "precision": 0.3333
     },
     "path_traversal": {
       "case_id": "path_traversal",
@@ -38,16 +37,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 1,
-      "unparsable": 0,
-      "findings_count": 2,
+      "unlabeled": 2,
+      "unparsable": 1,
+      "findings_count": 3,
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "1/1",
-      "comment_length": 1382,
+      "comment_length": 1837,
       "recall": 1.0,
-      "precision": 0.5,
-      "latency_ms": 134798
+      "precision": 0.3333
     },
     "hardcoded_secret": {
       "case_id": "hardcoded_secret",
@@ -61,10 +59,9 @@
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "1/1",
-      "comment_length": 982,
+      "comment_length": 841,
       "recall": 1.0,
-      "precision": 1.0,
-      "latency_ms": 128369
+      "precision": 1.0
     },
     "missing_authz": {
       "case_id": "missing_authz",
@@ -72,16 +69,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 1,
+      "unlabeled": 0,
       "unparsable": 0,
-      "findings_count": 2,
+      "findings_count": 1,
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 1073,
+      "comment_length": 885,
       "recall": 1.0,
-      "precision": 0.5,
-      "latency_ms": 131660
+      "precision": 1.0
     },
     "check_then_act": {
       "case_id": "check_then_act",
@@ -89,16 +85,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 2,
-      "unparsable": 0,
-      "findings_count": 3,
-      "low_count": 1,
-      "nit_rate": 0.3333,
-      "severity_agreement": "0/1",
-      "comment_length": 1785,
+      "unlabeled": 0,
+      "unparsable": 1,
+      "findings_count": 1,
+      "low_count": 0,
+      "nit_rate": 0.0,
+      "severity_agreement": "1/1",
+      "comment_length": 1267,
       "recall": 1.0,
-      "precision": 0.3333,
-      "latency_ms": 134510
+      "precision": 1.0
     },
     "mutable_default": {
       "case_id": "mutable_default",
@@ -112,10 +107,9 @@
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 1028,
+      "comment_length": 900,
       "recall": 1.0,
-      "precision": 1.0,
-      "latency_ms": 130081
+      "precision": 1.0
     },
     "silent_except": {
       "case_id": "silent_except",
@@ -123,16 +117,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 3,
-      "unparsable": 0,
-      "findings_count": 4,
+      "unlabeled": 2,
+      "unparsable": 1,
+      "findings_count": 3,
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 1633,
+      "comment_length": 1649,
       "recall": 1.0,
-      "precision": 0.25,
-      "latency_ms": 134410
+      "precision": 0.3333
     },
     "off_by_one": {
       "case_id": "off_by_one",
@@ -140,36 +133,18 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 1,
-      "unparsable": 0,
-      "findings_count": 2,
+      "unlabeled": 0,
+      "unparsable": 1,
+      "findings_count": 1,
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 1061,
+      "comment_length": 1299,
       "recall": 1.0,
-      "precision": 0.5,
-      "latency_ms": 129554
+      "precision": 1.0
     },
     "resource_leak": {
       "case_id": "resource_leak",
-      "hits": 1,
-      "expected_total": 1,
-      "missed": 0,
-      "fabricated": 0,
-      "unlabeled": 1,
-      "unparsable": 0,
-      "findings_count": 2,
-      "low_count": 0,
-      "nit_rate": 0.0,
-      "severity_agreement": "0/1",
-      "comment_length": 1280,
-      "recall": 1.0,
-      "precision": 0.5,
-      "latency_ms": 135061
-    },
-    "command_injection": {
-      "case_id": "command_injection",
       "hits": 1,
       "expected_total": 1,
       "missed": 0,
@@ -179,11 +154,26 @@
       "findings_count": 3,
       "low_count": 1,
       "nit_rate": 0.3333,
-      "severity_agreement": "1/1",
-      "comment_length": 1393,
+      "severity_agreement": "0/1",
+      "comment_length": 1316,
       "recall": 1.0,
-      "precision": 0.3333,
-      "latency_ms": 131188
+      "precision": 0.3333
+    },
+    "command_injection": {
+      "case_id": "command_injection",
+      "hits": 1,
+      "expected_total": 1,
+      "missed": 0,
+      "fabricated": 0,
+      "unlabeled": 0,
+      "unparsable": 0,
+      "findings_count": 1,
+      "low_count": 0,
+      "nit_rate": 0.0,
+      "severity_agreement": "1/1",
+      "comment_length": 1125,
+      "recall": 1.0,
+      "precision": 1.0
     },
     "shared_state_no_lock": {
       "case_id": "shared_state_no_lock",
@@ -191,16 +181,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 1,
+      "unlabeled": 2,
       "unparsable": 0,
-      "findings_count": 2,
+      "findings_count": 3,
       "low_count": 1,
-      "nit_rate": 0.5,
+      "nit_rate": 0.3333,
       "severity_agreement": "0/1",
-      "comment_length": 1116,
+      "comment_length": 1473,
       "recall": 1.0,
-      "precision": 0.5,
-      "latency_ms": 129120
+      "precision": 0.3333
     },
     "xss_safe": {
       "case_id": "xss_safe",
@@ -209,15 +198,14 @@
       "missed": 0,
       "fabricated": 0,
       "unlabeled": 0,
-      "unparsable": 0,
+      "unparsable": 1,
       "findings_count": 1,
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "1/1",
-      "comment_length": 737,
+      "comment_length": 1103,
       "recall": 1.0,
-      "precision": 1.0,
-      "latency_ms": 127744
+      "precision": 1.0
     },
     "ring_modulo": {
       "case_id": "ring_modulo",
@@ -225,16 +213,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 0,
+      "unlabeled": 1,
       "unparsable": 0,
-      "findings_count": 1,
+      "findings_count": 2,
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 925,
+      "comment_length": 999,
       "recall": 1.0,
-      "precision": 1.0,
-      "latency_ms": 132283
+      "precision": 0.5
     }
   },
   "aggregate": {
@@ -242,13 +229,11 @@
     "hits": 13,
     "expected": 13,
     "recall": 1.0,
-    "precision": 0.4815,
+    "precision": 0.5417,
     "fabricated": 0,
-    "unlabeled": 14,
-    "unparsable": 0,
-    "nit_rate": 0.1481,
-    "avg_comment_length": 1211.3,
-    "scored": 13,
-    "errors": 0
+    "unlabeled": 11,
+    "unparsable": 5,
+    "nit_rate": 0.1667,
+    "avg_comment_length": 1215.6
   }
 }
