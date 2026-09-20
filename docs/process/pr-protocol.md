@@ -17,6 +17,11 @@ PR=$(gh pr view --json number -q .number)
 
 ## Wait protocol (per push)
 
+Delays below are Mars-law heuristics, not SLAs; the absence branch always
+requires the state-file note before proceeding. The `contains()` filter
+couples to the `pr-reviewer:canonical` marker prefix — stable across the
+`:v1:` format version, but revisit these filters if the prefix itself changes.
+
 ```bash
 sleep 120
 gh pr checks $PR || true
@@ -36,7 +41,10 @@ Disposition rules:
   `assemble_approval_verdict` self-review failure class: exactly ONE
   empty-commit retrigger (`git commit --allow-empty -m "chore: retrigger
   pr-reviewer" && git push`), then re-run this protocol. If it errors again
-  after that one retrigger, note it and proceed.
+  after that one retrigger, note it and proceed — recording timestamp, PR,
+  revision sha, and a `aws logs filter-log-events` window over the review
+  period in the state file, so persistent failures are distinguishable from
+  transient ones.
 - **Still absent/unchanged at 120s+45s** → note it in the session/state file,
   proceed.
 
