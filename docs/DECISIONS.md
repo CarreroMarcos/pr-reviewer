@@ -126,6 +126,8 @@ Current truth: HLD §2.7.
 
 Current truth: `lambda/common/validate.py` approval scan; HLD §2.7 posture sentence unchanged.
 
+Current truth: `specs/003-comment-review-ux/spec.md` (T2a amendment); HLD §2.7 unchanged.
+
 ## 2026-09-20 — approval-verdict gate precision (code-span carve-out, word-bounded stem)
 
 **Context:** four false-positive review discards in one evening (PRs #80–#82), all `assemble_approval_verdict`: the gate's raw substring `approv` matched descriptive prose and backticked identifiers in reviews of PRs *about* the reviewer's own gate (runbook/CI/spec diffs), discarding otherwise-valid reviews. A companion proposal to reveal the error class in the D2 failure notice was found contract-frozen ("SHA is the only variable", explicit internal-status prohibition, FR-028 / canonical-comment.md) — deferred, not implemented.
