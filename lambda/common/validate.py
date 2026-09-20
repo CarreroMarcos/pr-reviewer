@@ -31,7 +31,7 @@ from common.marker import build_marker
 
 # Mirrors the `prompt_version` header in `prompts/system_prompt.md`; kept in
 # sync manually. Any change reruns the pinned model evaluation set (§4.4 item 4).
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 # Tripwire embedded verbatim in `prompts/system_prompt.md`: output containing
 # it proves prompt leakage into review content — rejected, never published.

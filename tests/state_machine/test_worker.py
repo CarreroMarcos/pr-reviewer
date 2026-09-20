@@ -64,6 +64,7 @@ from common.config import ConfigError, ConfigProvider
 from common.diff import DiffError, HttpResponse
 from common.llm import LlmError
 from common.logs import FIXED_FIELDS
+from common.validate import PROMPT_VERSION
 from worker_handler import GitHubError, handler, is_retryable
 
 REPO = "octo-org/hello-world"
@@ -328,8 +329,9 @@ def test_first_delivery_posts_and_finalizes():
     h = Harness(meta=[(200, SHA_B)])
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["published"]}
-    assert h.github.methods() == ["GET", "POST", "GET"]
-    assert h.github.calls[1]["url"].endswith(f"/repos/{REPO}/issues/{PR_NUMBER}/comments")
+    # Review-stage prior read, then reconcile: list → lease-POST → re-check.
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
+    assert h.github.calls[2]["url"].endswith(f"/repos/{REPO}/issues/{PR_NUMBER}/comments")
     item = h.table.items[PK]
     assert item["status"] == "ACTIVE"
     assert item["head_sha"] == SHA_B
@@ -350,7 +352,7 @@ def test_new_revision_posts_pending_reconcile():
     _seed(h.table, head=SHA_A, gen=5, comment=111)
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["published"]}
-    assert h.github.methods() == ["GET", "POST", "GET"]
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
     assert h.table.items[PK]["comment_id"] == POST_ID
     assert h.table.items[PK]["generation"] == 6
 
@@ -364,8 +366,8 @@ def test_same_revision_replay_patches_same_comment_never_reposts():
     assert first == {"ok": True, "results": ["published"]}
     second = h.run(envelope(sha=SHA_B))
     assert second == {"ok": True, "results": ["published"]}
-    assert h.github.methods() == ["GET", "POST", "GET", "PATCH"]
-    assert h.github.calls[3]["url"].endswith(f"/issues/comments/{POST_ID}")
+    assert h.github.methods() == ["GET", "GET", "POST", "GET", "GET", "PATCH"]
+    assert h.github.calls[5]["url"].endswith(f"/issues/comments/{POST_ID}")
     assert h.table.items[PK]["comment_id"] == POST_ID
 
 
@@ -379,7 +381,8 @@ def test_concurrent_different_owner_discards_claim_held():
     before = _seed(h.table, head=SHA_B, gen=2, owner=GUID_OTHER, until=NOW + 100)
     result = h.run(envelope(sha=SHA_B, guid=GUID_2))
     assert result == {"ok": True, "results": ["discarded_claim_held"]}
-    assert h.github.calls == []
+    # Review ran (prior-context GET) but fence and publish never did.
+    assert h.github.methods() == ["GET"]
     assert len(h.llm_conns) == 1  # establish (b) + review precede the claim
     assert h.table.items[PK] == before
     (line,) = h.log_lines()
@@ -411,7 +414,8 @@ def test_fence_mismatch_discards_stale():
     _seed(h.table, head=SHA_A, gen=4, comment=111)
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["discarded_stale"]}
-    assert h.github.calls == []
+    # Review ran (prior-context GET) but publish NEVER did.
+    assert h.github.methods() == ["GET"]
     item = h.table.items[PK]
     assert item["status"] == "CLAIMED"
     assert item["head_sha"] == SHA_B
@@ -667,7 +671,7 @@ def test_llm_401_refreshes_once_then_publishes():
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["published"]}
     assert len(h.ssm.calls) == 2
-    assert h.github.methods() == ["GET", "POST", "GET"]
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
 
 
 def test_llm_401_twice_completes():
@@ -682,7 +686,7 @@ def test_llm_401_twice_completes():
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["discarded_error"]}
     assert len(h.ssm.calls) == 2
-    assert h.github.methods() == ["GET", "POST", "GET"]
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["error_class"] == "http_401"
@@ -712,7 +716,7 @@ def test_assemble_refused_completes():
     )
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["discarded_error"]}
-    assert h.github.methods() == ["GET", "POST", "GET"]
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
     (post,) = [call for call in h.github.calls if call["method"] == "POST"]
     assert "plain text" not in post["body"]["body"]  # template only, never the invalid content
     (line,) = h.log_lines()
@@ -727,7 +731,8 @@ def test_llm_timeout_raises_for_queue_retry():
     with pytest.raises(LlmError) as exc_info:
         h.run(envelope(sha=SHA_B))
     assert exc_info.value.error_class == "timeout"
-    assert h.github.calls == []
+    # Review ran through the prior-context GET before the LLM failed.
+    assert h.github.methods() == ["GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
     assert line["error_class"] == "timeout"
@@ -740,7 +745,8 @@ def test_llm_invalid_output_raises_for_queue_retry():
     with pytest.raises(LlmError) as exc_info:
         h.run(envelope(sha=SHA_B))
     assert exc_info.value.error_class == "invalid_response"
-    assert h.github.calls == []
+    # Review ran through the prior-context GET before the LLM failed.
+    assert h.github.methods() == ["GET"]
 
 
 def _validating_llm_factory(harness):
@@ -778,7 +784,7 @@ def test_newline_key_replays_to_terminal_invalid_key_with_notice():
     h = Harness(meta=[(200, SHA_B)], ssm_values=values)
     result = h.run(envelope(sha=SHA_B), _llm_factory=_validating_llm_factory(h))
     assert result == {"ok": True, "results": ["discarded_error"]}
-    assert h.github.methods() == ["GET", "POST", "GET"]
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["error_class"] == "invalid_key"
@@ -824,11 +830,13 @@ def test_github_patch_404_with_unreadable_list_completes():
     (lost access — the list-unreadable row), so the run completes
     non-retryably with nothing persisted. Marker-found and lease-POST rows
     are pinned by `tests/unit/test_patch404_table.py`."""
-    h = Harness(meta=[(200, SHA_B)], github=FakeGitHub(script=[(404, b"{}"), (403, b"{}")]))
+    h = Harness(
+        meta=[(200, SHA_B)], github=FakeGitHub(script=[(200, b"[]"), (404, b"{}"), (403, b"{}")])
+    )
     _seed(h.table, head=SHA_B, gen=2, comment=555)
     result = h.run(envelope(sha=SHA_B))
     assert result == {"ok": True, "results": ["discarded_error"]}
-    assert h.github.methods() == ["PATCH", "GET"]
+    assert h.github.methods() == ["GET", "PATCH", "GET"]
     assert "comment_id" not in h.table.items[PK]  # dead id cleared; next run converges
 
 
@@ -882,7 +890,7 @@ def test_log_event_carries_fixed_fields_only():
     h.run(envelope(sha=SHA_B))
     (line,) = h.log_lines()
     assert set(line) == set(FIXED_FIELDS)
-    assert line["prompt_version"] == "v1"
+    assert line["prompt_version"] == PROMPT_VERSION
     assert line["prompt_sha256"] == hashlib.sha256(b"SYSTEM-PROMPT").hexdigest()
     assert line["repo_full_name"] == REPO
     assert line["pr_number"] == PR_NUMBER

@@ -255,6 +255,7 @@ def test_patch_404_with_migrated_marker_comment_adopts_lowest_and_reconciles():
     with the fresh review, DELETE 999, persist 777; result `published`."""
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (404, b"{}"),  # PATCH 555 (deleted on GitHub)
             (
                 200,
@@ -270,10 +271,10 @@ def test_patch_404_with_migrated_marker_comment_adopts_lowest_and_reconciles():
     )
     h = Harness(github)
     assert h.run() == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["PATCH", "GET", "PATCH", "DELETE"]
-    assert github.calls[2]["url"].endswith(f"/issues/comments/{ADOPTED_ID}")
+    assert github.methods() == ["GET", "PATCH", "GET", "PATCH", "DELETE"]
+    assert github.calls[3]["url"].endswith(f"/issues/comments/{ADOPTED_ID}")
     assert MARKER in github.patch_bodies()[1]["body"]  # fresh review landed on 777
-    assert github.calls[3]["url"].endswith(f"/issues/comments/{EXTRA_ID}")
+    assert github.calls[4]["url"].endswith(f"/issues/comments/{EXTRA_ID}")
     assert h.table.items[PK]["comment_id"] == ADOPTED_ID
 
 
@@ -285,6 +286,7 @@ def test_patch_404_with_no_marker_comment_posts_persists_and_rechecks():
     persist its id, re-check (second GET) finds exactly it; `published`."""
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (404, b"{}"),  # PATCH 555
             (200, _list_body(_comment(111, "plain"))),  # GET list: no marker
             (201, json.dumps({"id": POST_ID}).encode()),  # POST
@@ -293,9 +295,9 @@ def test_patch_404_with_no_marker_comment_posts_persists_and_rechecks():
     )
     h = Harness(github)
     assert h.run() == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["PATCH", "GET", "POST", "GET"]
-    assert github.calls[2]["url"].endswith(f"/repos/{REPO}/issues/{PR_NUMBER}/comments")
-    assert MARKER in json.loads(github.calls[2]["body"].decode())["body"]
+    assert github.methods() == ["GET", "PATCH", "GET", "POST", "GET"]
+    assert github.calls[3]["url"].endswith(f"/repos/{REPO}/issues/{PR_NUMBER}/comments")
+    assert MARKER in json.loads(github.calls[3]["body"].decode())["body"]
     assert h.table.items[PK]["comment_id"] == POST_ID
 
 
@@ -305,10 +307,12 @@ def test_patch_404_with_no_marker_comment_posts_persists_and_rechecks():
 def test_patch_404_with_forbidden_list_read_completes():
     """PATCH 555 → 404; list GET → 403 (lost access) → complete without
     retry and without POST; the stored id is left for the next run."""
-    github = ScriptedGitHub([(404, b"{}"), (403, b"{}")])
+    github = ScriptedGitHub(
+        [(200, _list_body()), (404, b"{}"), (403, b"{}")]  # prior read, PATCH 555, list
+    )
     h = Harness(github)
     assert h.run() == {"ok": True, "results": ["discarded_error"]}
-    assert github.methods() == ["PATCH", "GET"]
+    assert github.methods() == ["GET", "PATCH", "GET"]
     assert h.table.items[PK]["comment_id"] == STORED_ID
     (line,) = (json.loads(entry) for entry in h.sink)
     assert line["status"] == "discarded_error"
@@ -320,10 +324,10 @@ def test_patch_404_with_forbidden_list_read_completes():
 def test_patch_404_with_unparseable_list_completes_without_post():
     """PATCH 555 → 404; list GET → 200 with a non-array body → the list is
     unreadable → complete (no raise, no POST, id untouched)."""
-    github = ScriptedGitHub([(404, b"{}"), (200, b'{"message": "oops"}')])
+    github = ScriptedGitHub([(200, _list_body()), (404, b"{}"), (200, b'{"message": "oops"}')])
     h = Harness(github)
     assert h.run() == {"ok": True, "results": ["discarded_error"]}
-    assert github.methods() == ["PATCH", "GET"]
+    assert github.methods() == ["GET", "PATCH", "GET"]
     assert h.table.items[PK]["comment_id"] == STORED_ID
 
 
@@ -333,11 +337,11 @@ def test_patch_404_with_unparseable_list_completes_without_post():
 def test_patch_404_with_transient_list_failure_raises_for_retry():
     """PATCH 555 → 404; list GET → 500 → raise; `retry_queued` is logged
     first so the queue (not a silent complete) owns the retry."""
-    github = ScriptedGitHub([(404, b"{}"), (500, b"boom")])
+    github = ScriptedGitHub([(200, _list_body()), (404, b"{}"), (500, b"boom")])
     h = Harness(github)
     with pytest.raises(GitHubError) as exc_info:
         h.run()
     assert exc_info.value.status == 500
-    assert github.methods() == ["PATCH", "GET"]
+    assert github.methods() == ["GET", "PATCH", "GET"]
     (line,) = (json.loads(entry) for entry in h.sink)
     assert line["status"] == "retry_queued"

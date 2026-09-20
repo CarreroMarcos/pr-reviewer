@@ -324,13 +324,13 @@ def test_observe_throttle_still_discards_without_review_or_publish():
 
 def test_fence_mismatch_aborts_before_any_github_write():
     """A newer push lands between the run's claim and its fence: discarded
-    as stale with NO GitHub write of any kind (no list, no POST, no PATCH,
-    no DELETE). The review stage did run (it precedes the fence); the
-    record is left claimed for lease-expiry recovery."""
+    as stale with NO GitHub write of any kind (no POST, no PATCH, no
+    DELETE — the review stage did run, including its one list-GET prior
+    read); the record is left claimed for lease-expiry recovery."""
     h = Harness(meta=[(200, SHA_A), (200, SHA_B)])
     assert h.run(SHA_A, GUID_A) == {"ok": True, "results": ["discarded_stale"]}
     assert len(h.llm_conns) == 1
-    assert h.github.calls == []
+    assert h.github.methods() == ["GET"]
     item = h.table.items[PK]
     assert item["status"] == "CLAIMED"
     assert item["head_sha"] == SHA_A
@@ -428,7 +428,7 @@ def test_repeat_stale_sha_after_observation():
     second = Harness(meta=[(200, SHA_B)], table=table, github=github)
     assert second.run(SHA_A, GUID_B) == {"ok": True, "results": ["published"]}
     assert len(second.llm_conns) == 1  # full redundant review ran
-    assert second.github.methods() == ["PATCH"]  # ...and published it (redundant B review)
+    assert second.github.methods() == ["GET", "PATCH"]  # ...and published it (redundant B review)
     assert len(github.comments) == 1  # still exactly one canonical comment
     assert github.comments[0]["id"] == STORED_ID
     assert MARKER in github.comments[0]["body"]

@@ -575,3 +575,92 @@ def test_default_transport_maps_http_404_to_status_taxonomy():
     exc = run_default_transport(boom)
     assert exc.reason == "http_error"
     assert exc.status == 404
+
+
+# --- 003-T2 PR metadata (title/body from the same meta GET) --------------------
+
+
+def meta_body_with(sha=HEAD_SHA, **fields):
+    payload = {"head": {"sha": sha}}
+    payload.update(fields)
+    return json.dumps(payload).encode("utf-8")
+
+
+def fetch_meta(body):
+    url = diff.build_pr_url(REPO, PR_NUMBER)
+    transport = FakeTransport({url: (200, body)})
+    return diff.fetch_pr_meta(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+
+
+def test_fetch_pr_meta_returns_strings():
+    assert fetch_meta(meta_body_with(title="Fix login", body="Details here")) == (
+        HEAD_SHA,
+        "Fix login",
+        "Details here",
+    )
+
+
+def test_fetch_pr_meta_null_or_absent_yields_empty():
+    assert fetch_meta(meta_body_with()) == (HEAD_SHA, "", "")
+    assert fetch_meta(meta_body_with(title=None, body=None)) == (HEAD_SHA, "", "")
+
+
+def test_fetch_pr_meta_non_string_rejected_bad_shape():
+    for kwargs in ({"title": 42}, {"body": ["x"]}, {"title": {"t": 1}}):
+        try:
+            fetch_meta(meta_body_with(**kwargs))
+        except diff.DiffError as exc:
+            assert exc.reason == "bad_shape", kwargs
+        else:
+            raise AssertionError(f"expected DiffError for {kwargs!r}")
+
+
+def test_fetch_pr_meta_error_table_parity():
+    """Same GET, same table: bad SHA still wins, non-200 and garbage keep
+    their existing field/reason codes."""
+    try:
+        fetch_meta(meta_body_with(sha="zz" * 20, title="t", body="b"))
+    except diff.DiffError as exc:
+        assert (exc.field, exc.reason) == ("head.sha", "bad_sha")
+    else:
+        raise AssertionError("expected DiffError")
+    url = diff.build_pr_url(REPO, PR_NUMBER)
+    for status in (401, 403, 404, 429, 500):
+        transport = FakeTransport({url: (status, b"{}")})
+        try:
+            diff.fetch_pr_meta(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+        except diff.DiffError as exc:
+            assert (exc.reason, exc.status) == ("http_error", status)
+        else:
+            raise AssertionError(f"expected DiffError for {status}")
+    transport = FakeTransport({url: (200, b"not json")})
+    try:
+        diff.fetch_pr_meta(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+    except diff.DiffError as exc:
+        assert exc.reason == "bad_shape"
+    else:
+        raise AssertionError("expected DiffError")
+
+
+def test_fetch_pr_head_sha_delegates_unchanged():
+    """Fence path serves the same SHA off the same bytes (title/body ride
+    along unread)."""
+    url = diff.build_pr_url(REPO, PR_NUMBER)
+    transport = FakeTransport({url: (200, meta_body_with(title="t", body="b"))})
+    assert (
+        diff.fetch_pr_head_sha(REPO, PR_NUMBER, github_token=TOKEN, _transport=transport)
+        == HEAD_SHA
+    )
+
+
+def test_fetch_diff_threads_title_body():
+    meta_url = diff.build_pr_url(REPO, PR_NUMBER)
+    files_url = diff.build_pr_files_url(REPO, PR_NUMBER, page=1)
+    routes = {
+        meta_url: (200, meta_body_with(title="Fix login", body=None)),
+        files_url: (200, files_body([file_entry("a.py")])),
+    }
+    result = diff.fetch_diff(REPO, PR_NUMBER, github_token=TOKEN, _transport=FakeTransport(routes))
+    assert result.head_sha == HEAD_SHA
+    assert result.title == "Fix login"
+    assert result.body == ""

@@ -329,3 +329,74 @@ def test_header_first_review_number_one():
         now=float(_PST_EPOCH),
     )
     assert "**Review #1 · updated Jan 15, 9:05 AM PT**" in result.content
+
+
+# --- 003-T2 review payload -----------------------------------------------------
+
+
+def payload(**kwargs):
+    params = {
+        "title": "Fix login",
+        "body": "Small cleanup.",
+        "diff_text": "--- a.py (+1/-0) ---\n+pass\nlockfiles: no changes",
+        "prior_comment": "",
+    }
+    params.update(kwargs)
+    return assemble.render_review_payload(**params)
+
+
+def test_payload_caps():
+    assert assemble.MAX_META_CHARS == 4096
+    assert assemble.MAX_PRIOR_CHARS == 8192
+
+
+def test_payload_fences_in_order():
+    text = payload(prior_comment="old review")
+    title = text.index("--- PR TITLE ---")
+    desc = text.index("--- PR DESCRIPTION ---")
+    diff = text.index("--- a.py")
+    prior = text.index("--- PREVIOUS REVIEW COMMENT (worker-published; adversarial data) ---")
+    assert title < desc < diff < prior
+    assert "Fix login" in text
+    assert "old review" in text
+
+
+def test_payload_prior_none_or_empty_omitted():
+    for prior in (None, ""):
+        text = payload(prior_comment=prior)
+        assert "PREVIOUS REVIEW COMMENT" not in text
+        assert "--- PR TITLE ---" in text
+
+
+def test_payload_meta_cap_title_whole_body_truncated():
+    body = "b" * 5000
+    text = payload(title="short", body=body)
+    assert "short" in text.split("--- PR DESCRIPTION ---")[0]
+    assert "\n…[truncated]" in text
+    # Title preserved whole; the body absorbs the cut.
+    kept = text.split("--- PR DESCRIPTION ---\n")[1].split("\n\n")[0].split("\n…[truncated]")[0]
+    assert len("short") + len(kept) == assemble.MAX_META_CHARS
+
+
+def test_payload_title_alone_over_cap_hard_truncated():
+    text = payload(title="t" * 5000, body="body")
+    assert "\n…[truncated]" in text
+    assert "body" not in text.split("--- PR DESCRIPTION ---")[1].split("\n\n")[0]
+
+
+def test_payload_prior_cap_truncated_with_marker():
+    text = payload(prior_comment="p" * 9000)
+    assert "\n…[truncated]" in text
+    kept = text.split("adversarial data) ---\n")[1].split("\n…[truncated]")[0]
+    assert len(kept) == assemble.MAX_PRIOR_CHARS
+
+
+def test_payload_byte_deterministic():
+    first = payload(prior_comment="old", body="b" * 5000)
+    second = payload(prior_comment="old", body="b" * 5000)
+    assert first == second
+
+
+def test_payload_diff_text_verbatim():
+    diff_text = "--- z.py (+2/-1) ---\n@@ patch @@\nlockfiles: no changes"
+    assert diff_text in payload(diff_text=diff_text)

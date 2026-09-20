@@ -198,6 +198,20 @@ def test_prompt_canary_and_version_sync_with_system_prompt():
     assert CANARY_SUBSTRING in prompt
 
 
+def test_prompt_version_v2_carries_enriched_input():
+    # 003-T2: the v2 prompt names title/description + prior comment as
+    # adversarial input; the canary and prohibitions are byte-untouched.
+    prompt = (
+        Path(__file__).resolve().parent.parent.parent / "prompts" / "system_prompt.md"
+    ).read_text(encoding="utf-8")
+    assert PROMPT_VERSION == "v2"
+    assert "prompt_version: v2" in prompt
+    assert "PR title and description" in prompt
+    assert "previous review comment" in prompt
+    assert CANARY_SUBSTRING in prompt
+    assert "## Prohibitions" in prompt
+
+
 def test_reject_at_mentions():
     verdict = check(make_valid() + "\nThanks @octocat for reviewing.\n")
     assert verdict.ok is False

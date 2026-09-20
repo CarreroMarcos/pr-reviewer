@@ -87,7 +87,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from common.assemble import AssembleError, build_comment, render_diff_text
+from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
 from common.config import ConfigError, ConfigProvider
 from common.diff import DiffError, fetch_diff, fetch_pr_head_sha
 from common.envelope import Envelope, EnvelopeError, validate_envelope
@@ -99,8 +99,15 @@ from common.failure_notice import (
 )
 from common.llm import LlmError, review_diff
 from common.logs import build_event, emit, prompt_sha256
+from common.marker import build_marker
 from common.protocol import ConditionalCheckFailed, OutcomeKind, run_review
-from common.reconcile import PER_PAGE, CommentNotFound, ReconcileError, reconcile
+from common.reconcile import (
+    PER_PAGE,
+    CommentNotFound,
+    ReconcileError,
+    reconcile,
+    validate_page,
+)
 from common.state import build_clear_comment_expressions, expression_names, review_pk
 from common.validate import PROMPT_VERSION
 
@@ -420,12 +427,16 @@ def _make_review(
     system_prompt: str,
     allowed_hosts: frozenset[str] | None = None,
     clock: Clock | None = None,
+    github_transport: Callable[..., tuple[int, bytes]] | None = None,
 ) -> Callable[[str, int], str]:
-    """Protocol `review` port: diff → LLM (single 401 re-fetch) → assemble
-    + mandatory validate gate → publish-ready content (opaque string).
+    """Protocol `review` port: diff → prior comment → LLM (single 401
+    re-fetch) → assemble + mandatory validate gate → publish-ready content
+    (opaque string).
 
     `allowed_hosts` is the env-configured GLM host set (from the provider's
-    `allowed_hosts` accessor); `None` keeps `review_diff`'s module default."""
+    `allowed_hosts` accessor); `None` keeps `review_diff`'s module default.
+    `github_transport` feeds the best-effort prior-comment read; `None`
+    (older callers) omits the prior section."""
 
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
@@ -470,9 +481,55 @@ def _make_review(
                 )
             raise
 
+    def _fetch_prior_comment() -> str | None:
+        """Best-effort prior canonical comment body (003-T2), or None.
+
+        One page-1 list read with the CURRENT token via a plain transport
+        GET — NEVER `creds.refresh_once()` (the record's single 401 budget
+        belongs to the essential diff/LLM/write path). Shape-validated via
+        `common.reconcile.validate_page`; exact-marker substring scan,
+        lowest matching id wins. Miss bound: comments beyond page 1 (>100)
+        are not scanned. ANY failure (transport, 403/404, unparseable list)
+        logs a coded warning and omits the section — prior context must
+        never fail or delay a review.
+        """
+        if github_transport is None:
+            return None
+        url = f"{_comments_url(repo, pr_number)}?page=1&per_page={PER_PAGE}"
+        try:
+            token = creds.current().github_token
+            status, raw, _headers = _unpack_transport_result(
+                github_transport("GET", url, _github_headers(token), b"")
+            )
+            if not 200 <= status <= 299:
+                raise GitHubError(status, f"http_{status}")
+            try:
+                page = json.loads(raw)
+            except ValueError:
+                raise GitHubError(None, "invalid_response") from None
+            comments = validate_page(page)
+        except Exception as exc:
+            logger.warning(
+                "prior_comment_unavailable",
+                extra={"status": "prior_omitted", "error_class": _error_class(exc)},
+            )
+            return None
+        marker = build_marker(repo, pr_number)
+        matches = [c for c in comments if marker in c["body"]]
+        if not matches:
+            return None
+        return min(matches, key=lambda c: c["id"])["body"]
+
     def review(head_sha: str, generation: int) -> str:
         diff_result = _fetch_diff()
-        result = _call_llm(render_diff_text(diff_result))
+        prior_comment = _fetch_prior_comment()
+        payload = render_review_payload(
+            title=diff_result.title,
+            body=diff_result.body,
+            diff_text=render_diff_text(diff_result),
+            prior_comment=prior_comment,
+        )
+        result = _call_llm(payload)
         usage["tokens"] = result.total_tokens
         comment = build_comment(
             repo_full_name=repo,
@@ -1008,6 +1065,7 @@ def _process_record(
                 system_prompt=system_prompt,
                 allowed_hosts=provider.allowed_hosts,
                 clock=clock,
+                github_transport=github_transport,
             ),
             fence=_make_fence(envelope=envelope, creds=creds, diff_transport=diff_transport),
             publish=_make_publish(

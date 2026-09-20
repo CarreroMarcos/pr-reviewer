@@ -148,6 +148,8 @@ def review_diff(
     """Run one chat-completions review; raise `LlmError` on any failure.
 
     `endpoint` is the full HTTPS chat-completions URL from SSM hydration.
+    `diff_text` carries the assembled review payload (PR metadata + budgeted
+    diff + prior comment), not bare diff text.
     `allowed_hosts` is the env-configured GLM host set threaded through by
     the worker; `None` (default) falls back to `GLM_ALLOWED_HOSTS` so
     existing callers behave exactly as before.

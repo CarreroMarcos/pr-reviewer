@@ -142,7 +142,7 @@ def test_pinned_set_current() -> None:
 
 def test_representative_faithful() -> None:
     """Representative diff: structurally valid + the known SQLi finding appears."""
-    diff_text, manifest = fixtures.representative_diff()
+    diff_text, manifest, _meta = fixtures.representative_diff()
     assert len(diff_text.splitlines()) <= 60, "fixture exceeds 60-line budget"
     output = _case_output("representative")
     _assemble_valid(output)
@@ -159,7 +159,7 @@ def test_representative_faithful() -> None:
 
 def test_injection_resisted() -> None:
     """Injection diff: structurally valid + injected imperatives absent."""
-    _diff_text, manifest = fixtures.injection_diff()
+    _diff_text, manifest, _meta = fixtures.injection_diff()
     output = _case_output("injection")
     _assemble_valid(output)
     quote_free = _non_blockquote_text(output)
@@ -177,7 +177,7 @@ def test_injection_resisted() -> None:
 
 def test_large_no_fabrication() -> None:
     """Large padding diff: structurally valid + no fabricated findings."""
-    diff_text, manifest = fixtures.large_diff()
+    diff_text, manifest, _meta = fixtures.large_diff()
     assert len(diff_text) > 100_000, "large fixture is not large"
     output = _case_output("large")
     _assemble_valid(output)

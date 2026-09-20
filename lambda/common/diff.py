@@ -149,7 +149,9 @@ class DiffResult:
     """Budgeted review content: `head_sha` is the shape-validated PR head
     for the live-head fence; `files` holds kept non-lockfile content;
     totals describe the kept (model-facing) bytes/lines; `truncated` marks
-    deterministically dropped remainder; `lockfile_summary` is deterministic."""
+    deterministically dropped remainder; `lockfile_summary` is deterministic;
+    `title`/`body` are the PR metadata from the same meta GET (003-T2 —
+    additive, default empty so existing constructors stay green)."""
 
     head_sha: str
     files: tuple[DiffFile, ...]
@@ -158,6 +160,8 @@ class DiffResult:
     total_bytes: int
     truncated: bool
     lockfile_summary: str
+    title: str = ""
+    body: str = ""
 
 
 def _check_repo(repo_full_name: Any) -> str:
@@ -246,6 +250,48 @@ def _check_head_sha(payload: Any) -> str:
     return sha
 
 
+def _check_meta_text(payload: dict, field_name: str) -> str:
+    """PR-meta text field (003-T2): null or absent → `""` (GitHub returns
+    `body: null` for description-less PRs — the common case); a present
+    non-string value → `bad_shape`."""
+    value = payload.get(field_name)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise DiffError(field_name, "bad_shape")
+    return value
+
+
+def fetch_pr_meta(
+    repo_full_name: str,
+    pr_number: int,
+    *,
+    github_token: str,
+    _transport: Transport | None = None,
+) -> tuple[str, str, str]:
+    """GET the PR-meta endpoint; return `(head_sha, title, body)`.
+
+    Same GET, same error table as `fetch_pr_head_sha` — metadata errors are
+    diff errors by construction (no new error class, no new error policy).
+    Raises `DiffError` with the identical field/reason contract (`bad_sha`
+    precedence over `bad_shape` preserved: the head SHA validates first).
+    """
+    url = build_pr_url(repo_full_name, pr_number)
+    transport = _transport if _transport is not None else _default_transport
+    response = transport(url, _request_headers(github_token))
+    if response.status != 200:
+        raise DiffError("pr", "http_error", status=response.status)
+    try:
+        payload = json.loads(response.body)
+    except (ValueError, UnicodeDecodeError):
+        raise DiffError("response", "bad_shape") from None
+    return (
+        _check_head_sha(payload),
+        _check_meta_text(payload, "title"),
+        _check_meta_text(payload, "body"),
+    )
+
+
 def fetch_pr_head_sha(
     repo_full_name: str,
     pr_number: int,
@@ -260,16 +306,9 @@ def fetch_pr_head_sha(
     bodies, `bad_sha` when `head.sha` is not 40-hex, RETRYABLE
     `transport_error` on timeout/DNS/refused/reset/TLS failures.
     """
-    url = build_pr_url(repo_full_name, pr_number)
-    transport = _transport if _transport is not None else _default_transport
-    response = transport(url, _request_headers(github_token))
-    if response.status != 200:
-        raise DiffError("pr", "http_error", status=response.status)
-    try:
-        payload = json.loads(response.body)
-    except (ValueError, UnicodeDecodeError):
-        raise DiffError("response", "bad_shape") from None
-    return _check_head_sha(payload)
+    return fetch_pr_meta(
+        repo_full_name, pr_number, github_token=github_token, _transport=_transport
+    )[0]
 
 
 def parse_files(entries: Any) -> tuple[DiffFile, ...]:
@@ -355,7 +394,7 @@ def fetch_diff(
     RETRYABLE `transport_error` for live-transport failures).
     """
     transport = _transport if _transport is not None else _default_transport
-    head_sha = fetch_pr_head_sha(
+    head_sha, title, body = fetch_pr_meta(
         repo_full_name, pr_number, github_token=github_token, _transport=transport
     )
     headers = _request_headers(github_token)
@@ -387,4 +426,6 @@ def fetch_diff(
         total_bytes=kept_bytes,
         truncated=truncated or dropped_overflow,
         lockfile_summary=lockfile_summary,
+        title=title,
+        body=body,
     )
