@@ -1,6 +1,6 @@
 # Decision Log — Autonomous Serverless PR Reviewer
 
-**Status:** Non-normative. This file records **why** the system became what it is: dated rulings, supersedes, gate outcomes, measurements, and rejected alternatives. It never defines current behavior.
+**Status:** Non-normative. This file records **why** the system became what it is: dated rulings, supersedes, gate outcomes, measurements, and rejected alternatives. It never defines current behavior — entries are non-binding on behavior, and the "Current truth" pointer is their only bridge to normative content.
 
 **Authority rule (binds all docs in this repo):** on **current behavior**, `docs/HLD.md` wins; on **why/history**, this file wins; on **redrive procedure**, `docs/runbook-redrive.md` wins; on **task scope**, `specs/**` wins. Any disagreement between documents is a Needs-input question (AGENTS.md), never a silent edit.
 
@@ -19,4 +19,4 @@
 Current truth: HLD §X.Y.
 ```
 
-<!-- Entries land here: first the Configuration Baseline delta paragraphs migrate out of docs/HLD.md (its "Configuration Baseline" section), then inline ruling/measurement asides. -->
+<!-- Entries land here: first the Configuration Baseline delta paragraphs migrate out of docs/HLD.md (its "Configuration Baseline" section), then inline ruling/measurement asides (HLD restructure PR-2/PR-3, approved 2026-09-20). -->
