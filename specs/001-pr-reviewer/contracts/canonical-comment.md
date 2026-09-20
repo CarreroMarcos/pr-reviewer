@@ -1,6 +1,6 @@
 # Contract: Canonical Comment (review content & FR-028 failure state)
 
-**Authority**: `docs/HLD.md` §2.3 item 7–8, §2.7, §2.8, §3.3–§3.4, §5.3–§5.4. This file consolidates the worker→GitHub comment interface for Spec Kit purposes and adds the spec-driven FR-028 failure-state contract (delta D2). Where this file and the HLD disagree on anything not marked **[D2]**, the HLD wins.
+**Authority**: `docs/HLD.md` §2.3 item 7–8, §2.7, §2.8, §3.3–§3.4, §5.3–§5.4. This file consolidates the worker→GitHub comment interface for Spec Kit purposes and adds the spec-driven FR-028 failure-state contract (delta D2). Where this file and the HLD disagree on anything not marked **[D2]**, the HLD wins. `docs/DECISIONS.md` is non-normative history — never current truth.
 
 ## Identity
 
