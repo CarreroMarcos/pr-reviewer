@@ -102,7 +102,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | Attribute | Specification |
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `ingress_handler.handler` |
-| Timeout / Memory | 5s / 512 MB (128 MB cold-started OOM at launch; compute.tf documents the rejected re-attempt) |
+| Timeout / Memory | 5s / 512 MB (memory buys CPU: the lazy boto3 cold start cannot fit the 5 s budget at 128 MB — observed Sandbox.Timedout on first invoke; the 128 MB trim was re-attempted under SPR-60 and rejected by operator decision 2026-09-14, per compute.tf) |
 | Reserved concurrency | none — unreserved per the 2026-09-15 quota ruling (account ≥10-unreserved constraint); restore 2/5 only after a quota raise |
 | Trigger | Lambda Function URL, `AuthType: NONE` |
 
@@ -111,7 +111,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 1. **Body normalization.** Reject bodies > 1 MiB with HTTP 413 **before** decoding — legitimate PR webhooks are metadata-only and far smaller; this bounds memory work on a public endpoint. Otherwise, if `event["isBase64Encoded"]`, `base64.b64decode` first; verify HMAC over the decoded raw bytes — never parsed JSON.
 2. **HMAC verification.** Constant-time compare of the complete `"sha256=" + hexdigest` string against `X-Hub-Signature-256` via `hmac.compare_digest`; case-insensitive header lookup. Failures: HTTP 401.
 3. **Event type validation.** `X-GitHub-Event == "pull_request"` before body interpretation; other signed events return 200 and are discarded.
-4. **Action filtering.** Allow-list `opened`, `reopened` [D1], `synchronize`, `ready_for_review`; skip drafts. Others: HTTP 200, no enqueue.
+4. **Action filtering.** Allow-list `opened`, `reopened`, `synchronize`, `ready_for_review`; skip drafts. Others: HTTP 200, no enqueue. `reopened` [D1 — defined in specs/001-pr-reviewer/contracts/ingress-webhook.md] flows like `opened`; establish (§3.3) decides currency, so a reopen with an **unchanged head** is an idempotent re-delivery of an already-reviewed head and runs no new review — the canonical comment for that head already stands.
 5. **Dedup check (read-only GetItem).** Already-processed GUIDs return HTTP 200.
 6. **Durable dispatch.** `SendMessage` to SQS; on failure, HTTP 500 **without** marking processed (delivery stays recoverable via manual redelivery within GitHub's 3-day window).
 7. **Mark processed.** PutItem the delivery GUID with 7-day TTL — outliving GitHub's 3-day redelivery window by design.
@@ -333,7 +333,10 @@ Trust policies (v6.6): the ingress role trusts lambda.amazonaws.com scoped to it
 function ARN (aws:SourceArn); the worker role trusts on aws:SourceAccount — a
 function-ARN SourceArn condition fails CreateEventSourceMapping validation (seen
 live, T035); the operator role trusts the terraform-admin IAM user gated on MFA
-(SPR-60, Mars decision 2026-09-14).
+(SPR-60, Mars decision 2026-09-14). The worker's aws:SourceAccount scope trusts
+any future Lambda in the account — accepted for this single-operator account
+(no untrusted path creates functions); the confused-deputy guard survives via
+account hygiene.
 
 INGRESS ROLE:  logs; ssm:GetParameter (webhook-secret ARN);
                sqs:SendMessage (work queue); dynamodb:GetItem, PutItem on state table
@@ -440,7 +443,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **v6.8 → v6.9 deltas (measurement/config-only revision — zero architectural, budget, or AC change):** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19; sizing rationale and free-tier math in specs/002-worker-sizing-hcp/spec.md); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
 
-**v6.9 → v6.10 deltas (ingress-half drift corrections — zero architectural change):** ingress memory corrected 128 MB → 512 MB (compute.tf documents the OOM history); unreserved reality documented across admission semantics (§2.1), §4.1, §6 failure modes 5/14, and the §7.2 table (2026-09-15 ruling); `reopened` added to the allow-list and envelope enum [D1]; §4.1 Lambda row re-derived at spec-002 sizing (~225 GB-s/review); trust-policy mechanism corrected (worker `aws:SourceAccount`, operator terraform-admin + MFA); GitHub timeout restated as a single 10s; alarm list updated to the shipped 8-alarm set; §5.1 cites the bootstrap OIDC stack; the 2026-09-20 #68 drift pass is covered by this entry (it added no v6.9 delta).
+**v6.9 → v6.10 deltas (ingress-half drift corrections — zero architectural change):** ingress memory corrected 128 MB → 512 MB (compute.tf documents the cold-start history); unreserved reality documented across admission semantics (§2.1), §4.1, §6 failure modes 5/14, and the §7.2 table (2026-09-15 ruling); `reopened` added to the allow-list and envelope enum [D1]; §4.1 Lambda row re-derived at spec-002 sizing (~225 GB-s/review); trust-policy mechanism corrected (worker `aws:SourceAccount`, operator terraform-admin + MFA); GitHub timeout restated as a single 10s; alarm list updated to the shipped 8-alarm set; §5.1 cites the bootstrap OIDC stack; the 2026-09-20 #68 drift pass is covered by this entry (it added no v6.9 delta).
 
 ### 7.3 Deployment Sequence
 
