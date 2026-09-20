@@ -101,3 +101,11 @@ Current truth: HLD §2.2, §2.3, §7.2.
 **Consequences:** documentation-only — no infrastructure change; the account-level starvation residual of the unreserved posture is documented as accepted (§6 failure mode 5).
 
 Current truth: HLD §2.1, §4.1, §4.3, §5.1, §6.
+
+## 2026-09-20 — review header on the canonical comment (`**Review #N · updated {stamp} PT**`)
+
+**Context:** the canonical comment showed GitHub's "edited" with no revision count or freshness (docs/ideas.md ideas 1+2, Mars directive 2026-09-20); earlier "timestamp"-word defects traced to no clock value reaching the model.
+**Decision (Mars ruling):** worker-injected deterministic header directly under the byte-stable marker — `#N` = established `generation + 1` (first review = #1; same-SHA replay keeps #N with a refreshed stamp; generation counts established revisions, not publishes), stamp = publish instant in `America/Los_Angeles` rendered in code (`Mon D, H:MM AM/PM`, 12-hour, no seconds, hour not zero-padded), never by the model; FR-028 failure notice gains no header (fixed system template). Review port becomes `review(head_sha, generation)`.
+**Consequences:** one extra comment line (accepted); tz constant resolves at import so a missing tz database fails cold start, not mid-review; marker byte-stability (§3.4 reconciliation) untouched.
+
+Current truth: HLD §2.7, §2.8.

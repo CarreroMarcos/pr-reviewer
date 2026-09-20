@@ -19,7 +19,8 @@ Injected ports (stdlib only; no boto3 import here):
 * `fence` — live-head fetch returning the PR's current head SHA. Used both for
   establish-(c) live confirmation (step 1c) and for the step-4 fence, which the
   executor calls strictly after a successful claim and strictly before publish.
-* `review` — review callback returning publishable content (opaque passthrough).
+* `review` — review callback taking the established `(head_sha, generation)`
+  pair and returning publishable content (opaque passthrough).
 * `publish` — publish callback taking the content, returning the comment id.
 
 Establish re-read/retry loop: when an establish (a)/(b)/(c) write fails its
@@ -136,7 +137,7 @@ def run_review(
     owner: str,
     table: Any,
     now: Callable[[], int],
-    review: Callable[[], Any],
+    review: Callable[[str, int], Any],
     fence: Callable[[], str],
     publish: Callable[[Any], int],
     max_establish_attempts: int = DEFAULT_MAX_ESTABLISH_ATTEMPTS,
@@ -159,7 +160,7 @@ def run_review(
         return established
     head_sha, generation = established
 
-    content = review()
+    content = review(head_sha, generation)
 
     now_int = now()
     update, condition, values = build_claim_expressions(

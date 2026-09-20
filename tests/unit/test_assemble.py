@@ -9,6 +9,8 @@ Red-first: this file imports `common.assemble`, which does not exist yet,
 so collection fails with ModuleNotFoundError until T033 implements it.
 """
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from common import assemble
@@ -252,3 +254,78 @@ def test_whitespace_refusal_is_non_retryable_validation_failure():
         build(body="   \n  ")
     assert exc_info.value.verdict.ok is False
     assert "missing_sections" in exc_info.value.verdict.reasons
+
+
+# --- 003-T1 review header ----------------------------------------------------
+# Stamp literals below were computed once via `TZ=America/Los_Angeles date
+# -d @EPOCH "+%b %-d, %-I:%M %p"` and cross-checked against python/zoneinfo.
+
+# 2026-07-15 10:42 AM PDT (summer); 2026-01-15 9:05 AM PST (winter, no-zero-pad
+# hour); 2026-03-08 spring-forward (01:30 PST pre-gap, 03:00/03:30 PDT
+# post-gap — the 02:xx hour never renders); 2026-11-01 fall-back fold
+# (01:30 PDT at fold=0, 01:30 PST one hour later).
+_PDT_EPOCH = 1784137320
+_PST_EPOCH = 1768496700
+_GAP_PRE_EPOCH = 1772962200
+_FOLD_EPOCH = 1793521800
+_FOLD_PLUS_HOUR_EPOCH = 1793525400
+
+
+def test_pt_constant_resolves_at_import():
+    assert assemble.PT.key == "America/Los_Angeles"
+
+
+def test_format_stamp_pdt_summer():
+    assert assemble.format_stamp(_PDT_EPOCH) == "Jul 15, 10:42 AM"
+
+
+def test_format_stamp_pst_winter_no_zero_pad_hour():
+    assert assemble.format_stamp(_PST_EPOCH) == "Jan 15, 9:05 AM"
+
+
+def test_format_stamp_spring_forward_gap_never_renders_02xx():
+    assert assemble.format_stamp(_GAP_PRE_EPOCH) == "Mar 8, 1:30 AM"
+    # +30 min of wall clock lands past the gap (nonexistent 02:00–02:59).
+    assert assemble.format_stamp(_GAP_PRE_EPOCH + 1800) == "Mar 8, 3:00 AM"
+    assert assemble.format_stamp(_GAP_PRE_EPOCH + 3600) == "Mar 8, 3:30 AM"
+
+
+def test_format_stamp_fall_back_fold_zero_semantics():
+    assert assemble.format_stamp(_FOLD_EPOCH) == "Nov 1, 1:30 AM"
+    first = datetime.fromtimestamp(_FOLD_EPOCH, tz=assemble.PT)
+    second = datetime.fromtimestamp(_FOLD_PLUS_HOUR_EPOCH, tz=assemble.PT)
+    assert (first.utcoffset(), first.fold) == (timedelta(hours=-7), 0)
+    assert (second.utcoffset(), second.fold) == (timedelta(hours=-8), 1)
+    assert assemble.format_stamp(_FOLD_PLUS_HOUR_EPOCH) == "Nov 1, 1:30 AM"
+
+
+def test_header_absent_when_review_number_none():
+    result = build()
+    assert "**Review #" not in result.content
+    assert result.content.startswith(build_marker(REPO, PR))
+
+
+def test_header_inserted_between_marker_and_body():
+    result = assemble.build_comment(
+        repo_full_name=REPO,
+        pr_number=PR,
+        review_content=review_body(),
+        review_number=4,
+        now=float(_PDT_EPOCH),
+    )
+    assert result.verdict.ok is True
+    chunks = result.content.split("\n\n")
+    assert chunks[0] == build_marker(REPO, PR)
+    assert chunks[1] == "**Review #4 · updated Jul 15, 10:42 AM PT**"
+    assert "## Summary" in chunks[2]
+
+
+def test_header_first_review_number_one():
+    result = assemble.build_comment(
+        repo_full_name=REPO,
+        pr_number=PR,
+        review_content=review_body(),
+        review_number=1,
+        now=float(_PST_EPOCH),
+    )
+    assert "**Review #1 · updated Jan 15, 9:05 AM PT**" in result.content

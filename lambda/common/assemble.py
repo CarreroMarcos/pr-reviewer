@@ -42,10 +42,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
+from time import time
+from zoneinfo import ZoneInfo
 
 from common.diff import DiffResult
 from common.marker import build_marker
 from common.validate import ValidationVerdict, validate_comment
+
+# 003-T1: worker-injected review header stamps in America/Los_Angeles.
+# Evaluated at import/cold start so a missing tz database fails the
+# deployment smoke immediately instead of burning queue retries.
+PT = ZoneInfo("America/Los_Angeles")
 
 # HLD §2.7: the model's defined empty-finding output; passes through intact.
 EMPTY_FINDINGS_SENTINEL = "No significant issues found."
@@ -92,12 +100,26 @@ def render_diff_text(diff: DiffResult) -> str:
     return "\n\n".join(parts)
 
 
+def format_stamp(now: float) -> str:
+    """Render epoch seconds as `Mon D, H:MM AM/PM` in PT (003-T1).
+
+    12-hour clock, no seconds, hour not zero-padded. Pure function of
+    its input (no clock read) for deterministic tests.
+    """
+    dt = datetime.fromtimestamp(now, tz=PT)
+    hour = dt.hour % 12 or 12
+    suffix = "AM" if dt.hour < 12 else "PM"
+    return f"{dt.strftime('%b')} {dt.day}, {hour}:{dt.minute:02d} {suffix}"
+
+
 def build_comment(
     *,
     repo_full_name: str,
     pr_number: int,
     review_content: str,
     truncated: bool = False,
+    review_number: int | None = None,
+    now: float | None = None,
     _validate: Validator = validate_comment,
 ) -> AssembledComment:
     """Assemble the canonical comment and return it only if the `validate()`
@@ -105,10 +127,18 @@ def build_comment(
 
     Marker is worker-injected (`common.marker`); `review_content` is model
     output and is never rewritten (stripped of surrounding whitespace only).
+    When `review_number` is given, one deterministic header line
+    (`**Review #N · updated {stamp} PT**`) is inserted between the marker
+    and the body; when None the output is byte-identical to the no-header
+    form.
     """
     marker = build_marker(repo_full_name, pr_number)
     body = review_content.strip() if isinstance(review_content, str) else ""
-    chunks = [marker, body]
+    chunks = [marker]
+    if review_number is not None:
+        stamp = format_stamp(time() if now is None else now)
+        chunks.append(f"**Review #{review_number} · updated {stamp} PT**")
+    chunks.append(body)
     if truncated:
         chunks.append(TRUNCATION_NOTE)
     content = "\n\n".join(chunk for chunk in chunks if chunk)

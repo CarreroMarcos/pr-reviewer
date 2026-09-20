@@ -79,11 +79,13 @@ class Harness:
         self._live = list(live_shas)
         self._comment_id = comment_id
         self.review_body = review_body
+        self.review_args: list = []
         self._on_fence = on_fence
         self._on_publish = on_publish
 
-    def review(self):
+    def review(self, head_sha, generation):
         self.calls.append(("review",))
+        self.review_args.append((head_sha, generation))
         return self.review_body
 
     def fence(self):
@@ -193,6 +195,22 @@ def test_first_delivery_publishes_and_finalizes():
     assert item["head_sha"] == SHA_B
     assert item["comment_id"] == COMMENT_ID
     assert "claim_owner" not in item  # lease released at finalize (HLD §3.2)
+
+
+def test_review_port_receives_established_pair():
+    """003-T1: `run_review` passes the established `(head_sha, generation)`
+    pair to the review port — first write yields `(sha, 0)`, a confirmed new
+    revision yields the bumped generation."""
+    h = Harness(live_shas=[SHA_B])
+    outcome = h.run(incoming_sha=SHA_B)
+    assert outcome.kind == OutcomeKind.PUBLISHED
+    assert h.review_args == [(SHA_B, 0)]
+
+    h2 = Harness(live_shas=[SHA_B])
+    _seed(h2.table, head=SHA_A, gen=5, comment=111)
+    outcome2 = h2.run(incoming_sha=SHA_B)
+    assert outcome2.kind == OutcomeKind.PUBLISHED
+    assert h2.review_args == [(SHA_B, 6)]
 
 
 def test_redelivery_same_sha_is_idempotent():
@@ -470,7 +488,7 @@ def test_claim_failure_after_concurrent_move_discards_stale():
     h = Harness(live_shas=[SHA_A])
     _seed(h.table, head=SHA_A, gen=2, comment=111)
 
-    def review_then_land():
+    def review_then_land(head_sha, generation):
         _seed(h.table, head=SHA_C, gen=6, owner=GUID_OTHER, status="CLAIMED")
         h.calls.append(("review",))
         return h.review_body

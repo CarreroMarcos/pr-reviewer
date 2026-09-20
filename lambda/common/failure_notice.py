@@ -202,7 +202,9 @@ def publish_failure_notice(
 ) -> NoticeResult:
     """Publish the failure notice through the fenced protocol (HLD §3.3).
 
-    `review` returns the fixed notice content (no model call);
+    `review` returns the fixed notice content (no model call) and accepts
+    the established `(head_sha, generation)` pair only for port-signature
+    conformance (ignored — the notice carries no header);
     `publish` converges via `common.reconcile` (adopt + PATCH the
     surviving marker comment, creation-lease POST when none exists).
     Returns the log disposition — never raises on publish-path faults
@@ -212,7 +214,7 @@ def publish_failure_notice(
     content = build_failure_notice(repo_full_name, pr_number, head_sha)
     pk = review_pk(repo_full_name, pr_number)
 
-    def review() -> str:
+    def review(head_sha: str, generation: int) -> str:
         return content
 
     def publish(body: str) -> int:
