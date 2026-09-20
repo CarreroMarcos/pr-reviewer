@@ -167,6 +167,10 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   --log-group-name /aws/lambda/pr-reviewer-worker --start-time <epoch-ms>`)
   and grep fields
   locally (`"error_class"`, `"status"`).
+- **Clean shell after cred export (2026-09-20):** exported AWS session creds
+  (`aws configure export-credentials`) make 8 fake-AWS integration tests
+  error — run `capture.py`/terraform and full pytest in separate shells.
+  Mechanics: `docs/process/pr-protocol.md`.
 - **Self-review failure class (2026-09-20):** `assemble_approval_verdict`
   on our own PRs is a deterministic non-retryable bot self-review failure;
   remedy is exactly one empty-commit retrigger (squash-merge collapses it);
