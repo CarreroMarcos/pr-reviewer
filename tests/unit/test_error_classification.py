@@ -345,6 +345,7 @@ def test_patch_404_migrated_adopts():
     extras reconciled; result `published`, no raise, no DLQ-shaped error."""
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (404, b"{}"),
             (200, _list_body(_comment(777, "moved " + MARKER))),
             (200, json.dumps({"id": 777}).encode()),
@@ -352,7 +353,7 @@ def test_patch_404_migrated_adopts():
     )
     h = Harness(meta=[(200, SHA_B)], github=github, table=FakeTable(seed_comment=555))
     assert h.run() == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["PATCH", "GET", "PATCH"]
+    assert github.methods() == ["GET", "PATCH", "GET", "PATCH"]
     assert h.table.items[PK]["comment_id"] == 777
 
 
@@ -360,12 +361,13 @@ def test_patch_404_migrated_adopts():
 
 
 def test_list_403_completes():
-    """First delivery, list GET → 403 (lost access): complete as
-    `discarded_error` — no raise, no POST, nothing persisted."""
-    github = ScriptedGitHub([(403, b"{}")])
+    """First delivery, list GETs → 403 (lost access): the review-stage
+    prior read degrades first, then the publish list fails the same way —
+    complete as `discarded_error`, no raise, no POST, nothing persisted."""
+    github = ScriptedGitHub([(403, b"{}"), (403, b"{}")])
     h = Harness(meta=[(200, SHA_B)], github=github)
     assert h.run() == {"ok": True, "results": ["discarded_error"]}
-    assert github.methods() == ["GET"]
+    assert github.methods() == ["GET", "GET"]
     assert h.table.items.get(PK, {}).get("comment_id") is None
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
@@ -380,6 +382,7 @@ def test_github_429_retry_after_adjusts_visibility():
     `retry_queued` line is emitted first)."""
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (200, _list_body()),
             (429, b'{"message":"throttled"}', {"Retry-After": "120"}),
         ]
@@ -401,7 +404,7 @@ def test_github_429_retry_after_adjusts_visibility():
 def test_github_500_raises_without_visibility():
     """Lease-POST → 500 with no Retry-After: raise for queue retry under
     the queue's own visibility (no extension call without a hint)."""
-    github = ScriptedGitHub([(200, _list_body()), (500, b"boom")])
+    github = ScriptedGitHub([(200, _list_body()), (200, _list_body()), (500, b"boom")])
     h = Harness(meta=[(200, SHA_B)], github=github)
     with pytest.raises(GitHubError) as exc_info:
         h.run(env_queue_url=QUEUE_URL)
@@ -444,6 +447,7 @@ def test_401_twice_completes_after_single_refetch():
     notice_id = 888
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (200, _list_body()),
             (201, json.dumps({"id": notice_id}).encode()),
             (200, _list_body(_comment(notice_id, "n " + MARKER))),
@@ -455,7 +459,7 @@ def test_401_twice_completes_after_single_refetch():
         github=github,
     )
     assert h.run() == {"ok": True, "results": ["discarded_error"]}
-    assert github.methods() == ["GET", "POST", "GET"]
+    assert github.methods() == ["GET", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["error_class"] == "http_401"
@@ -470,11 +474,12 @@ def test_llm_timeout_raises():
     h = Harness(
         meta=[(200, SHA_B)],
         llm_script=[("raise", TimeoutError("read timed out"))],
-        github=ScriptedGitHub([]),
+        github=ScriptedGitHub([(200, _list_body())]),
     )
     with pytest.raises(Exception, match="llm request failed: timeout"):
         h.run()
-    assert h.github.calls == []
+    # Review ran through the prior-context GET before the LLM failed.
+    assert h.github.methods() == ["GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
 
@@ -485,11 +490,12 @@ def test_llm_invalid_output_raises():
     h = Harness(
         meta=[(200, SHA_B)],
         llm_script=[("response", 200, b"{not json")],
-        github=ScriptedGitHub([]),
+        github=ScriptedGitHub([(200, _list_body())]),
     )
     with pytest.raises(Exception, match="llm request failed: invalid_response"):
         h.run()
-    assert h.github.calls == []
+    # Review ran through the prior-context GET before the LLM failed.
+    assert h.github.methods() == ["GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
     assert line["error_class"] == "invalid_response"
@@ -506,6 +512,7 @@ def test_assemble_refused_completes():
     notice_id = 888
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (200, _list_body()),
             (201, json.dumps({"id": notice_id}).encode()),
             (200, _list_body(_comment(notice_id, "n " + MARKER))),
@@ -517,7 +524,7 @@ def test_assemble_refused_completes():
         github=github,
     )
     assert h.run() == {"ok": True, "results": ["discarded_error"]}
-    assert github.methods() == ["GET", "POST", "GET"]
+    assert github.methods() == ["GET", "GET", "POST", "GET"]
     assert all("plain text" not in (call["body"].decode() or "") for call in github.calls)
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
@@ -536,6 +543,7 @@ def test_final_attempt_transient_publishes_notice_then_raises():
     so DLQ/alert/redrive proceed unchanged."""
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (200, _list_body()),
             (201, json.dumps({"id": NOTICE_ID}).encode()),
             (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),
@@ -549,7 +557,7 @@ def test_final_attempt_transient_publishes_notice_then_raises():
     with pytest.raises(Exception, match="llm request failed: http_500"):
         h.run(receive_count="5", env_queue_url=QUEUE_URL)
     posts = github.bodies("POST")
-    assert github.methods() == ["GET", "POST", "GET"]
+    assert github.methods() == ["GET", "GET", "POST", "GET"]
     assert MARKER in posts[0]["body"]
     assert "could not be completed" in posts[0]["body"]
     (line,) = h.log_lines()
@@ -566,6 +574,7 @@ def test_assemble_failure_publishes_notice_immediately():
     `discarded_error` with `failure_notice_published: true`."""
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (200, _list_body()),
             (201, json.dumps({"id": NOTICE_ID}).encode()),
             (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),
@@ -580,7 +589,7 @@ def test_assemble_failure_publishes_notice_immediately():
         "ok": True,
         "results": ["discarded_error"],
     }
-    assert github.methods() == ["GET", "POST", "GET"]
+    assert github.methods() == ["GET", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "discarded_error"
     assert line["failure_notice_published"] == "true"
@@ -622,6 +631,7 @@ def test_final_attempt_429_publishes_notice_then_raises_with_visibility():
     ORIGINAL error still raises so DLQ/alert/redrive proceed unchanged."""
     github = ScriptedGitHub(
         [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
             (200, _list_body()),
             (429, b'{"message":"throttled"}', {"Retry-After": "120"}),
             (200, _list_body()),
@@ -636,7 +646,7 @@ def test_final_attempt_429_publishes_notice_then_raises_with_visibility():
     assert h.sqs.visibility_calls == [
         {"QueueUrl": QUEUE_URL, "ReceiptHandle": "rh-1", "VisibilityTimeout": 120}
     ]
-    assert github.methods() == ["GET", "POST", "GET", "POST", "GET"]
+    assert github.methods() == ["GET", "GET", "POST", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
     assert line["error_class"] == "http_429"

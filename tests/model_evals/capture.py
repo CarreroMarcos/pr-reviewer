@@ -43,6 +43,7 @@ sys.path.insert(0, str(EVAL_DIR))
 import fixtures  # noqa: E402
 import scoring  # noqa: E402
 
+from common.assemble import render_review_payload  # noqa: E402
 from common.validate import PROMPT_VERSION  # noqa: E402
 
 REGION = "us-west-2"
@@ -165,9 +166,17 @@ def main(argv: list[str] | None = None) -> int:
     latencies: dict[str, int] = {}
     run_start = time.perf_counter()
     for name in wanted:
-        diff_text, manifest = fixtures.CORPUS[name]()
+        diff_text, manifest, meta = fixtures.CORPUS[name]()
         manifests[name] = manifest
-        print(f"capturing {name} ({len(diff_text)} input bytes) ...", flush=True)
+        # Post the production payload shape (same builder the worker uses),
+        # not bare diff text — the pin must score what production sends.
+        payload_text = render_review_payload(
+            title=meta["title"],
+            body=meta["body"],
+            diff_text=diff_text,
+            prior_comment=meta["prior_comment"],
+        )
+        print(f"capturing {name} ({len(payload_text)} input bytes) ...", flush=True)
         start = time.perf_counter()
         try:
             cases[name] = {
@@ -176,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                     api_key=api_key,
                     model=model,
                     system_prompt=system_prompt,
-                    diff_text=diff_text,
+                    diff_text=payload_text,
                     temperature=args.temperature,
                     thinking=args.thinking,
                     timeout_s=args.timeout_s,

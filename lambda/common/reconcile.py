@@ -100,7 +100,7 @@ def _iso8601(epoch_seconds: int) -> str:
     return datetime.fromtimestamp(epoch_seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _validate_page(payload: Any) -> list[dict[str, Any]]:
+def validate_page(payload: Any) -> list[dict[str, Any]]:
     """Shape-validate one listed page: a list of `{id: int ≥ 1, body: str}`.
 
     Anything else — non-list top level, missing/wrong-typed fields, boolean
@@ -130,7 +130,7 @@ def _list_all(list_page: Callable[[int], Any]) -> list[dict[str, Any]]:
     """
     comments: list[dict[str, Any]] = []
     for page in range(1, MAX_PAGES + 1):
-        items = _validate_page(list_page(page))
+        items = validate_page(list_page(page))
         comments.extend(items)
         if len(items) < PER_PAGE:
             break

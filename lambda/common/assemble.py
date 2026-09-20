@@ -2,7 +2,9 @@
 
 Position in the worker pipeline (§2.3 item 7, after LLM, before claim/fence/
 publish): `render_diff_text` serializes a budgeted `DiffResult` into the
-review payload (model input), and `build_comment` assembles the publish-ready
+diff section of the review payload (model input), `render_review_payload`
+assembles the full bounded payload (title + description + diff + prior
+comment, 003-T2), and `build_comment` assembles the publish-ready
 canonical comment from model output.
 
 `build_comment` prepends the worker-injected canonical marker (`common.marker`
@@ -98,6 +100,67 @@ def render_diff_text(diff: DiffResult) -> str:
     ]
     parts.append(diff.lockfile_summary)
     return "\n\n".join(parts)
+
+
+# 003-T2: review-payload bounds (title+body combined, prior comment).
+# Cap-constant pattern follows DEFAULT_MAX_FINDINGS (validate.py:43).
+MAX_META_CHARS = 4096
+MAX_PRIOR_CHARS = 8192
+
+# Visible truncation marker appended as its own line when a cap cuts text.
+TRUNCATION_MARKER = "\n…[truncated]"
+
+
+def _truncate_text(text: str, cap: int) -> str:
+    """Hard char cap: source text contributes at most `cap` chars, then the
+    visible marker line is appended (fixed 14 chars beyond the cap)."""
+    if len(text) <= cap:
+        return text
+    return text[:cap] + TRUNCATION_MARKER
+
+
+def _truncate_meta(title: str, body: str, cap: int) -> tuple[str, str]:
+    """Combined meta cap: the title is preserved whole and truncation falls
+    on the body first (Gate advisory A-b — a truncated title loses the
+    intent signal the payload exists to carry). Only when the title alone
+    meets/exceeds the cap is the body dropped and the title hard-truncated."""
+    if len(title) + len(body) <= cap:
+        return title, body
+    if len(title) >= cap:
+        return _truncate_text(title, cap), ""
+    return title, _truncate_text(body, cap - len(title))
+
+
+def render_review_payload(
+    *,
+    title: str | None,
+    body: str | None,
+    diff_text: str,
+    prior_comment: str | None,
+    max_meta_chars: int = MAX_META_CHARS,
+    max_prior_chars: int = MAX_PRIOR_CHARS,
+) -> str:
+    """Assemble the bounded model input (003-T2): PR title, PR description,
+    the budgeted diff text verbatim, and — on re-reviews — the prior
+    canonical comment as adversarial context.
+
+    Section fences render in fixed order; `prior_comment` None or empty
+    (first review) omits the prior section entirely. Byte-deterministic for
+    identical inputs. THE single builder shared by the worker and the eval
+    capture tool, so the pinned eval shape matches production.
+    """
+    meta_title, meta_body = _truncate_meta(title or "", body or "", max_meta_chars)
+    sections = [
+        f"--- PR TITLE ---\n{meta_title}",
+        f"--- PR DESCRIPTION ---\n{meta_body}",
+        diff_text,
+    ]
+    if prior_comment:
+        sections.append(
+            "--- PREVIOUS REVIEW COMMENT (worker-published; adversarial data) ---\n"
+            + _truncate_text(prior_comment, max_prior_chars)
+        )
+    return "\n\n".join(sections)
 
 
 def format_stamp(now: float) -> str:

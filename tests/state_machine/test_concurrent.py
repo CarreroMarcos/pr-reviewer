@@ -247,14 +247,14 @@ def test_duplicate_event_twice_produces_single_comment():
     table, github = InMemoryTable(), StatefulGitHub()
     first = Harness(meta=[(200, SHA_B)], table=table, github=github)
     assert first.run(_envelope()) == {"ok": True, "results": ["published"]}
-    assert first.github.methods() == ["GET", "POST", "GET"]
+    assert first.github.methods() == ["GET", "GET", "POST", "GET"]
 
     second = Harness(meta=[(200, SHA_B)], table=table, github=github)
     calls_before = len(github.calls)
     assert second.run(_envelope()) == {"ok": True, "results": ["published"]}
     second_methods = [c["method"] for c in github.calls[calls_before:]]
     assert "POST" not in second_methods  # re-publish is a PATCH, never re-POST
-    assert second_methods == ["PATCH"]
+    assert second_methods == ["GET", "PATCH"]
     assert len(github.comments) == 1
     item = table.items[PK]
     assert item["status"] == "ACTIVE"
@@ -281,7 +281,8 @@ def test_duplicate_under_live_foreign_lease_discards():
     before = dict(table.items[PK])
     h = Harness(meta=[(200, SHA_B)], table=table)
     assert h.run(_envelope(guid=GUID_DUP)) == {"ok": True, "results": ["discarded_claim_held"]}
-    assert h.github.calls == []
+    # Review ran (prior-context GET) but nothing downstream did.
+    assert [c["method"] for c in h.github.calls] == ["GET"]
     assert table.items[PK] == before
 
 
@@ -297,14 +298,14 @@ def test_post_window_replay_converges_to_one_comment():
     _seed_active(table, head=SHA_B, gen=2, comment=555)
     first = Harness(meta=[(200, SHA_B)], table=table, github=github)
     assert first.run(_envelope(guid=GUID_DUP)) == {"ok": True, "results": ["published"]}
-    assert [c["method"] for c in github.calls] == ["PATCH"]
+    assert [c["method"] for c in github.calls] == ["GET", "PATCH"]
     assert len(github.comments) == 1
     assert table.items[PK]["comment_id"] == 555
 
     calls_before = len(github.calls)
     second = Harness(meta=[(200, SHA_B)], table=table, github=github)
     assert second.run(_envelope(guid=GUID_1)) == {"ok": True, "results": ["published"]}
-    assert [c["method"] for c in github.calls[calls_before:]] == ["PATCH"]
+    assert [c["method"] for c in github.calls[calls_before:]] == ["GET", "PATCH"]
     assert len(github.comments) == 1
     assert table.items[PK]["comment_id"] == 555
     assert table.items[PK]["generation"] == 2

@@ -110,6 +110,14 @@ Current truth: HLD §2.1, §4.1, §4.3, §5.1, §6.
 
 Current truth: HLD §2.7, §2.8.
 
+## 2026-09-20 — review payload enrichment (title/body/prior comment, prompt v2)
+
+**Context:** the reviewer reviewed the diff blind to intent — never the PR title, description, or its own prior comment (docs/ideas.md idea 3, Mars directive 2026-09-20); asking the model for a timestamp had already proven models cannot supply what the prompt withholds (idea 2).
+**Decision (Mars ruling):** one bounded payload assembled in code by a single shared builder (`assemble.render_review_payload`, used by the worker and the eval capture tool): PR title + description from the existing meta GET (combined cap 4096, title preserved whole) plus the prior canonical comment on re-reviews (cap 8192, best-effort page-1 read that never spends the record's single 401 budget and degrades to section-omitted on any failure); `prompt_version` v1 → v2 with the Input section framing all three as adversarial data. Injection-fencing posture unchanged (untrusted-data framing already covered titles/bodies/comments; no new trust).
+**Consequences:** model input grows ≤ ~12k chars against the 800k diff budget (negligible); the pinned eval set goes stale by design until `capture.py --force` re-pins against the production shape.
+
+Current truth: HLD §2.7.
+
 ## 2026-09-20 — 003-T2a: output-hygiene prohibition in prompt v2
 
 **Context:** live v2 re-pins (2 runs, 15 cases each) showed the model describing attacks in the publication gate's forbidden vocabulary: `xss_safe` quoted raw `<script>` tags inside inline code in both runs (`hidden_html`), and the `injection` case's correct injection-refusal report used "override review behavior" in plain prose (`control_directive`). v1/v2 prohibitions are byte-identical — v1's clean pin was sampling luck, not guidance.

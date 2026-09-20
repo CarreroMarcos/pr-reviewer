@@ -395,7 +395,7 @@ def test_a_happy_ride_ingress_to_finalize(stack: SimpleNamespace) -> None:
 
     result, github, _sink = _worker(stack, envelope, diff=FakeDiffTransport(meta=[(200, SHA_B)]))
     assert result == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["GET", "POST", "GET"]  # T040: list → lease-POST → re-check
+    assert github.methods() == ["GET", "GET", "POST", "GET"]  # + prior read
     post = next(call for call in github.calls if call["method"] == "POST")
     assert post["url"].endswith(f"/repos/{REPO}/issues/{pr_number}/comments")
     marker = build_marker(REPO, pr_number)
@@ -435,7 +435,8 @@ def test_b_redelivery_while_lease_held_discards(stack: SimpleNamespace) -> None:
         diff=FakeDiffTransport(meta=[(200, SHA_B)]),
     )
     assert result == {"ok": True, "results": ["discarded_claim_held"]}
-    assert github.calls == []
+    # Review ran (prior-context GET) but nothing downstream did.
+    assert [c["method"] for c in github.calls] == ["GET"]
     assert stack.table.get_item(Key={"pk": pk})["Item"] == before
 
 
@@ -461,8 +462,8 @@ def test_c_same_sha_rereview_after_finalize_patches(stack: SimpleNamespace) -> N
         github=github,
     )
     assert replay == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["GET", "POST", "GET", "PATCH"]
-    assert github.calls[3]["url"].endswith(f"/issues/comments/{POST_ID}")
+    assert github.methods() == ["GET", "GET", "POST", "GET", "GET", "PATCH"]
+    assert github.calls[5]["url"].endswith(f"/issues/comments/{POST_ID}")
     item = stack.table.get_item(Key={"pk": review_pk(REPO, pr_number)})["Item"]
     assert item["status"] == "ACTIVE"
     assert int(item["comment_id"]) == POST_ID
@@ -483,7 +484,7 @@ def test_d_approval_like_verdict_discards_without_post(stack: SimpleNamespace) -
         llm_body=_completion_body(APPROVAL_BODY),
     )
     assert result == {"ok": True, "results": ["discarded_error"]}
-    assert github.methods() == ["GET", "POST", "GET"]
+    assert github.methods() == ["GET", "GET", "POST", "GET"]
     assert len(github.comments) == 1
     assert "Safe to merge" not in github.comments[0]["body"]
     assert "could not be completed" in github.comments[0]["body"]
@@ -520,8 +521,8 @@ def test_e_decimal_round_trip_publish_uses_patch(stack: SimpleNamespace) -> None
         diff=FakeDiffTransport(meta=[(200, SHA_B)]),
     )
     assert result == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["PATCH"]
-    assert github.calls[0]["url"].endswith(f"/issues/comments/{POST_ID}")
+    assert github.methods() == ["GET", "PATCH"]
+    assert github.calls[1]["url"].endswith(f"/issues/comments/{POST_ID}")
 
 
 def test_f_update_expression_grammar_against_moto(stack: SimpleNamespace) -> None:
@@ -621,7 +622,7 @@ def test_h_patch_404_recovers_via_creation_lease(stack: SimpleNamespace) -> None
             "updated_at": UPDATED_AT,
         }
     )
-    github = FakeGitHub(script=[(404, b"{}")])  # the stored comment is gone
+    github = FakeGitHub(script=[(200, b"[]"), (404, b"{}")])  # prior read, then gone
     result, github, _sink = _worker(
         stack,
         _envelope(pr_number, SHA_B, GUID_1),
@@ -629,7 +630,7 @@ def test_h_patch_404_recovers_via_creation_lease(stack: SimpleNamespace) -> None
         github=github,
     )
     assert result == {"ok": True, "results": ["published"]}
-    assert github.methods() == ["PATCH", "GET", "POST", "GET"]
+    assert github.methods() == ["GET", "PATCH", "GET", "POST", "GET"]
     assert len(github.comments) == 1
     assert github.comments[0]["body"].count(build_marker(REPO, pr_number)) == 1
     item = stack.table.get_item(Key={"pk": pk})["Item"]
