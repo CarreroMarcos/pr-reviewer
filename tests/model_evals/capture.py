@@ -207,15 +207,23 @@ def main(argv: list[str] | None = None) -> int:
     scored_metrics = [
         scoring.score_output(name, cases[name]["output"], manifests[name]) for name in scored
     ]
+    # Baseline stays EXACTLY offline-reproducible (drift-guard contract):
+    # pure score_output().to_dict() / aggregate() — no run-local latency or
+    # error bookkeeping (a legacy re-pin since f4a19b9 otherwise drifts).
+    # Run diagnostics enrich only the variant results file.
     per_case = {m.case_id: m.to_dict() for m in scored_metrics}
-    for name in scored:
-        per_case[name]["latency_ms"] = latencies[name]
+    run_per_case = {
+        cid: dict(fields, latency_ms=latencies[cid]) for cid, fields in per_case.items()
+    }
     for name, entry in cases.items():
         if "error" in entry:
-            per_case[name] = {"error": entry["error"], "latency_ms": latencies[name]}
+            run_per_case[name] = {"error": entry["error"], "latency_ms": latencies[name]}
     aggregate = scoring.aggregate(scored_metrics)
-    aggregate["scored"] = len(scored_metrics)
-    aggregate["errors"] = sum(1 for entry in cases.values() if "error" in entry)
+    run_aggregate = {
+        **aggregate,
+        "scored": len(scored_metrics),
+        "errors": sum(1 for entry in cases.values() if "error" in entry),
+    }
     lat_values = [latencies[name] for name in wanted]
     meta = {
         "prompt_version": PROMPT_VERSION,
@@ -233,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         "captured_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     if variant:
-        results = {"meta": meta, "per_case": per_case, "aggregate": aggregate}
+        results = {"meta": meta, "per_case": run_per_case, "aggregate": run_aggregate}
         results_path.parent.mkdir(parents=True, exist_ok=True)
         results_path.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
         done = len(scored)
