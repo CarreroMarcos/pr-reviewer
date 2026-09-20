@@ -254,7 +254,8 @@ working; the prohibitions are the fix point. Therefore:
   captures the new prompt sha.
 - The publication gate (`validate.py`) stays byte-untouched — strictness
   kept. If a re-pin still trips on a case, that is sampling, not spec:
-  re-roll capture; a 3rd consecutive same-case trip escalates back to Mars.
+  re-roll capture; a 3rd consecutive same-case trip escalates back to Mars,
+  and so does two distinct cases tripping within one re-pin cycle.
 
 ### Docs (same PR)
 
@@ -277,7 +278,7 @@ working; the prohibitions are the fix point. Therefore:
 - Reconcile: `validate_page` rename is behavior-neutral (existing tests green).
 - Prompt integrity: canary intact; `prompt_version: v2` consistent with
   `validate.PROMPT_VERSION`; prohibitions = v1 set plus exactly the one
-  T2a output-hygiene bullet (below) — no other changes.
+  T2a output-hygiene bullet (T2a, above) — no other changes.
 - Eval set: fixtures carry synthetic meta + ≥1 injection-in-meta case;
   `capture.py --force` live re-pin succeeds; `test_model_evals.py` green.
   **Blocker path**: if the live run is impossible (endpoint/creds), T2 parks
