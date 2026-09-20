@@ -137,6 +137,7 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
           "lambda:DeleteEventSourceMapping",
           "lambda:GetEventSourceMapping",
           "lambda:ListEventSourceMappings",
+          "lambda:ListTags",
           "lambda:UpdateEventSourceMapping",
         ]
         # URL config + event-source-mapping ARNs are function-scoped only at
@@ -329,10 +330,15 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
       {
         # Mappings carry UUID ARNs (opaque, minted at creation), so neither
         # the refresh path nor IAM can scope by function — mapping-level
-        # wildcard is the tightest addressable form (read-only).
-        Sid      = "EsMappingRead"
-        Effect   = "Allow"
-        Action   = ["lambda:GetEventSourceMapping"]
+        # wildcard is the tightest addressable form (read-only). ListTags is
+        # invoked by the provider's tags interceptor (@Tags annotation on
+        # the ESM resource, esm.go), evaluated against the mapping ARN.
+        Sid    = "EsMappingRead"
+        Effect = "Allow"
+        Action = [
+          "lambda:GetEventSourceMapping",
+          "lambda:ListTags",
+        ]
         Resource = "arn:${local.partition}:lambda:${local.region}:${local.account_id}:event-source-mapping:*"
       },
       {
