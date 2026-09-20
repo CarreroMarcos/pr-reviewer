@@ -15,38 +15,32 @@ concurrency:
 jobs:
   python:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.12.13"
           python-version: "3.12"
           enable-cache: true
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
       - name: Sync
         run: uv sync --frozen --group dev
+      - name: Pre-commit (hygiene + gitleaks; server-side parity with local hooks)
+        run: uv run --frozen pre-commit run --all-files
       - name: Ruff
         run: |
           uv run --frozen ruff check .
           uv run --frozen ruff format --check .
       - name: Pytest
-        run: |
-          if [ -d tests ]; then
-            c=0
-            uv run --frozen pytest -q --tb=short || c=$?
-            if [ "$c" -eq 5 ]; then
-              echo "pytest: no tests collected - gate tightens when the first test lands"
-            else
-              exit "$c"
-            fi
-          else
-            echo "tests/ not present yet"
-          fi
+        run: uv run --frozen pytest -q --tb=short
 
   terraform:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
       - name: fmt and validate
         run: |
           if ls terraform/*.tf >/dev/null 2>&1; then

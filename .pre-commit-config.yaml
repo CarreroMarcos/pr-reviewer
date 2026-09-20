@@ -58,15 +58,15 @@ repos:
       - id: terraform_fmt
 
   # --- Pre-push gate: full local CI equivalent ---
-  # Runs on every `git push`. pytest tolerates exit 5 (no tests yet) and
-  # tightens automatically once the first test lands; the terraform hook
+  # Runs on every `git push`. pytest is a hard gate (exit 5 now means
+  # collection broke, not "no tests yet" — that era ended); the terraform hook
   # activates itself as soon as terraform/ exists (AGENTS.md: init only
   # after that point, never `terraform apply` from an agent session).
   - repo: local
     hooks:
       - id: pytest-push
-        name: pytest (full suite; tolerates 5=no tests yet)
-        entry: 'bash -c ''uv run --frozen pytest -q --tb=short; c=$?; if [ "$c" -eq 5 ]; then echo "pytest: no tests collected - gate tightens when the first test lands"; exit 0; fi; exit "$c"'''
+        name: pytest (full suite)
+        entry: uv run --frozen pytest -q --tb=short
         language: system
         pass_filenames: false
         always_run: true

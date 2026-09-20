@@ -31,6 +31,7 @@ import json
 import re
 from pathlib import Path
 
+import capture
 import fixtures
 import pytest
 import scoring
@@ -201,14 +202,38 @@ def _seed_manifest(case_id: str) -> dict:
 def test_seeded_structural_and_prohibitions(case_id: str) -> None:
     """Seeded cases: pinned output is structurally valid + prohibition-clean.
 
-    (Recall/precision carry no quality bars — first baseline; the drift
-    guard below pins the exact metric values instead.)
+    (Quality bars live in capture.QUALITY_FLOORS — enforced at pin time and
+    against the checked-in baseline by test_pinned_baseline_meets_floors;
+    the drift guard below pins the exact metric values instead.)
     """
     output = _case_output(case_id)
     _assemble_valid(output)
     _assert_prohibited_absent(output)
     manifest = _seed_manifest(case_id)
     assert manifest["expected_findings"], f"{case_id} has no ground truth"
+
+
+def test_floor_violations_table() -> None:
+    """Floor checker: clean aggregate passes; each floor fires independently."""
+    clean = {"recall": 1.0, "fabricated": 0, "unparsable": 0}
+    assert capture.floor_violations(clean) == []
+    assert len(capture.floor_violations({**clean, "recall": 0.92})) == 1
+    assert len(capture.floor_violations({**clean, "fabricated": 1})) == 1
+    assert len(capture.floor_violations({**clean, "unparsable": 6})) == 1
+    assert len(capture.floor_violations({"recall": 0.5, "fabricated": 2, "unparsable": 9})) == 3
+
+
+def test_pinned_baseline_meets_floors() -> None:
+    """Quality floors (Reflect 2026-09-20, Mars-approved): the checked-in pin
+    is publishable evidence, not merely reproducible — recall complete, zero
+    fabricated findings, bounded unparsable prose (5 = the observed stable
+    count across all three live v2 runs — publish-legal prose-in-Findings
+    lines; the floor trips at double that)."""
+    if not RESULTS_PATH.exists():
+        pytest.fail(f"baseline missing at {RESULTS_PATH} — re-run capture.py")
+    baseline = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
+    violations = capture.floor_violations(baseline["aggregate"])
+    assert violations == [], f"pinned baseline violates floors: {violations}"
 
 
 def test_baseline_matches_recomputation() -> None:
