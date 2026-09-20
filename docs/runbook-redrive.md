@@ -9,7 +9,9 @@ every ARN through the `get-queue-attributes` commands in the steps.
 Trigger: the `pr-reviewer-dlq-depth` alarm (SNS topic `pr-reviewer-alerts`)
 fires when `pr-reviewer-dlq` holds messages. The DLQ retains messages for
 14 days; the work queue (`pr-reviewer-work`) retains for 4 days with
-`maxReceiveCount 5` and 720 s visibility.
+`maxReceiveCount 5` and 5400 s visibility (spec-002).
+Worst-case poison cycle: 5 exhausted attempts × 5400 s ≈ 7.5 h before the
+DLQ (was ~72 min at the pre-spec-002 720 s visibility).
 
 ## Permission set (exact — mirrors `terraform/iam.tf` operator role)
 

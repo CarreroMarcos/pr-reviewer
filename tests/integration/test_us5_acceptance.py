@@ -16,10 +16,11 @@ Phases run IN ORDER (each idempotent/resumable via a state file):
       (l2)+(m)+(n) transient exhaustion: flip /pr-reviewer/glm-endpoint
       to the SAME HOST on a dead port (GLM_ALLOWED_HOSTS pins api.z.ai;
       connect timeout -> LlmError timeout -> TRANSIENT -> queue-retried).
-      Timeline (visibility 720s is the clock, event-driven gates — no
+      Timeline (visibility 5400s since spec-002 is the clock, event-driven
+      gates — no
       blind sleeps longer than poll intervals):
         t0        flip endpoint; inject M1 at the live head S0
-        ~t0+48m   M1 receive #5 (final attempt): fence live==S0 -> notice
+        ~t0+7.5h  M1 receive #5 (final attempt): fence live==S0 -> notice
                   PUBLISHES [l2]; message moves to the DLQ
         after C   push S1 (webhook delivery M2 fails + retries)
         M2 recv#4 push S2 (webhook delivery M3 fails, recovers post-revert)
@@ -698,8 +699,8 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
             f"SC-006 bound: final-attempt notice at +{span / MINUTE:.0f}m of retrying"
         )
         # SQS moves an exhausted message to the DLQ when its post-failure
-        # VISIBILITY expires (one more 720s window after the final receive),
-        # so the DLQ depth lags the notice by up to ~12 min.
+        # VISIBILITY expires (one more 5400s window after the final receive),
+        # so the DLQ depth lags the notice by up to ~90 min.
         _poll(
             lambda: _queue_depth(DLQ_QUEUE) >= 1,
             15 * MINUTE,
@@ -748,7 +749,7 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
     # than sha2.
     #
     # Timing (SPR-65 adaptive establish-observed gate): receive #5 lands
-    # ~720s after receive #4 (visibility), and the #4 log line is emitted
+    # ~5400s after receive #4 (visibility), and the #4 log line is emitted
     # ~2-3s INTO that receive. The old fixed arithmetic scheduled the push
     # at r4_ts + 717s (~0.5s into the #5 processing window); the gate below
     # instead MEASURES the residual from the observed retry intervals

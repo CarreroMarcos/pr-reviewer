@@ -66,8 +66,11 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
 - **M5 — GitHub link.** HCP → Settings → Version Control → GitHub.com (GitHub
   App): authorize user, install on `CarreroMarcos/pr-reviewer`. Workspace
   settings: Version Control Workflow → repo `CarreroMarcos/pr-reviewer`,
-  working directory `terraform/`, trigger patterns `terraform/**/*`,
-  apply method **Manual apply**.
+  working directory `terraform/`, trigger pattern **tag regex `^tf-.*$`**
+  (amended 2026-09-20 to the shipped config: speculative PR plans off;
+  `tf-*` tags pushed only with Mars's explicit approval, one commit per
+  tag), apply method **Manual apply** (first run human-reviewed; the
+  auto-apply flip is an open decision).
 - **M6 — Approve the apply** for T106's merged PR in the HCP UI, then witness
   the acceptance smoke with the agent.
 
@@ -82,19 +85,28 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   validate && terraform -chdir=terraform plan -backend=false` → plan shows
   **exactly 2 changes, 0 destroys** (`aws_lambda_function.pr-reviewer-worker`,
   `aws_sqs_queue.pr-reviewer-work`).
-- **[T102] HLD v6.9 annotation.** §5 memory note marked superseded
+- **[T102] HLD v6.9 annotation.** §2.2/§2.3 sizing rows annotated superseded
+  (amended 2026-09-20: HLD §5 is IAM-only — the §5 pointer was wrong,
+  Gate-21 advisory 3)
   (1769 MB, Mars ruling 2026-09-19, sizing rationale spec-002) + changelog
   delta line (measurement/config-only, zero architectural change). Bump
   version header; tasks.md authority pointer → v6.9.
   verify: grep for the v6.9 entry; docs build = none.
 - **[T103] `bootstrap/` OIDC trust stack.** New `bootstrap/{main.tf}`:
   `aws_iam_openid_connect_provider` (URL `https://app.terraform.io`, client
-  ID `aws.workload.identity`) + `aws_iam_role.pr-reviewer-hcp-run` with trust
-  `sts:AssumeRoleWithWebIdentity`, condition aud = `aws.workload.identity`,
-  `StringLike` sub = `organization:${org}:project:*:workspace:pr-reviewer:run_phase:*`,
-  and a least-privilege policy covering the stack's services (lambda, sqs,
-  dynamodb, ssm, iam:PassRole for the two functions, logs, cloudwatch).
-  Never committed state; README inside says "apply once locally by Mars".
+  ID `aws.workload.identity`) + split roles `pr-reviewer-hcp-plan` /
+  `pr-reviewer-hcp-apply` with trust `sts:AssumeRoleWithWebIdentity`,
+  condition aud = `aws.workload.identity`, `StringEquals` sub pinned exactly
+  per role to `organization:<org>:project:pr-reviewer:workspace:pr-reviewer:
+  run_phase:plan|apply` (amended 2026-09-20: the single-role `StringLike`
+  text was stale — Gate-21 advisory 4). Least-privilege policies cover the
+  stack's services (lambda, sqs, dynamodb, logs, cloudwatch; no SSM actions
+  — SSM reads are runtime-only via `terraform/iam.tf`). Policy actions are
+  derived by tracing the provider's refresh call graph in the pinned
+  provider source, not from resource schemas (lesson of runs 2-5: v6 refresh
+  makes auxiliary reads, e.g. the tags interceptor's `lambda:ListTags`,
+  that schema-derived sets miss). Never committed state; README inside says
+  "apply once locally by Mars".
   verify: `terraform -chdir=bootstrap fmt -check && validate`; policy JSON
   reviewed against the resource list in `terraform/*.tf`.
 - **[T104] `cloud` block.** `terraform/main.tf` gains
@@ -120,8 +132,10 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
    retries caused by the raise (DLQ count unchanged).
 3. HCP workspace `pr-reviewer` holds the state; repo still contains no state
    files; `terraform plan` from HCP shows "No changes" after migration.
-4. A PR touching `terraform/**` triggers a speculative plan comment; apply is
-   impossible from the agent (VCS-linked workspace blocks CLI remote apply).
+4. Stack changes reach HCP via `tf-*` tag pushes on `main` (Mars-approved,
+   one commit per tag); speculative PR plans are off in the shipped M5
+   config (amended 2026-09-20). Apply is impossible from the agent
+   (VCS-linked workspace blocks CLI remote apply).
 5. HLD v6.9 carries the supersede note; tasks.md pointer updated.
 
 ## Risks / notes
