@@ -308,7 +308,7 @@ Binding constraints at load: DynamoDB throughput, worker concurrency, GitHub rat
 
 Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec-002). Per-call timeouts (§2.3) define actual behavior.
 
-**Measured reality (2026-09-17, live endpoint):** thinking-off LLM legs ran ~130 s/case mean (max ~140 s); thinking-on ~318 s — roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar. Latency, not model choice, is the binding product constraint: do not assume sub-15 s LLM legs against the current endpoint. Full measurement record and eval A/B: DECISIONS 2026-09-17; raw results in `tests/model_evals/results/`; re-probe pending (provider load not ruled out).
+**Measured reality (2026-09-17, live endpoint):** thinking-off LLM legs ran ~130 s/case mean (max ~140 s); thinking-on ~318 s — roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar. Latency, not model choice, is the binding product constraint: do not assume sub-15 s LLM legs against the current endpoint. Full measurement record and eval A/B: [DECISIONS 2026-09-17](DECISIONS.md); raw results in `tests/model_evals/results/`; re-probe pending (provider load not ruled out).
 
 ### 4.3 Observability
 
