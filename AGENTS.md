@@ -148,14 +148,37 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   `docs/process/batch-loop.md`.
 - **PR body edits:** `gh pr edit` fails on this repo (Projects-classic
   GraphQL). Use `gh api repos/CarreroMarcos/pr-reviewer/pulls/N -X PATCH -f body=...`.
-- **Self-review recheck (Mars law, 2026-09-19):** after every push to an
-  open PR, wait ~2 minutes (`sleep 120`) and re-fetch the pr-reviewer's
-  canonical comment (marker `pr-reviewer:canonical`) — it re-reviews on
-  `synchronize` and updates the comment in place. Disposition changed
-  findings before continuing; the loop is stable when only accepted
-  residuals remain.
+- **Self-review recheck (Mars law, 2026-09-19; retry protocol 2026-09-20):**
+  after every push to an open PR, wait ~2 minutes (`sleep 120`) and re-fetch
+  the pr-reviewer's canonical comment (marker `pr-reviewer:canonical`) — it
+  re-reviews on `synchronize` and updates the comment in place. Disposition
+  changed findings before continuing; the loop is stable when only accepted
+  residuals remain. If the canonical is unchanged or errored at 120s, wait
+  another 45s and re-fetch once; still absent/errored → note it and proceed
+  (merge still requires green CI, never a bot verdict).
 - **tf-* tags are the HCP apply trigger (Mars, 2026-09-19):** agents may
   push `tf-*` tags only with Mars's explicit approval — ask when >=90%
   confident the tagged commit should be applied, and wait for his yes.
   Tag exactly one commit (`git tag tf-<reason> <sha>`, push that tag
   only); never `git push --tags`.
+- **Worker-log diagnosis (2026-09-20):** worker logs are lowercase
+  structured JSON — a CloudWatch `--filter-pattern ERROR` matches nothing.
+  Pull the window (`aws --region us-west-2 logs filter-log-events
+  --log-group-name /aws/lambda/pr-reviewer-worker --start-time <epoch-ms>`)
+  and grep fields
+  locally (`"error_class"`, `"status"`).
+- **Self-review failure class (2026-09-20):** `assemble_approval_verdict`
+  on our own PRs is a deterministic non-retryable bot self-review failure;
+  remedy is exactly one empty-commit retrigger (squash-merge collapses it);
+  if it recurs after that one retrigger, note it and proceed — CI gates the
+  merge, not the bot.
+- **Queue retry purgatory (2026-09-20):** queue visibility timeout 5400s ⇒
+  a timed-out delivery redelivers up to ~90 min later and PATCHes
+  already-merged PRs harmlessly. An absent canonical at 165s usually means
+  in-flight/retry, not an outage.
+- **Living document (Mars, 2026-09-20):** short actionable gotchas discovered
+  during work graduate into this file — one bullet, dated, attributed.
+  Session notes live in the git-ignored deepwork progress file
+  (`.slim/deepwork/`); durable rules land here. Write things down when
+  needed so you don't forget. Superseded bullets are deleted or condensed
+  in the same change that supersedes them.
