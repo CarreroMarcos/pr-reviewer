@@ -103,10 +103,11 @@ def _iso8601(epoch_seconds: int) -> str:
 def validate_page(payload: Any) -> list[dict[str, Any]]:
     """Shape-validate one listed page: a list of `{id: int ≥ 1, body: str}`.
 
-    Anything else — non-list top level, missing/wrong-typed fields, boolean
-    or non-positive ids — is an unparseable list (HLD §3.4: treated as the
-    list-unreadable row, non-retryable). Entries are never skipped
-    silently: one bad entry poisons the listing.
+    Public since 003-T2: shared by reconcile's listing path and the worker's
+    prior-comment read. Anything else — non-list top level, missing/wrong-typed
+    fields, boolean or non-positive ids — is an unparseable list (HLD §3.4:
+    treated as the list-unreadable row, non-retryable). Entries are never
+    skipped silently: one bad entry poisons the listing.
     """
     if not isinstance(payload, list):
         raise ReconcileError("list_unreadable")

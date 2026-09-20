@@ -113,7 +113,8 @@ TRUNCATION_MARKER = "\n…[truncated]"
 
 def _truncate_text(text: str, cap: int) -> str:
     """Hard char cap: source text contributes at most `cap` chars, then the
-    visible marker line is appended (fixed 14 chars beyond the cap)."""
+    visible marker line is appended beyond the cap; the budget overhead is
+    exactly `len(TRUNCATION_MARKER)` chars."""
     if len(text) <= cap:
         return text
     return text[:cap] + TRUNCATION_MARKER
