@@ -128,6 +128,32 @@ def _post_review(
         conn.close()
 
 
+# Quality floors for the pinned baseline (Reflect 2026-09-20, Mars-approved):
+# a pin must be publishable evidence, not merely reproducible bytes — recall
+# complete, zero fabricated findings, bounded unparsable prose. capture
+# refuses to write a violating pin (bad rolls never reach CI); the offline
+# suite re-checks the checked-in pin against the same floors.
+#
+# unparsable_max=5 is evidence-backed: all three live v2 runs pinned exactly
+# 5 unparsable prose lines (stable count, rotating cases — publish-legal
+# prose inside Findings). 5 trips at double the stable badness. Tightening
+# to <=2 requires a "Findings: bullets only" output-contract line + re-pin —
+# deliberately deferred (don't over-engineer; Mars's call if wanted later).
+QUALITY_FLOORS = {"recall_min": 1.0, "fabricated_max": 0, "unparsable_max": 5}
+
+
+def floor_violations(aggregate: dict) -> list[str]:
+    """Return human-readable violations of QUALITY_FLOORS for an aggregate."""
+    bad: list[str] = []
+    if aggregate.get("recall", 0.0) < QUALITY_FLOORS["recall_min"]:
+        bad.append(f"recall {aggregate.get('recall')} < {QUALITY_FLOORS['recall_min']}")
+    if aggregate.get("fabricated", 0) > QUALITY_FLOORS["fabricated_max"]:
+        bad.append(f"fabricated {aggregate.get('fabricated')} > {QUALITY_FLOORS['fabricated_max']}")
+    if aggregate.get("unparsable", 0) > QUALITY_FLOORS["unparsable_max"]:
+        bad.append(f"unparsable {aggregate.get('unparsable')} > {QUALITY_FLOORS['unparsable_max']}")
+    return bad
+
+
 def main(argv: list[str] | None = None) -> int:
     """Capture one live output per selected case; pin outputs + score file."""
     parser = argparse.ArgumentParser(description="Pin live model outputs for evals.")
@@ -247,6 +273,15 @@ def main(argv: list[str] | None = None) -> int:
         done = len(scored)
         print(f"pinned {done}/{len(wanted)} cases -> {results_path}")
         return 0
+    violations = floor_violations(aggregate)
+    if violations:
+        print(
+            "pin refused: quality floors failed ("
+            + "; ".join(violations)
+            + f"); floors: {QUALITY_FLOORS} — fix the prompt, or lower floors deliberately",
+            file=sys.stderr,
+        )
+        return 1
     pinned = {"meta": meta, "cases": cases}
     baseline = {"meta": meta, "per_case": per_case, "aggregate": aggregate}
     output_path.write_text(json.dumps(pinned, indent=2) + "\n", encoding="utf-8")
