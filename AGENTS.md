@@ -163,12 +163,15 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   only); never `git push --tags`.
 - **Worker-log diagnosis (2026-09-20):** worker logs are lowercase
   structured JSON — a CloudWatch `--filter-pattern ERROR` matches nothing.
-  Pull the window (`aws logs filter-log-events --log-group-name
-  /aws/lambda/pr-reviewer-worker --start-time <ms>`) and grep fields
+  Pull the window (`aws --region us-west-2 logs filter-log-events
+  --log-group-name /aws/lambda/pr-reviewer-worker --start-time <epoch-ms>`)
+  and grep fields
   locally (`"error_class"`, `"status"`).
 - **Self-review failure class (2026-09-20):** `assemble_approval_verdict`
   on our own PRs is a deterministic non-retryable bot self-review failure;
-  remedy is exactly one empty-commit retrigger (squash-merge collapses it).
+  remedy is exactly one empty-commit retrigger (squash-merge collapses it);
+  if it recurs after that one retrigger, note it and proceed — CI gates the
+  merge, not the bot.
 - **Queue retry purgatory (2026-09-20):** queue visibility timeout 5400s ⇒
   a timed-out delivery redelivers up to ~90 min later and PATCHes
   already-merged PRs harmlessly. An absent canonical at 165s usually means
@@ -177,4 +180,5 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   during work graduate into this file — one bullet, dated, attributed.
   Session notes live in the git-ignored deepwork progress file
   (`.slim/deepwork/`); durable rules land here. Write things down when
-  needed so you don't forget.
+  needed so you don't forget. Superseded bullets are deleted or condensed
+  in the same change that supersedes them.
