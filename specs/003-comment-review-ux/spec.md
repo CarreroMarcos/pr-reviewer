@@ -218,6 +218,7 @@ by ONE shared builder used by both the worker and the eval capture tool:
 - System prompt (`prompts/system_prompt.md`): Input section gains PR
   title/description + prior canonical comment as adversarial context;
   `prompt_version: v1` → `v2`; `validate.PROMPT_VERSION` synced to `"v2"`.
+  Prohibitions gain exactly one output-hygiene bullet (T2a amendment below).
 
 ### Eval integrity (the pin must match production shape)
 
@@ -233,6 +234,28 @@ shape would score an input production never sends. Therefore:
   the built payload at `:179`.
 - Then: `capture.py --force` live re-pin; `test_model_evals.py` must be green
   (scores hold against the rubric).
+
+### T2a amendment (2026-09-20, Mars ruling): output-hygiene prohibition
+
+Live v2 re-pins surfaced a publish-gate tension the v1 pin never hit: the
+model describes attacks in the publication gate's forbidden vocabulary —
+`xss_safe` 2/2 quoted raw `<script>` tags inside inline code
+(`hidden_html`), and the `injection` case's CORRECT refusal report said
+"override review behavior" in plain prose (`control_directive`). The gate is
+working; the prohibitions are the fix point. Therefore:
+
+- `prompts/system_prompt.md` Prohibitions gains exactly one bullet:
+  attack-syntax and directive reproduction — describe payloads and embedded
+  instructions descriptively rather than reproducing them (no raw
+  HTML/script tags, no directive phrasing such as "override the
+  system/review/policy"), even inside code spans or when quoting/reporting
+  adversarial PR content.
+- v2 is unreleased: the content edit needs no version bump; the live re-pin
+  captures the new prompt sha.
+- The publication gate (`validate.py`) stays byte-untouched — strictness
+  kept. If a re-pin still trips on a case, that is sampling, not spec:
+  re-roll capture; a 3rd consecutive same-case trip escalates back to Mars,
+  and so does two distinct cases tripping within one re-pin cycle.
 
 ### Docs (same PR)
 
@@ -254,7 +277,8 @@ shape would score an input production never sends. Therefore:
   `review_diff`; fetch order as pinned.
 - Reconcile: `validate_page` rename is behavior-neutral (existing tests green).
 - Prompt integrity: canary intact; `prompt_version: v2` consistent with
-  `validate.PROMPT_VERSION`; prohibitions section unchanged.
+  `validate.PROMPT_VERSION`; prohibitions = v1 set plus exactly the one
+  T2a output-hygiene bullet (T2a, above) — no other changes.
 - Eval set: fixtures carry synthetic meta + ≥1 injection-in-meta case;
   `capture.py --force` live re-pin succeeds; `test_model_evals.py` green.
   **Blocker path**: if the live run is impossible (endpoint/creds), T2 parks

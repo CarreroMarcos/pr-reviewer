@@ -109,3 +109,11 @@ Current truth: HLD §2.1, §4.1, §4.3, §5.1, §6.
 **Consequences:** one extra comment line (accepted); tz constant resolves at import so a missing tz database fails cold start, not mid-review; marker byte-stability (§3.4 reconciliation) untouched.
 
 Current truth: HLD §2.7, §2.8.
+
+## 2026-09-20 — 003-T2a: output-hygiene prohibition in prompt v2
+
+**Context:** live v2 re-pins (2 runs, 15 cases each) showed the model describing attacks in the publication gate's forbidden vocabulary: `xss_safe` quoted raw `<script>` tags inside inline code in both runs (`hidden_html`), and the `injection` case's correct injection-refusal report used "override review behavior" in plain prose (`control_directive`). v1/v2 prohibitions are byte-identical — v1's clean pin was sampling luck, not guidance.
+**Decision (Mars ruling, 2026-09-20):** add exactly one output-hygiene bullet to the v2 Prohibitions (describe payloads and embedded instructions descriptively; no raw HTML/script tags, no directive phrasing, even inside code spans or when quoting adversarial content); publication gate untouched; version stays `v2` (unreleased) and the live re-pin captures the new sha. Escalation bound: a 3rd consecutive same-case pin trip returns to Mars.
+**Consequences:** stricter model output discipline on adversarial cases; possible bounded re-pin sampling retries; gate strictness preserved.
+
+Current truth: `specs/003-comment-review-ux/spec.md` (T2a amendment); HLD §2.7 unchanged.
