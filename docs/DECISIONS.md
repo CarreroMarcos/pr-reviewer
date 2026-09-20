@@ -78,9 +78,9 @@ Current truth: HLD §4.2.
 
 Current truth: HLD §2.2, §2.3, §7.2.
 
-## 2026-09-20 — v6.9 → v6.10 — documentation-only ingress-half drift corrections
+## 2026-09-20 — v6.9 → v6.10 — documentation-only ingress-half drift corrections (2659989)
 
-**Context:** the 2026-09-20 sync audit found the ingress half of the HLD stale — every prior drift pass was worker-sizing-scoped.
+**Context:** the 2026-09-20 sync audit found the ingress half of the HLD stale — every prior drift pass was worker-sizing-scoped. Record enriched during migration (references expanded) — a summary, not a verbatim copy.
 **Decision:** ingress memory corrected 128 MB → 512 MB (compute.tf documents the cold-start history); unreserved reality documented across admission semantics (§2.1), §4.1, §6 failure modes 5/14, and the §7.2 table (2026-09-15 ruling); `reopened` added to the allow-list and envelope enum (spec delta D1, `specs/001-pr-reviewer/contracts/ingress-webhook.md`); §4.1 Lambda row re-derived at spec-002 sizing (~225 GB-s/review); trust-policy mechanism corrected (worker `aws:SourceAccount`, operator terraform-admin + MFA); GitHub timeout restated as a single 10s; alarm list updated to the shipped 8-alarm set; §5.1 cites the bootstrap OIDC stack; the 2026-09-20 PR #68 hygiene pass (Gate-21 advisory docs fixes, squash-merged as 0381b56) is covered by this entry (it added no v6.9 delta).
 **Consequences:** documentation-only — no infrastructure change; the account-level starvation residual of the unreserved posture is documented as accepted (§6 failure mode 5).
 
