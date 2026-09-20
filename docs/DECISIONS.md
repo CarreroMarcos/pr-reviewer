@@ -63,6 +63,22 @@ Current truth: HLD §2–§7 as itemized.
 
 Current truth: HLD §4.4, §2.2, §7.1, §7.3.
 
+## 2026-09-14 — SPR-60 operator rulings: operator-role principal pinned; ingress 128 MB re-trim rejected
+
+**Context:** the operator trust needed a named principal (account root was interim), and a 128 MB ingress memory re-trim was proposed.
+**Decision (Mars ruling):** (a) the operator role's trust principal is the `terraform-admin` IAM user gated on MFA — a deliberate choice over an SSO role; (b) the ingress 128 MB memory re-trim is rejected — the lazy boto3 cold start cannot fit the 5 s budget at 128 MB (observed Sandbox.Timedout on first invoke); memory buys CPU, so ingress stays at the 512 MB known-good value (recorded in terraform/compute.tf).
+**Consequences:** operator access requires the terraform-admin user + MFA; ingress cold-start budget is solved by sizing, not code-path changes.
+
+Current truth: HLD §5.1, §2.1.
+
+## 2026-09-15 — reserved concurrency dropped: both functions unreserved
+
+**Context:** the account's total Lambda concurrency is 10 and AWS enforces ≥10 unreserved account-wide, so the planned ingress-2/worker-5 reservations could not be landed (live-apply evidence).
+**Decision (Mars ruling):** drop reserved concurrency on both functions; restore reserves of 2 (ingress) and 5 (worker) only after a quota raise.
+**Consequences:** the admission-loss boundary moves from a per-function ceiling to the account-level pool (10, shared) — a sustained ingress flood can starve the worker; accepted knowingly at the ruling, later surfaced and ratified as the §6 failure-mode-5 residual at Gate-21 (2026-09-20); mitigations: invocation-spike alarm + kill switch. Spend-bounding rides the account pool rather than a reservation.
+
+Current truth: HLD §2.1, §2.3, §4.3, §6 failure mode 5.
+
 ## 2026-09-17 — v6.7 → v6.8 — measurement-only revision (no architectural or configuration change; recorded the AC-(b) budget violation as accepted risk)
 
 **Context:** the "6–15 s typical" worker budget had never been measured against the live endpoint.
