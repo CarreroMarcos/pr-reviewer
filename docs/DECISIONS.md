@@ -6,7 +6,7 @@
 
 **Append-only discipline:** entries are never edited in place — a superseded entry is superseded by a new dated entry that names it. Entries exist only for behavior/config/accepted-risk changes and measurements; typo and wording fixes are silent. Every entry ends with a "Current truth" pointer into the HLD so a reader can jump from history to the normative statement. HLD § numbering is frozen — sections are added, never renamed or renumbered (specs and this log cite §X.Y) — so pointers stay stable; an entry written against an older HLD notes the version current at entry time when the section's content has since moved.
 
-**Fidelity convention:** the 2026-09-11/09-12 planning-revision entries are verbatim migrations from HLD §7.2; entries created during or after the migration may be enriched summaries (references expanded). Neither is authoritative over the HLD.
+**Fidelity convention:** the 2026-09-11/09-12 planning-revision entries are verbatim migrations from HLD §7.2 (performed 2026-09-20, restructure PR #71); entries created during or after that migration may be enriched summaries (references expanded) — the 2026-09-20 v6.9 → v6.10 entry is the enriched one. Neither is authoritative over the HLD.
 
 ## Entry format
 
@@ -63,7 +63,7 @@ Current truth: HLD §2–§7 as itemized.
 
 Current truth: HLD §4.4, §2.2, §7.1, §7.3.
 
-## 2026-09-17 — v6.7 → v6.8 — measurement-only revision (zero architectural, budget, or AC change)
+## 2026-09-17 — v6.7 → v6.8 — measurement-only revision (no architectural or configuration change; recorded the AC-(b) budget violation as accepted risk)
 
 **Context:** the "6–15 s typical" worker budget had never been measured against the live endpoint.
 **Decision:** live-endpoint LLM latency measured 2026-09-17 — ~130 s/case thinking-off (max ~140 s), ~318 s thinking-on, roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar (§4.2 measured-reality note; §2 rationale annotated; §7.3 AC (b) flagged currently-unmet). Single time-window measurement, re-probe pending; companion A/B found model choice, thinking, and temperature buy no quality on the eval corpus at material latency cost (`tests/model_evals/results/`).
@@ -74,7 +74,7 @@ Current truth: HLD §4.2.
 ## 2026-09-19 — v6.8 → v6.9 — measurement/config-only revision (zero architectural, budget, or AC change)
 
 **Context:** the SPR-60 256 MB trim starved the worker against the measured LLM latency (~130 s/case).
-**Decision:** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19; sizing rationale and free-tier math in specs/002-worker-sizing-hcp/spec.md); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
+**Decision:** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19, recorded in specs/002-worker-sizing-hcp/spec.md; sizing rationale and free-tier math therein); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
 
 Current truth: HLD §2.2, §2.3, §7.2.
 
