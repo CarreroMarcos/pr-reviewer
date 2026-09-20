@@ -103,7 +103,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `ingress_handler.handler` |
 | Timeout / Memory | 5s / 512 MB (memory buys CPU: the lazy boto3 cold start cannot fit the 5 s budget at 128 MB — observed Sandbox.Timedout on first invoke; the 128 MB trim was re-attempted under SPR-60 and rejected by operator decision 2026-09-14, per compute.tf) |
-| Reserved concurrency | none — unreserved per the 2026-09-15 quota ruling (account ≥10-unreserved constraint); restore 2/5 only after a quota raise |
+| Reserved concurrency | none — unreserved per the 2026-09-15 quota ruling (account ≥10-unreserved constraint); restore reserves of 2 (ingress) and 5 (worker) only after a quota raise |
 | Trigger | Lambda Function URL, `AuthType: NONE` |
 
 **Responsibilities (in strict order):**
@@ -170,7 +170,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `worker_handler.handler` |
 | Timeout / Memory | 900s / 1769 MB (v6.9: supersedes the 120s / 256 MB SPR-60 trim — Mars ruling 2026-09-19; sizing rationale in specs/002-worker-sizing-hcp/spec.md) |
-| Reserved concurrency | Unreserved (dropped at the 2026-09-15 ruling — account ≥10-unreserved constraint; restore 2/5, ingress/worker, at quota raise) |
+| Reserved concurrency | Unreserved (dropped at the 2026-09-15 ruling — account ≥10-unreserved constraint; restore reserves of 5 (worker) and 2 (ingress) at quota raise) |
 | Trigger | SQS event source mapping (no public exposure) |
 
 **Responsibilities:**
@@ -196,7 +196,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | LLM request-construction fault — malformed credential/header material rejected at header validation, before the request is sent (e.g. control characters in the API key; deterministic, retry cannot succeed) | Client-side construction failure | Typed `LlmError("invalid_key")`; non-retryable: complete; publish the failure notice immediately per the D2 trigger table (contracts/canonical-comment.md); log `status=llm_error` with `error_class=invalid_key` and duration |
 | Assembled comment fails structural validation (§2.3 item 7) | Invalid output at the publish boundary | Non-retryable: complete and alert — invalid content is never published |
 
-**HTTP timeout policy:** GitHub a single 10s socket timeout (stdlib urllib cannot express a connect/read split — the 2s/10s split is intent, not implementation; the unit suite pins the constant); LLM connect 2s / read 45s (re-derived against measured case latency at the §4.2 re-probe). The Lambda timeout (900s, spec-002) is a backstop.
+**HTTP timeout policy:** GitHub: a single 10s socket timeout (stdlib urllib cannot express a connect/read split — the historical 2s/10s split is documented intent, never implemented; the unit suite pins the single 10s constant); LLM: connect 2s / read 45s, both constants implemented (llm.py) and re-derived against measured case latency at the §4.2 re-probe. The Lambda timeout (900s, spec-002) is a backstop.
 
 ### 2.4 DynamoDB State Store
 
@@ -311,7 +311,7 @@ Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec
 
 ### 4.3 Observability
 
-Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch). Eight alarms shipped. Kill switch (v6.6): set worker reserved concurrency to 0 (or disable the webhook) — spend stops immediately and queued work is retained.
+Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop). Eight alarms shipped. Kill switch (v6.6): set worker reserved concurrency to 0 (or disable the webhook) — spend stops immediately and queued work is retained.
 
 ### 4.4 Testing & Verification Strategy (v6.4)
 
