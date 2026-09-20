@@ -384,7 +384,9 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
           "logs:ListTagsForResource",
         ]
         Resource = [
+          "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-ingress",
           "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-ingress:*",
+          "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-worker",
           "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-worker:*",
         ]
       },
