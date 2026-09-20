@@ -113,7 +113,9 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
           "lambda:GetFunction",
           "lambda:GetFunctionConfiguration",
           "lambda:GetPolicy",
+          "lambda:GetRuntimeManagementConfig",
           "lambda:ListTags",
+          "lambda:ListVersionsByFunction",
           "lambda:TagResource",
           "lambda:UntagResource",
           "lambda:UpdateFunctionCode",
@@ -222,6 +224,7 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
           "logs:CreateLogGroup",
           "logs:DeleteLogGroup",
           "logs:DeleteRetentionPolicy",
+          "logs:ListTagsForResource",
           "logs:PutRetentionPolicy",
           "logs:TagLogGroup",
           "logs:UntagLogGroup",
@@ -315,8 +318,10 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
           "lambda:GetFunctionConfiguration",
           "lambda:GetFunctionUrlConfig",
           "lambda:GetPolicy",
+          "lambda:GetRuntimeManagementConfig",
           "lambda:ListEventSourceMappings",
           "lambda:ListTags",
+          "lambda:ListVersionsByFunction",
         ]
         Resource = [
           "arn:${local.partition}:lambda:${local.region}:${local.account_id}:function:${local.prefix}-ingress",
@@ -374,9 +379,14 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
       {
         Sid    = "LogsRead"
         Effect = "Allow"
-        Action = ["logs:DescribeMetricFilters"]
+        Action = [
+          "logs:DescribeMetricFilters",
+          "logs:ListTagsForResource",
+        ]
         Resource = [
+          "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-ingress",
           "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-ingress:*",
+          "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-worker",
           "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/lambda/${local.prefix}-worker:*",
         ]
       },
