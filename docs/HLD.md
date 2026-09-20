@@ -212,7 +212,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 
 ### 2.5 SQS DLQ + Operator Redrive
 
-`pr-reviewer-dlq`, 14-day retention. Operator IAM role with the documented minimum set: `sqs:StartMessageMoveTask`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on the DLQ, plus `sqs:SendMessage` on the work queue — and the **source-queue redrive allow policy** naming the operator role. Redrive is a tested operational procedure, not an implicit capability. **Runbook:** 1) inspect DLQ depth and sample messages for root cause; 2) deploy the fix and confirm it resolves the sampled cause; 3) `StartMessageMoveTask` back to the work queue; 4) verify the DLQ drains to zero and canonical comments converge (exactly one marker-bearing comment per affected PR); 5) log the drill. Exercised as acceptance criterion (j) (§7.3).
+`pr-reviewer-dlq`, 14-day retention. Operator IAM role with the documented minimum set: `sqs:StartMessageMoveTask`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on the DLQ, plus `sqs:SendMessage` on the work queue — and the **source-queue redrive allow policy** naming the operator role. Redrive is a tested operational procedure, not an implicit capability; the authoritative step-by-step procedure lives in `docs/runbook-redrive.md` (drill exercised as acceptance criterion (j), §7.3).
 
 ### 2.6 SSM Parameter Store
 
@@ -308,7 +308,7 @@ Binding constraints at load: DynamoDB throughput, worker concurrency, GitHub rat
 
 Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec-002). Per-call timeouts (§2.3) define actual behavior.
 
-**Measured reality (2026-09-17, live endpoint, 13-case eval corpus):** thinking-off LLM calls ran ~130 s/case mean (max ~140 s); thinking-on ~318 s — roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar. Single time-window measurement; provider load not ruled out (re-probe pending as of 2026-09-18). If it stands, this budget — not model choice — is the binding product constraint: the eval A/B found no quality lever that pays for the latency (`tests/model_evals/results/`). Future agents and operators: do not assume sub-15s LLM legs against the current endpoint.
+**Measured reality (2026-09-17, live endpoint):** thinking-off LLM legs ran ~130 s/case mean (max ~140 s); thinking-on ~318 s — roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar. Latency, not model choice, is the binding product constraint: do not assume sub-15 s LLM legs against the current endpoint. Full measurement record and eval A/B: DECISIONS 2026-09-17; raw results in `tests/model_evals/results/`; re-probe pending (provider load not ruled out).
 
 ### 4.3 Observability
 
@@ -442,16 +442,6 @@ Unchanged: populate the five SSM parameters (§2.6) → `terraform init && terra
 ### 7.4 Production Roadmap
 
 GitHub App installation tokens; inline review comments via Reviews API; expanded alarms; S3 + DynamoDB state backend; CI smoke tests with synthetic signed webhooks; automated dependency audit with lockfile refresh (`uv lock --upgrade` + vulnerability scan) in CI.
-
----
-
-## 8. Interview Talking Points
-
-- **Distributed-systems correctness:** SHA-authoritative fencing with a **defined** comparison function (live-head confirmation, never SHA ordering), conditional publication, and an honest convergence invariant.
-- **AWS configuration discipline:** the 6× visibility rule, decoupled fixed leases (claim→finalize, no renewal), capacity derivations from item sizes, admission-boundary loss analysis, concrete API version pinning.
-- **Security engineering:** full-string HMAC, event-type gating, three-role IAM including the operator-redrive permission chain, prompt-injection threat model with control-plane separation.
-- **Operational resilience:** classified error handling with an actionable 404 decision table, Retry-After-aware visibility extension, marker-based reconciliation, tested DLQ redrive.
-- **Cost engineering:** per-service scoped claims, capacity proofs, configuration-driven pricing assumptions.
 
 ---
 
