@@ -311,7 +311,7 @@ Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec
 
 ### 4.3 Observability
 
-Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop). Eight alarms shipped. Kill switch (v6.6): set worker reserved concurrency to 0 (or disable the webhook) — spend stops immediately and queued work is retained.
+Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop). Eight alarms shipped. Kill switch (v6.6; restated for the unreserved era): set the worker's reserved concurrency to 0 — valid on an unreserved function; invocations refuse immediately — spend stops and queued work is retained up to the 4-day retention; disable the webhook (or the event source mapping) as well if ingress should stop enqueuing, since an active ingress against a dead worker grows the queue silently to retention expiry.
 
 ### 4.4 Testing & Verification Strategy (v6.4)
 
@@ -335,8 +335,11 @@ function-ARN SourceArn condition fails CreateEventSourceMapping validation (seen
 live, T035); the operator role trusts the terraform-admin IAM user gated on MFA
 (SPR-60, Mars decision 2026-09-14). The worker's aws:SourceAccount scope trusts
 any future Lambda in the account — accepted for this single-operator account
-(no untrusted path creates functions); the confused-deputy guard survives via
-account hygiene.
+(IaC-only; no untrusted path creates functions). The concrete tightening path
+is a permissions boundary on the worker role (roadmap); trust-policy conditions
+cannot substitute — the event source mapping's assumability validation carries
+no function ARN in context (the T035 mechanism), so no aws:SourceArn form can
+match for the worker role.
 
 INGRESS ROLE:  logs; ssm:GetParameter (webhook-secret ARN);
                sqs:SendMessage (work queue); dynamodb:GetItem, PutItem on state table
@@ -443,7 +446,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **v6.8 → v6.9 deltas (measurement/config-only revision — zero architectural, budget, or AC change):** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19; sizing rationale and free-tier math in specs/002-worker-sizing-hcp/spec.md); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
 
-**v6.9 → v6.10 deltas (ingress-half drift corrections — zero architectural change):** ingress memory corrected 128 MB → 512 MB (compute.tf documents the cold-start history); unreserved reality documented across admission semantics (§2.1), §4.1, §6 failure modes 5/14, and the §7.2 table (2026-09-15 ruling); `reopened` added to the allow-list and envelope enum [D1]; §4.1 Lambda row re-derived at spec-002 sizing (~225 GB-s/review); trust-policy mechanism corrected (worker `aws:SourceAccount`, operator terraform-admin + MFA); GitHub timeout restated as a single 10s; alarm list updated to the shipped 8-alarm set; §5.1 cites the bootstrap OIDC stack; the 2026-09-20 #68 drift pass is covered by this entry (it added no v6.9 delta).
+**v6.9 → v6.10 deltas (documentation-only — no infrastructure change; aligns the HLD with shipped reality, including the account-level starvation residual of the unreserved posture, §6 failure mode 5):** ingress memory corrected 128 MB → 512 MB (compute.tf documents the cold-start history); unreserved reality documented across admission semantics (§2.1), §4.1, §6 failure modes 5/14, and the §7.2 table (2026-09-15 ruling); `reopened` added to the allow-list and envelope enum [D1]; §4.1 Lambda row re-derived at spec-002 sizing (~225 GB-s/review); trust-policy mechanism corrected (worker `aws:SourceAccount`, operator terraform-admin + MFA); GitHub timeout restated as a single 10s; alarm list updated to the shipped 8-alarm set; §5.1 cites the bootstrap OIDC stack; the 2026-09-20 #68 drift pass is covered by this entry (it added no v6.9 delta).
 
 ### 7.3 Deployment Sequence
 
