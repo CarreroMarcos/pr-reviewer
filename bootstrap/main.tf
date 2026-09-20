@@ -236,7 +236,10 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
       {
         # DescribeLogGroups is an account-list action: AWS evaluates it
         # against "log-group::log-stream:", so resource-level scoping never
-        # matches (denied at the first HCP plan, 2026-09-20).
+        # matches (denied at the first HCP plan, 2026-09-20). No IAM
+        # condition can filter a list response (aws:ResourceTag evaluates
+        # the request, not the returned items), so this accepted trade-off
+        # grants read-only group-name disclosure account-wide.
         Sid      = "LogGroupsList"
         Effect   = "Allow"
         Action   = ["logs:DescribeLogGroups"]
@@ -321,7 +324,9 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
         ]
       },
       {
-        # Mappings carry UUID ARNs; the refresh path reads by mapping ARN.
+        # Mappings carry UUID ARNs (opaque, minted at creation), so neither
+        # the refresh path nor IAM can scope by function — mapping-level
+        # wildcard is the tightest addressable form (read-only).
         Sid      = "EsMappingRead"
         Effect   = "Allow"
         Action   = ["lambda:GetEventSourceMapping"]
