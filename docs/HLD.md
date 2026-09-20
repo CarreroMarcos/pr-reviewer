@@ -51,7 +51,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
                   ┌──────────────────────────────────┐
                   │         INGRESS LAMBDA           │──── HTTP 202 (< 250ms) ───> GitHub
                   │  Timeout: 5s │ 512MB              │
-                  │  Reserved: none (quota ruling)   │
+                  │  Reserved: none (2026-09-15)     │
                   │  a. Base64-decode if flagged     │
                   │  b. HMAC verify (sha256= prefix) │
                   │  c. X-GitHub-Event == pull_request│
@@ -72,7 +72,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
                   ┌──────────────────────────────────┐        ┌───────────────────┐
                   │         WORKER LAMBDA           │        │  SQS DLQ            │
                   │  Timeout: 900s │ 1769MB          │        │  14d retention      │
-                  │  Reserved: none (quota ruling)   │        │  (operator redrive  │
+                  │  Reserved: none (2026-09-15)     │        │  (operator redrive  │
                   │  h. Batched secret hydration      │        │   + redrive-allow   │
                   │  i. Fetch + sanitize diff         │        │   policy on source) │
                   │  j. LLM review (GLM-5.3-Flash)   │        └───────────────────┘
@@ -103,8 +103,8 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | Attribute | Specification |
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `ingress_handler.handler` |
-| Timeout / Memory | 5s / 512 MB (memory buys CPU: the lazy boto3 cold start cannot fit the 5 s budget at 128 MB — observed Sandbox.Timedout on first invoke; the 128 MB trim was re-attempted under SPR-60 and rejected by operator decision 2026-09-14, per compute.tf) |
-| Reserved concurrency | none — unreserved per the 2026-09-15 quota ruling (account ≥10-unreserved constraint); restore reserves of 2 (ingress) and 5 (worker) only after a quota raise |
+| Timeout / Memory | 5s / 512 MB (memory buys CPU: the lazy boto3 cold start cannot fit the 5 s budget at 128 MB — DECISIONS 2026-09-14) |
+| Reserved concurrency | none — unreserved (2026-09-15 ruling, DECISIONS); restore reserves of 2 (ingress) and 5 (worker) only after a quota raise |
 | Trigger | Lambda Function URL, `AuthType: NONE` |
 
 **Responsibilities (in strict order):**
@@ -118,7 +118,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 7. **Mark processed.** PutItem the delivery GUID with 7-day TTL — outliving GitHub's 3-day redelivery window by design.
 8. **Fast acknowledgment.** HTTP 202 within 250ms.
 
-**Secret hydration (v6.4):** webhook-secret fetched at cold start, cached warm with a 30-minute periodic refresh — mirroring §2.3 item 1 discipline. No SSM call is added to the 250 ms hot path, and a webhook-secret rotation converges across hot containers within 30 minutes.
+**Secret hydration:** webhook-secret fetched at cold start, cached warm with a 30-minute periodic refresh — mirroring §2.3 item 1 discipline. No SSM call is added to the 250 ms hot path, and a webhook-secret rotation converges across hot containers within 30 minutes.
 
 **Response contract (canonical).** The response body is always empty; the status code is the entire contract. One consistent error strategy — no condition-specific bodies.
 
@@ -157,21 +157,21 @@ The worker **constructs** `diff_url` and `comments_url` from `repo_full_name` + 
 | Attribute | Specification |
 | :--- | :--- |
 | Queue | `pr-reviewer-work`, Standard |
-| Visibility timeout | 5400s = 6 × 900s Lambda timeout (v6.9: was 720s = 6 × 120s; spec-002 carries the 6× invariant forward) |
+| Visibility timeout | 5400s = 6 × 900s Lambda timeout (6× invariant; history: DECISIONS 2026-09-19) |
 | Message retention | 4 days |
 | Redrive policy | `maxReceiveCount = 5` → DLQ |
 | Event source mapping | `batch_size = 1` |
 | Redrive allow policy | Source-queue policy explicitly permitting the **operator role** (and the `StartMessageMoveTask` principal) — without this policy the documented redrive path fails, a common implementation foot-gun |
 
-On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibility` rather than relying on the fixed base timeout. Retry ownership (v6.7): the queue owns retries — the worker raises, visibility expiry redelivers, `maxReceiveCount 5` bounds total attempts; the only in-request retry is the single 401 credential re-fetch (§2.3 item 1).
+On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibility` rather than relying on the fixed base timeout. Retry ownership: the queue owns retries — the worker raises, visibility expiry redelivers, `maxReceiveCount 5` bounds total attempts; the only in-request retry is the single 401 credential re-fetch (§2.3 item 1).
 
 ### 2.3 Worker Lambda — Review Execution Engine
 
 | Attribute | Specification |
 | :--- | :--- |
 | Runtime / Handler | Python 3.12 / `worker_handler.handler` |
-| Timeout / Memory | 900s / 1769 MB (v6.9: supersedes the 120s / 256 MB SPR-60 trim — Mars ruling 2026-09-19; sizing rationale in specs/002-worker-sizing-hcp/spec.md) |
-| Reserved concurrency | Unreserved (dropped at the 2026-09-15 ruling — account ≥10-unreserved constraint; restore reserves of 5 (worker) and 2 (ingress) at quota raise) |
+| Timeout / Memory | 900s / 1769 MB (rationale: specs/002-worker-sizing-hcp/spec.md; history: DECISIONS 2026-09-19) |
+| Reserved concurrency | Unreserved (2026-09-15 ruling, DECISIONS; restore reserves of 5 (worker) and 2 (ingress) at quota raise) |
 | Trigger | SQS event source mapping (no public exposure) |
 
 **Responsibilities:**
@@ -212,7 +212,7 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 
 ### 2.5 SQS DLQ + Operator Redrive
 
-`pr-reviewer-dlq`, 14-day retention. Operator IAM role with the documented minimum set: `sqs:StartMessageMoveTask`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on the DLQ, plus `sqs:SendMessage` on the work queue — and the **source-queue redrive allow policy** naming the operator role. Redrive is a tested operational procedure, not an implicit capability. **Runbook (v6.6):** 1) inspect DLQ depth and sample messages for root cause; 2) deploy the fix and confirm it resolves the sampled cause; 3) `StartMessageMoveTask` back to the work queue; 4) verify the DLQ drains to zero and canonical comments converge (exactly one marker-bearing comment per affected PR); 5) log the drill. Exercised as acceptance criterion (j) (§7.3).
+`pr-reviewer-dlq`, 14-day retention. Operator IAM role with the documented minimum set: `sqs:StartMessageMoveTask`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on the DLQ, plus `sqs:SendMessage` on the work queue — and the **source-queue redrive allow policy** naming the operator role. Redrive is a tested operational procedure, not an implicit capability. **Runbook:** 1) inspect DLQ depth and sample messages for root cause; 2) deploy the fix and confirm it resolves the sampled cause; 3) `StartMessageMoveTask` back to the work queue; 4) verify the DLQ drains to zero and canonical comments converge (exactly one marker-bearing comment per affected PR); 5) log the drill. Exercised as acceptance criterion (j) (§7.3).
 
 ### 2.6 SSM Parameter Store
 
@@ -226,15 +226,15 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 
 Terraform defines IAM read policies only — no `aws_ssm_parameter` resources; no plaintext in state. SecureStrings use the AWS-managed `aws/ssm` KMS key (MVP; no CMK in the BOM) — SSM decrypts server-side via `WithDecryption`, so no direct `kms:Decrypt` grants are needed; migrating to a CMK requires adding `kms:Decrypt` scoped to that key (§5.1).
 
-**Rotation (v6.6):** PAT / GLM key — update SSM first, revoke the old credential last; warm containers converge within the 30-min TTL or immediately via 401-triggered re-fetch. Webhook secret — GitHub stores exactly one secret, so rotation necessarily 401s deliveries for up to the 30-min cache TTL; rotate in a maintenance window and recover missed deliveries via GitHub's 3-day redelivery.
+**Rotation:** PAT / GLM key — update SSM first, revoke the old credential last; warm containers converge within the 30-min TTL or immediately via 401-triggered re-fetch. Webhook secret — GitHub stores exactly one secret, so rotation necessarily 401s deliveries for up to the 30-min cache TTL; rotate in a maintenance window and recover missed deliveries via GitHub's 3-day redelivery.
 
-**Compromise runbook (v6.6):** revoke at the provider → overwrite the SSM value → force cache-bust (redeploy or version-bump; warm containers cannot be signalled directly) → verify the 401-recovery path (§2.3 item 8) → inspect the 7-day log groups for abuse lookback.
+**Compromise runbook:** revoke at the provider → overwrite the SSM value → force cache-bust (redeploy or version-bump; warm containers cannot be signalled directly) → verify the 401-recovery path (§2.3 item 8) → inspect the 7-day log groups for abuse lookback.
 
 ### 2.7 LLM — GLM-5.3-Flash
 
 320B/18B-active MoE, 1M-token context. Published rates ($0.15/M input, $0.03/M cached, $0.50/M output) vary by provider listing ($0.08–$0.15 input observed) — treat all cost figures as order-of-magnitude, configuration-driven values. Benchmarks (Terminal-Bench 2.1: 84.3; DeepSWE v1.1: 63.4) are vendor-reported. Typical review ≈ $0.002; 100K+10K tokens ≈ $0.02; budget-capped large review ≈ $0.02–0.04.
 
-**Model I/O contract (v6.4):** one versioned system prompt, maintained alongside the worker and exercised by the test suite (§4.4), that fixes the untrusted-data framing (§5.3), forbids tools, and mandates a bounded Markdown shape: `## Summary`; `## Findings` (each finding: severity ∈ {`HIGH`, `MEDIUM`, `LOW`}, `path:LINE` location with LINE ≥ 1, issue, suggested fix; count ≤ `max_findings`, a configuration parameter defaulting to 20); `## Risk Notes`; "No significant issues found." is the defined empty-finding output. Findings never contain `@mentions`, external image URLs, or approval verdicts ("safe to merge" et al.) — §5.3 control-plane separation. Output length is bounded by the worker-side `max_output_tokens` configuration parameter (never hard-coded — same configuration-parameter rule as §7.2 pricing), and the system prompt carries a `prompt_version` identifier logged per review (§4.3). A configured canary substring from the system prompt is checked during structural validation (§2.3 item 7): output containing it is rejected non-retryably and alerted — a leaked prompt is broadcast to a public comment, so enforcement must be output-side. The model **never** emits the canonical marker: the worker injects it deterministically when assembling the comment (§2.8), so canonical identity cannot regress with model behavior.
+**Model I/O contract:** one versioned system prompt, maintained alongside the worker and exercised by the test suite (§4.4), that fixes the untrusted-data framing (§5.3), forbids tools, and mandates a bounded Markdown shape: `## Summary`; `## Findings` (each finding: severity ∈ {`HIGH`, `MEDIUM`, `LOW`}, `path:LINE` location with LINE ≥ 1, issue, suggested fix; count ≤ `max_findings`, a configuration parameter defaulting to 20); `## Risk Notes`; "No significant issues found." is the defined empty-finding output. Findings never contain `@mentions`, external image URLs, or approval verdicts ("safe to merge" et al.) — §5.3 control-plane separation. Output length is bounded by the worker-side `max_output_tokens` configuration parameter (never hard-coded — same configuration-parameter rule as §7.2 pricing), and the system prompt carries a `prompt_version` identifier logged per review (§4.3). A configured canary substring from the system prompt is checked during structural validation (§2.3 item 7): output containing it is rejected non-retryably and alerted — a leaked prompt is broadcast to a public comment, so enforcement must be output-side. The model **never** emits the canonical marker: the worker injects it deterministically when assembling the comment (§2.8), so canonical identity cannot regress with model behavior.
 
 ### 2.8 Comment Strategy
 
@@ -266,7 +266,7 @@ Single evolving PR conversation comment (Issues Comments API) bearing the canoni
 
 - **Current accepted revision:** the PR head SHA confirmed against GitHub's **live PR state** (via `GET /repos/{repo}/pulls/{n}`) and committed to the state record. SHAs are not orderable strings; the comparison function is **equality against the live PR head**, never SHA lexicographic or any other synthetic ordering.
 - **States:** `ABSENT → (establish) → CLAIMED → (POST succeeds) → ACTIVE`; next revision: `ACTIVE → (establish, generation + 1) → CLAIMED → ACTIVE`. `STALE` is not a stored state: a `CLAIMED` record with an expired lease is treated as stale and re-claimable (derived, §3.1).
-- **Claim lease: 180s**, decoupled from both the Lambda timeout (900s, spec-002) and queue visibility (5400s): it spans only claim through finalize (§3.3), far shorter than the timeout — crash takeover is covered by lease expiry, not lease length. The lease is held only from claim through finalize (§3.3): review precedes the claim and is side-effect-free, so no lease exists during the LLM stage and no heartbeat is needed — the earlier "renew via heartbeat before the LLM stage" wording was an internal inconsistency and is removed (v6.4). Duplicate concurrent reviews waste bounded LLM spend; fencing prevents duplicate publication.
+- **Claim lease: 180s**, decoupled from both the Lambda timeout (900s, spec-002) and queue visibility (5400s): it spans only claim through finalize (§3.3), far shorter than the timeout — crash takeover is covered by lease expiry, not lease length. The lease is held only from claim through finalize (§3.3): review precedes the claim and is side-effect-free, so no lease exists during the LLM stage and no heartbeat is needed. Duplicate concurrent reviews waste bounded LLM spend; fencing prevents duplicate publication.
 
 ### 3.3 Fenced Publication Protocol (Exact Order)
 
@@ -312,9 +312,9 @@ Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec
 
 ### 4.3 Observability
 
-Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms (v6.6) — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary — secondary in the unreserved era: the invocation-spike alarm is the primary flood signal); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop). Eight alarms shipped. Kill switch (v6.6; restated for the unreserved era): set the worker's reserved concurrency to 0 — valid on an unreserved function; invocations refuse immediately — spend stops and queued work is retained up to the 4-day retention; disable the webhook (or the event source mapping) as well if ingress should stop enqueuing, since an active ingress against a dead worker grows the queue silently to retention expiry.
+Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary — secondary in the unreserved era: the invocation-spike alarm is the primary flood signal); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop). Eight alarms shipped. Kill switch (restated for the unreserved era): set the worker's reserved concurrency to 0 — valid on an unreserved function; invocations refuse immediately — spend stops and queued work is retained up to the 4-day retention; disable the webhook (or the event source mapping) as well if ingress should stop enqueuing, since an active ingress against a dead worker grows the queue silently to retention expiry.
 
-### 4.4 Testing & Verification Strategy (v6.4)
+### 4.4 Testing & Verification Strategy
 
 Gates: no commit without the installed pre-commit hooks (hygiene, ruff, gitleaks); no `terraform apply` without a green test run; acceptance criteria (§7.3 a–i) are automated integration tests against a deployed stack — the definition of done, not manual checks. Runtime code remains stdlib-only (§1.4); all test tooling lives in the dev dependency group.
 
@@ -330,11 +330,11 @@ Gates: no commit without the installed pre-commit hooks (hygiene, ruff, gitleaks
 ### 5.1 IAM Roles (Three)
 
 ```text
-Trust policies (v6.6): the ingress role trusts lambda.amazonaws.com scoped to its
+Trust policies: the ingress role trusts lambda.amazonaws.com scoped to its
 function ARN (aws:SourceArn); the worker role trusts on aws:SourceAccount — a
 function-ARN SourceArn condition fails CreateEventSourceMapping validation (seen
 live, T035); the operator role trusts the terraform-admin IAM user gated on MFA
-(SPR-60, Mars decision 2026-09-14). The worker's aws:SourceAccount scope trusts
+(DECISIONS 2026-09-14). The worker's aws:SourceAccount scope trusts
 any future Lambda in the account — accepted for this single-operator account
 (IaC-only; no untrusted path creates functions). The concrete tightening path
 is a permissions boundary on the worker role (roadmap); trust-policy conditions
@@ -364,7 +364,7 @@ Bootstrap OIDC trust stack (HCP plan/apply roles, `StringEquals` exact sub pins 
 
 ### 5.2 Ingress Threat Model
 
-Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded by the account-level concurrency pool (quota 10, both functions unreserved — §2.1), with the 3-day manual redelivery window as the only recovery; a sustained flood can additionally starve the worker (§6 failure mode 5 — spike alarm + kill switch). Stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction. Cost abuse (v6.4): PR floods — including fork PRs — convert directly into LLM spend, bounded by design to worker concurrency × per-review cost (§2.7), with 4-day queue retention shedding sustained backlog and queue-depth/DLQ alarms surfacing abnormal volume. Replay residual (v6.6): the GUID-dedup TTL (7 d) is the replay window; HMAC carries no timestamp, so a captured payload replayed after TTL expiry is accepted as new — stale-head replays are discarded by establish, but a current-head replay passes the fence and burns one bounded LLM review; accepted knowingly (bounded spend, no incorrect state).
+Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded by the account-level concurrency pool (quota 10, both functions unreserved — §2.1), with the 3-day manual redelivery window as the only recovery; a sustained flood can additionally starve the worker (§6 failure mode 5 — spike alarm + kill switch). Stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction. Cost abuse: PR floods — including fork PRs — convert directly into LLM spend, bounded by design to worker concurrency × per-review cost (§2.7), with 4-day queue retention shedding sustained backlog and queue-depth/DLQ alarms surfacing abnormal volume. Replay residual: the GUID-dedup TTL (7 d) is the replay window; HMAC carries no timestamp, so a captured payload replayed after TTL expiry is accepted as new — stale-head replays are discarded by establish, but a current-head replay passes the fence and burns one bounded LLM review; accepted knowingly (bounded spend, no incorrect state).
 
 ### 5.3 AI Input Security
 
@@ -404,7 +404,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 22 | Secrets in state/logs | IAM-only Terraform; logging prohibitions |
 | 23 | DynamoDB billing surprise | PROVISIONED mode |
 | 24 | Failed work silent | DLQ + alarm + tested, permissioned redrive |
-| 25 | PR flood cost abuse (v6.4) | Account concurrency pool (10, unreserved) bounds spend; 4 d retention sheds sustained backlog; depth/DLQ/spike alarms surface abnormal volume |
+| 25 | PR flood cost abuse | Account concurrency pool (10, unreserved) bounds spend; 4 d retention sheds sustained backlog; depth/DLQ/spike alarms surface abnormal volume |
 
 ---
 
@@ -414,9 +414,9 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 `aws_lambda_function` ×2; `aws_lambda_function_url`; `aws_lambda_event_source_mapping` (batch 1); `aws_sqs_queue` ×2 + redrive policy (maxReceiveCount 5) + **redrive allow policy naming the operator role**; `aws_dynamodb_table` (provisioned 25/25); IAM roles ×3 with inline policies; `aws_cloudwatch_log_group` ×2 (7-day retention); 8 `aws_cloudwatch_metric_alarm` (incl. DLQ-depth and worker-invocation-spike) + SNS topic + 2 log metric filters; `archive_file` ×2. **Absent:** API Gateway, VPC, NAT, S3 backend (MVP), SSM parameter resources, Secrets Manager, EventBridge, Lambda async-invoke config.
 
-**Repository layout & packaging (v6.4):** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **both** deployment zips, and `lambda/ingress_handler.py` / `lambda/worker_handler.py` stay thin entry points. This is a shared contract, not an abstraction — no further layering until a third consumer exists (Rule of Three). Security-sensitive helpers (log redaction, input sanitization) and behaviorally-identical logic (marker construction, envelope validation) are single-implemented here from the first duplication — one implementation is a security requirement, not a style choice. The validator returns a typed envelope (stdlib `dataclass`), and public handlers carry type annotations (stdlib `typing`).
+**Repository layout & packaging:** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **both** deployment zips, and `lambda/ingress_handler.py` / `lambda/worker_handler.py` stay thin entry points. This is a shared contract, not an abstraction — no further layering until a third consumer exists (Rule of Three). Security-sensitive helpers (log redaction, input sanitization) and behaviorally-identical logic (marker construction, envelope validation) are single-implemented here from the first duplication — one implementation is a security requirement, not a style choice. The validator returns a typed envelope (stdlib `dataclass`), and public handlers carry type annotations (stdlib `typing`).
 
-**Local state guardrails (v6.6):** `terraform.tfstate` is gitignored, backed up encrypted, and single-operator (the local backend has no locking — never two concurrent applies). Lambda environment variables must never carry secrets: SSM-only is a constraint, not merely a current fact.
+**Local state guardrails:** `terraform.tfstate` is gitignored, backed up encrypted, and single-operator (the local backend has no locking — never two concurrent applies). Lambda environment variables must never carry secrets: SSM-only is a constraint, not merely a current fact.
 
 ### 7.2 Current Configuration Baseline
 
