@@ -128,7 +128,7 @@ def stack(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     work_url = sqs.create_queue(
         QueueName=WORK_QUEUE_NAME,
         Attributes={
-            "VisibilityTimeout": "720",
+            "VisibilityTimeout": "5400",
             "MessageRetentionPeriod": "345600",
             "RedrivePolicy": json.dumps({"deadLetterTargetArn": dlq_arn, "maxReceiveCount": "5"}),
         },
