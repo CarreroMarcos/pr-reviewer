@@ -66,7 +66,7 @@ if os.environ.get("ACCEPTANCE_LIVE") != "1":
 
 FUNCTION_URL = os.environ.get(
     "ACCEPTANCE_FUNCTION_URL",
-    "https://og4jaj6uskhf2zcwpydshk7kjq0ceick.lambda-url.us-west-2.on.aws/",
+    "https://2clzftk3as32ofc7vxnv47pssu0zpajq.lambda-url.us-west-2.on.aws/",
 )
 REPO = os.environ.get("ACCEPTANCE_REPO", "CarreroMarcos/pr-reviewer")
 PR_NUMBER = int(os.environ.get("ACCEPTANCE_PR", "22"))
