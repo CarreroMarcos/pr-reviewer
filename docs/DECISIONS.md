@@ -6,6 +6,8 @@
 
 **Append-only discipline:** entries are never edited in place — a superseded entry is superseded by a new dated entry that names it. Entries exist only for behavior/config/accepted-risk changes and measurements; typo and wording fixes are silent. Every entry ends with a "Current truth" pointer into the HLD so a reader can jump from history to the normative statement. HLD § numbering is frozen — sections are added, never renamed or renumbered (specs and this log cite §X.Y) — so pointers stay stable; an entry written against an older HLD notes the version current at entry time when the section's content has since moved.
 
+**Fidelity convention:** the 2026-09-11/09-12 planning-revision entries are verbatim migrations from HLD §7.2 (performed 2026-09-20, restructure PR #71); entries created during or after that migration may be enriched summaries (references expanded) — the 2026-09-20 v6.9 → v6.10 entry is the enriched one. Neither is authoritative over the HLD.
+
 ## Entry format
 
 ```text
@@ -19,4 +21,67 @@
 Current truth: HLD §X.Y.
 ```
 
-<!-- Entries land here: first the Configuration Baseline delta paragraphs migrate out of docs/HLD.md (its "Configuration Baseline" section), then inline ruling/measurement asides (HLD restructure PR-2/PR-3, approved 2026-09-20). -->
+## 2026-09-11 — v6.1 → v6.2 — interface-contract clarifications only, zero architectural change (landed in the initial scaffold dbea837; authored pre-repository)
+
+**Context:** planning-revision record, migrated verbatim from HLD §7.2.
+**Decision:** canonical ingress response-contract table (§2.1); typed envelope schema with worker-side boundary validation (§2.1); `GET` response-shape validation before live-head fence (§2.3); state-record field contract incl. `ABSENT`-by-absence rule (§3.1).
+
+Current truth: HLD §2.1, §2.3, §3.1.
+
+## 2026-09-11 — v6.2 → v6.3 — security hardening only, zero architectural change (185e13b)
+
+**Context:** planning-revision record, migrated verbatim from HLD §7.2.
+**Decision:** worker SSM scope narrowed from `/pr-reviewer/*` to three explicit parameters — closes webhook-secret over-exposure contradicting §2.6 (§5.1); 1 MiB request-body cap with 413, enforced pre-decode (§2.1); Function URL CORS explicitly disabled (§5.2); CI dependency audit added to roadmap (§7.4).
+
+Current truth: HLD §5.1, §2.1, §5.2, §7.4.
+
+## 2026-09-11 — v6.3 → v6.4 — senior-practice completions, zero architectural change (dc34b4f)
+
+**Context:** planning-revision record, migrated verbatim from HLD §7.2.
+**Decision:** lease/heartbeat inconsistency resolved — lease spans claim→finalize only; review is side-effect-free and lease-free (§3.2); Model I/O contract defined and canonical marker moved to worker-injection (§2.7, §2.3 item 7, §2.8); ingress secret hydration with 30-min refresh (§2.1); repository layout & packaging with single-source shared contract (§7.1); testing & verification strategy with acceptance-mapping and pre-apply gates (§4.4); PR-flood cost-abuse documented (§5.2, failure mode 25).
+
+Current truth: HLD §3.2, §2.7, §2.8, §2.1, §7.1, §4.4, §5.2.
+
+## 2026-09-11 — v6.4 → v6.5 — principles-consistency pass (bc2680a)
+
+**Context:** planning-revision record, migrated verbatim from HLD §7.2.
+**Decision:** worker credential cache restated as warm-container state behind an injectable accessor (§2.3 item 1 ↔ §4.4); §4.4 gate wording tightened.
+
+Current truth: HLD §2.3 item 1, §4.4.
+
+## 2026-09-12 — v6.5 → v6.6 — three-oracle reconciliation: consistency, contracts, security operations (zero architectural change) (43861d3)
+
+**Context:** planning-revision record, migrated verbatim from HLD §7.2.
+**Decision:** DynamoDB write accounting corrected to ≈4 WCU per new-revision review, burst ≤ 20 WCU/s (§2.4, §4.1); lease "renewable" remnants removed everywhere (§3.2, failure mode 8, §7.2); `STALE` made derived-never-stored with the ACTIVE→CLAIMED transition made explicit (§3.1, §3.2); finalize and creation-lease conditions stated explicitly (§3.3, §3.4); reconciliation requires full pagination + exact-marker match (§3.4); envelope tightened with `envelope_version` and length bounds (§2.1); ingress rows added for signed-but-invalid bodies (§2.1); LLM error contract, output-validation disposition, prompt canary, and output prohibitions (§2.3 item 8, §2.7); `/pr-reviewer/glm-endpoint` parameter added — worker ARN list now four (§2.3 item 5, §2.6, §5.1); `ChangeMessageVisibility` added to worker role + trust policies + LeadingKeys restriction (§5.1); KMS key decision named, rotation and compromise runbooks (§2.6); replay residual documented (§5.2); DLQ redrive runbook + acceptance criterion (j) (§2.5, §7.3); alarms/paging + budget kill switch (§4.3); local-state guardrails (§7.1); marker declared non-public (§2.8); all dotted §2.3.x references normalized to §2.3 item N.
+
+Current truth: HLD §2–§7 as itemized.
+
+## 2026-09-12 — v6.6 → v6.7 — engineering-principles alignment: §9 agentic evaluations, §3 single-implementation scope, §5 retry ownership (zero architectural change) (bbd1233)
+
+**Context:** planning-revision record, migrated verbatim from HLD §7.2.
+**Decision:** pinned model-evaluation set with rerun-on-`prompt_version`/model-change rule added to the test strategy (§4.4 item 4); retry ownership stated — queue owns retries, single in-request 401 re-fetch (§2.2); time-based recovery paths (credential TTL, rotation convergence) exercised via injected clocks (§4.4 item 3); `lambda/common/` scope strengthened — security-sensitive and must-stay-identical helpers single-implemented, typed envelope adapter + handler annotations (§7.1); deployment provenance + rollback sentence, and SSM parameter count corrected four → five (§7.3).
+
+Current truth: HLD §4.4, §2.2, §7.1, §7.3.
+
+## 2026-09-17 — v6.7 → v6.8 — measurement-only revision (no architectural or configuration change; recorded the AC-(b) budget violation as accepted risk)
+
+**Context:** the "6–15 s typical" worker budget had never been measured against the live endpoint.
+**Decision:** live-endpoint LLM latency measured 2026-09-17 — ~130 s/case thinking-off (max ~140 s), ~318 s thinking-on, roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar (§4.2 measured-reality note; §2 rationale annotated; §7.3 AC (b) flagged currently-unmet). Single time-window measurement, re-probe pending; companion A/B found model choice, thinking, and temperature buy no quality on the eval corpus at material latency cost (`tests/model_evals/results/`).
+**Consequences:** latency, not model choice, is the binding product constraint until a re-probe says otherwise; do not assume sub-15 s LLM legs against the current endpoint.
+
+Current truth: HLD §4.2.
+
+## 2026-09-19 — v6.8 → v6.9 — measurement/config-only revision (zero architectural, budget, or AC change)
+
+**Context:** the SPR-60 256 MB trim starved the worker against the measured LLM latency (~130 s/case).
+**Decision:** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19, recorded in specs/002-worker-sizing-hcp/spec.md; sizing rationale and free-tier math therein); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
+
+Current truth: HLD §2.2, §2.3, §7.2.
+
+## 2026-09-20 — v6.9 → v6.10 — documentation-only ingress-half drift corrections (2659989)
+
+**Context:** the 2026-09-20 sync audit found the ingress half of the HLD stale — every prior drift pass was worker-sizing-scoped. Record enriched during migration (references expanded) — a summary, not a verbatim copy.
+**Decision:** ingress memory corrected 128 MB → 512 MB (compute.tf documents the cold-start history); unreserved reality documented across admission semantics (§2.1), §4.1, §6 failure modes 5/14, and the §7.2 table (2026-09-15 ruling); `reopened` added to the allow-list and envelope enum (spec delta D1, `specs/001-pr-reviewer/contracts/ingress-webhook.md`); §4.1 Lambda row re-derived at spec-002 sizing (~225 GB-s/review); trust-policy mechanism corrected (worker `aws:SourceAccount`, operator terraform-admin + MFA); GitHub timeout restated as a single 10s; alarm list updated to the shipped 8-alarm set; §5.1 cites the bootstrap OIDC stack; the 2026-09-20 PR #68 hygiene pass (Gate-21 advisory docs fixes, squash-merged as 0381b56) is covered by this entry (it added no v6.9 delta).
+**Consequences:** documentation-only — no infrastructure change; the account-level starvation residual of the unreserved posture is documented as accepted (§6 failure mode 5).
+
+Current truth: HLD §2.1, §4.1, §4.3, §5.1, §6.

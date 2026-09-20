@@ -418,7 +418,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 **Local state guardrails (v6.6):** `terraform.tfstate` is gitignored, backed up encrypted, and single-operator (the local backend has no locking — never two concurrent applies). Lambda environment variables must never carry secrets: SSM-only is a constraint, not merely a current fact.
 
-### 7.2 Configuration Baseline (v6.0 → v6.1 deltas)
+### 7.2 Current Configuration Baseline
 
 | Component | Value |
 | :--- | :--- |
@@ -431,23 +431,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 404 handling | Explicit decision table |
 | Pricing in alarms/budgets | Configuration parameters, never hard-coded |
 
-**v6.1 → v6.2 deltas (interface-contract clarifications only, zero architectural change):** canonical ingress response-contract table (§2.1); typed envelope schema with worker-side boundary validation (§2.1); `GET` response-shape validation before live-head fence (§2.3); state-record field contract incl. `ABSENT`-by-absence rule (§3.1).
-
-**v6.2 → v6.3 deltas (security hardening only, zero architectural change):** worker SSM scope narrowed from `/pr-reviewer/*` to three explicit parameters — closes webhook-secret over-exposure contradicting §2.6 (§5.1); 1 MiB request-body cap with 413, enforced pre-decode (§2.1); Function URL CORS explicitly disabled (§5.2); CI dependency audit added to roadmap (§7.4).
-
-**v6.3 → v6.4 deltas (senior-practice completions, zero architectural change):** lease/heartbeat inconsistency resolved — lease spans claim→finalize only; review is side-effect-free and lease-free (§3.2); Model I/O contract defined and canonical marker moved to worker-injection (§2.7, §2.3 item 7, §2.8); ingress secret hydration with 30-min refresh (§2.1); repository layout & packaging with single-source shared contract (§7.1); testing & verification strategy with acceptance-mapping and pre-apply gates (§4.4); PR-flood cost-abuse documented (§5.2, failure mode 25).
-
-**v6.4 → v6.5 deltas (principles-consistency pass):** worker credential cache restated as warm-container state behind an injectable accessor (§2.3 item 1 ↔ §4.4); §4.4 gate wording tightened.
-
-**v6.5 → v6.6 deltas (three-oracle reconciliation: consistency, contracts, security operations — zero architectural change):** DynamoDB write accounting corrected to ≈4 WCU per new-revision review, burst ≤ 20 WCU/s (§2.4, §4.1); lease "renewable" remnants removed everywhere (§3.2, failure mode 8, §7.2); `STALE` made derived-never-stored with the ACTIVE→CLAIMED transition made explicit (§3.1, §3.2); finalize and creation-lease conditions stated explicitly (§3.3, §3.4); reconciliation requires full pagination + exact-marker match (§3.4); envelope tightened with `envelope_version` and length bounds (§2.1); ingress rows added for signed-but-invalid bodies (§2.1); LLM error contract, output-validation disposition, prompt canary, and output prohibitions (§2.3 item 8, §2.7); `/pr-reviewer/glm-endpoint` parameter added — worker ARN list now four (§2.3 item 5, §2.6, §5.1); `ChangeMessageVisibility` added to worker role + trust policies + LeadingKeys restriction (§5.1); KMS key decision named, rotation and compromise runbooks (§2.6); replay residual documented (§5.2); DLQ redrive runbook + acceptance criterion (j) (§2.5, §7.3); alarms/paging + budget kill switch (§4.3); local-state guardrails (§7.1); marker declared non-public (§2.8); all dotted §2.3.x references normalized to §2.3 item N.
-
-**v6.6 → v6.7 deltas (updated engineering-principles alignment: §9 agentic evaluations, §3 single-implementation scope, §5 retry ownership — zero architectural change):** pinned model-evaluation set with rerun-on-`prompt_version`/model-change rule added to the test strategy (§4.4 item 4); retry ownership stated — queue owns retries, single in-request 401 re-fetch (§2.2); time-based recovery paths (credential TTL, rotation convergence) exercised via injected clocks (§4.4 item 3); `lambda/common/` scope strengthened — security-sensitive and must-stay-identical helpers single-implemented, typed envelope adapter + handler annotations (§7.1); deployment provenance + rollback sentence, and SSM parameter count corrected four → five (§7.3).
-
-**v6.7 → v6.8 deltas (measurement-only revision — zero architectural, budget, or AC change):** live-endpoint LLM latency measured 2026-09-17 — ~130 s/case thinking-off (max ~140 s), ~318 s thinking-on, roughly 10× the 6–15 s "typical" and the ≤15 s AC-(b) bar (§4.2 measured-reality note; §2 rationale annotated; §7.3 AC (b) flagged currently-unmet). Single time-window measurement, re-probe pending; companion A/B found model choice, thinking, and temperature buy no quality on the eval corpus at material latency cost (`tests/model_evals/results/`).
-
-**v6.8 → v6.9 deltas (measurement/config-only revision — zero architectural, budget, or AC change):** worker sizing raised to 900 s / 1769 MB (1 full vCPU) with queue visibility raised to 5400 s (= 6 × 900, AWS-recommended ratio invariant carried forward); supersedes the SPR-60 256 MB trim (Mars ruling 2026-09-19; sizing rationale and free-tier math in specs/002-worker-sizing-hcp/spec.md); HCP Terraform adoption staged (remote state in CLI-driven workspace `pr-reviewer`, org `mars-net`; bootstrap OIDC trust applied once locally, never HCP-managed). §2.3 reserved-concurrency row corrected to match live config (unreserved per the 2026-09-15 ruling) — pre-existing table drift caught by the self-review pass.
-
-**v6.9 → v6.10 deltas (documentation-only — no infrastructure change; aligns the HLD with shipped reality, including the account-level starvation residual of the unreserved posture, §6 failure mode 5):** ingress memory corrected 128 MB → 512 MB (compute.tf documents the cold-start history); unreserved reality documented across admission semantics (§2.1), §4.1, §6 failure modes 5/14, and the §7.2 table (2026-09-15 ruling); `reopened` added to the allow-list and envelope enum [D1]; §4.1 Lambda row re-derived at spec-002 sizing (~225 GB-s/review); trust-policy mechanism corrected (worker `aws:SourceAccount`, operator terraform-admin + MFA); GitHub timeout restated as a single 10s; alarm list updated to the shipped 8-alarm set; §5.1 cites the bootstrap OIDC stack; the 2026-09-20 #68 drift pass is covered by this entry (it added no v6.9 delta).
+**Change history:** superseded values, rulings, and per-revision deltas (v6.1 → v6.10) are recorded in [docs/DECISIONS.md](DECISIONS.md) — append-only. This section carries current values only.
 
 ### 7.3 Deployment Sequence
 
