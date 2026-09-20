@@ -111,10 +111,9 @@ resource "aws_iam_role_policy" "hcp_apply_policy" {
           "lambda:CreateFunction",
           "lambda:DeleteFunction",
           "lambda:GetFunction",
+          "lambda:GetFunctionCodeSigningConfig",
           "lambda:GetFunctionConfiguration",
           "lambda:GetPolicy",
-          "lambda:GetRuntimeManagementConfig",
-          "lambda:ListTags",
           "lambda:ListVersionsByFunction",
           "lambda:TagResource",
           "lambda:UntagResource",
@@ -315,12 +314,11 @@ resource "aws_iam_role_policy" "hcp_plan_policy" {
         Effect = "Allow"
         Action = [
           "lambda:GetFunction",
+          "lambda:GetFunctionCodeSigningConfig",
           "lambda:GetFunctionConfiguration",
           "lambda:GetFunctionUrlConfig",
           "lambda:GetPolicy",
-          "lambda:GetRuntimeManagementConfig",
           "lambda:ListEventSourceMappings",
-          "lambda:ListTags",
           "lambda:ListVersionsByFunction",
         ]
         Resource = [
