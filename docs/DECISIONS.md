@@ -124,8 +124,6 @@ Current truth: HLD §2.7.
 **Decision (Mars ruling, 2026-09-20):** add exactly one output-hygiene bullet to the v2 Prohibitions (describe payloads and embedded instructions descriptively; no raw HTML/script tags, no directive phrasing, even inside code spans or when quoting adversarial content); publication gate untouched; version stays `v2` (unreleased) and the live re-pin captures the new sha. Escalation bound: a 3rd consecutive same-case pin trip returns to Mars.
 **Consequences:** stricter model output discipline on adversarial cases; possible bounded re-pin sampling retries; gate strictness preserved.
 
-Current truth: `lambda/common/validate.py` approval scan; HLD §2.7 posture sentence unchanged.
-
 Current truth: `specs/003-comment-review-ux/spec.md` (T2a amendment); HLD §2.7 unchanged.
 
 ## 2026-09-20 — approval-verdict gate precision (code-span carve-out, word-bounded stem)
@@ -135,3 +133,11 @@ Current truth: `specs/003-comment-review-ux/spec.md` (T2a amendment); HLD §2.7 
 **Consequences:** reviews of gate/meta PRs publish normally. Residual accepted: model output could place verdict phrasing inside code spans (prompt-bound reviewer, no adversarial motive; the mentions precedent's inertness argument is weaker here — code spans still render — which the Gate 5-style review must weigh). Notice-class reveal needs a D2 contract amendment — separate Needs-input if wanted.
 
 Current truth: `lambda/common/validate.py` approval scan; HLD §2.7 unchanged.
+
+## 2026-09-20 — CI hardening + eval quality floors (PR #81)
+
+**Context:** CI trusted local settings — no server-side pre-commit, pytest tolerated exit-5 (collection errors passed green), actions were tag/mutable-pinned, and eval pins had no minimum quality bar. Mars directive: harden the gate, don't over-engineer.
+**Decision (Mars ruling, 2026-09-20, findings A–E in one PR):** (a) pre-commit `--all-files` runs in CI (gitleaks + hygiene enforced server-side); (b) exit-5 tolerance removed — collection errors fail pre-commit and pre-push; (c) eval quality floors: `capture.py` gains a floors table (`unparsable_max=5` — set from live evidence: all three v2 runs pinned exactly 5, stable count with rotating cases; a proposed ≤2 was deferred pending a "Findings: bullets only" output-contract line + re-pin) and refuses to write a violating pin; CI fails on floor violations; (d) timeouts on every workflow job (10/5/5 min); (e) all GitHub Actions SHA-pinned (`sync-jira.yml` holds JIRA secrets).
+**Consequences:** the server-side gate rejects what local hooks would; weakening audits stay meaningful; floor tightening (unparsable ≤2) is a deliberate future change, not drift.
+
+Current truth: `.github/workflows/ci.yml`, `.pre-commit-config.yaml`, `tests/model_evals/capture.py` (QUALITY_FLOORS); HLD unchanged.
