@@ -3,7 +3,8 @@
 **Status**: Implemented & deployed 2026-09-20 — T1 (PR #76), T2 (PR #79,
 `tf-reviewer-ux` → `fc72db8`), T2a amendment (PR #78, `71a4033`);
 Gates 1–3a APPROVE.
-**Source**: `docs/ideas.md` proposals 1–3, accepted by Mars directive 2026-09-20
+**Source**: `docs/ideas.md` proposals 1–3 (since removed from the backlog
+post-implementation), accepted by Mars directive 2026-09-20
 ("spec out the first 3 … gate every work with oracle … do as much as you can
 without my input").
 **Authority**: HLD owns architecture; this spec owns task scope for the two
