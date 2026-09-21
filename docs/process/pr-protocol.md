@@ -44,7 +44,8 @@ Disposition rules:
   after that one retrigger, note it and proceed — recording timestamp, PR,
   revision sha, and a `aws logs filter-log-events` window over the review
   period in the state file, so persistent failures are distinguishable from
-  transient ones.
+  transient ones. Post-#83 gate precision (deployed `tf-gate-precision`),
+  expect this class rarely; the retrigger remedy stands regardless.
 - **Still absent/unchanged at 120s+45s** → note it in the session/state file,
   proceed.
 

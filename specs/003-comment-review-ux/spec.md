@@ -1,7 +1,8 @@
 # Spec 003 — Reviewer Comment UX (ideas 1–3)
 
-**Status**: Revision 2 — Gate 1 remediation applied (M1–M7 + A1–A8). For Oracle
-re-review (Gate 1, attempt 2 of 3).
+**Status**: Implemented & deployed 2026-09-20 — T1 (PR #76), T2 (PR #79,
+`tf-reviewer-ux` → `fc72db8`), T2a amendment (PR #78, `71a4033`);
+Gates 1–3a APPROVE.
 **Source**: `docs/ideas.md` proposals 1–3, accepted by Mars directive 2026-09-20
 ("spec out the first 3 … gate every work with oracle … do as much as you can
 without my input").

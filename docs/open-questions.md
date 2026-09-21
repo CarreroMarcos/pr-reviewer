@@ -36,8 +36,9 @@ buys nothing here: recall identical (1.0 everywhere), no precision gain
 130 s mean/case). Ops alarm folded out of the same run: thinking-OFF calls
 measured ~130 s/case on the live endpoint (HLD assumed 5–8 s; product bar is
 ≤15 s) — possibly provider load at run time; re-probe before concluding
-(still pending as of 2026-09-18; HLD v6.8 §4.2 now carries the measurement), but
-if it stands the latency budget is the real problem, not model choice.
+(still pending as of 2026-09-18; HLD v6.8 §4.2 now carries the measurement),
+re-probed 2026-09-20: ~131 s/case mean across three runs — the measurement
+stands, and the latency budget is the real problem, not model choice.
 Variant data: `tests/model_evals/results/*.json`.
 
 ## 2. How do we evaluate review quality at all? — **prereq**
@@ -67,6 +68,11 @@ agreement only 5/13 (systematic HIGH↔MEDIUM drift — A/B signal, no bars
 asserted yet). Remains for a fuller answer: real defects from repo history,
 larger N, and quality bars derived from A/B data (Q1/Q3/Q6).
 
+**Update (2026-09-20):** quality floors now set a minimum bar at pin time —
+`capture.py` refuses to write a baseline violating the floors table
+(`unparsable_max=5`, from live-run evidence) and CI fails on floor
+violations (PR #81).
+
 ## 3. System prompt tuning — **open**
 
 `prompts/system_prompt.md` (v1, ~3.7 KB) is untested against alternatives:
@@ -82,12 +88,15 @@ results.
 
 **Status (2026-09-16):** the A/B rail exists (T058 eval set + versioned,
 staleness-guarded results); prompt variants currently need a manual re-capture
-per variant.
+per variant. **Update (2026-09-20):** prompt v2 shipped (xss/injection
+escalation hardening + the T2a output-hygiene bullet), pinned against the
+current payload shape.
 
 ## 4. More context for the reviewer — **deferred**
 
-Today the model sees the diff (bounded) only. Candidates: file tree, PR
-title/body, neighboring code, CI status, linked issues, prior review comments.
+Today the model sees the budgeted diff plus PR title/description and the prior
+canonical comment on re-reviews (spec 003 T2, 2026-09-20). Remaining
+candidates: file tree, neighboring code, CI status, linked issues.
 
 - More context should raise true-bug recall but costs tokens + latency —
   price it with Q2.
@@ -115,10 +124,12 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
 
 ## 7. Smaller questions — **open**
 
-- `assemble_approval_verdict`: seen live once (a real-webhook ride discarded
-  because the model emitted approval-like language). Is the validator rule
-  tuned right, and should such rides take one bounded re-sample instead of
-  dropping the review entirely?
+- `assemble_approval_verdict` — **resolved 2026-09-20**: it recurred 5× in one
+  evening, all on PRs about the reviewer's own gate; root cause was the raw
+  substring `approv` matching quoted identifiers and descriptive prose. Fixed
+  by gate precision (code-span carve-out + word-bounded stem; PR #83,
+  DECISIONS 2026-09-20, deployed `tf-gate-precision`) — the bounded re-sample
+  alternative was not needed.
 - Same-SHA LLM cache: every reopen currently re-runs the LLM (bounded waste,
   accepted by HLD §3.2). Worth a content-hash cache when spend matters?
 - Two-stage review: a cheap model triages hunks → an expensive model
@@ -130,15 +141,10 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
   findings, shape-valid output — direction is reassuring but one mechanical
   diff answers nothing about depth on real large diffs.
 - Non-English PRs and non-code files: behavior untested.
-- **PT timestamp in bot comments** (Mars, 2026-09-14): every reviewer comment
-  should carry a Pacific-time stamp so Mars can see when it was posted. NOT
-  yet implemented — the canonical comment format is spec-pinned (moto ride
-  pins it), so the change needs a deliberate spec-conformant edit + a live
-  redeploy to matter. Design constraint: zero new runtime deps (AGENTS law),
-  so `zoneinfo` needs verified tzdata availability in the Lambda runtime
-  (unverified) or a hand-rolled PST/PDT offset table; also pick format +
-  placement (footer line vs header) and whether the stamp is UTC alongside.
-  Decide at next pre-deploy pass.
+- **PT timestamp in bot comments** (Mars, 2026-09-14) — **resolved 2026-09-20**:
+  shipped with spec 003 T1; canonical comments carry
+  `updated <Mon DD, H:MM AM> PT`, rendered in code (America/Los_Angeles),
+  zero new runtime deps.
 - **(b) equality-path head gate** (Gate-3 F2 → Gate-4 A3c, 2026-09-14):
   repeat delivery of an already-superseded SHA takes the HLD §3.3 (b)
   equality fast-path, which returns the STORED head — so the run performs a
