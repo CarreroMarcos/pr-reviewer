@@ -22,6 +22,9 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
 4. **HCP Terraform adoption** (Mars has an unused free account): remote state +
    locking, PR-triggered speculative plans, UI-gated applies. This mechanizes
    the "agent never applies" law: plan-on-PR, Mars approves apply in the UI.
+   (Apply gating later changed to **tag-triggered auto-apply** — Mars,
+   2026-09-26; the never-apply law now lives in the tag-approval rule,
+   AGENTS.md "tf-* tags".)
 
 ## Decisions
 
@@ -33,8 +36,10 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
 - HCP Terraform: **CLI-driven workspace** named `pr-reviewer`, organization =
   Mars's choice (M1). AWS auth via **dynamic credentials (OIDC)** — no static
   keys in HCP (official current guidance; static env-var recipes are legacy).
-- GitHub link via the **HCP Terraform GitHub App**, speculative plans ON,
-  apply method = **Manual apply** (Mars approves every apply in the UI).
+- GitHub link via the **HCP Terraform GitHub App**, speculative plans ON.
+  Apply method: **auto-apply on `tf-*` tag push** (Mars correction
+  2026-09-26 — supersedes the original Manual-apply setting; agents still
+  need his explicit yes before pushing a tag, per AGENTS.md "tf-* tags").
 - **Drift detection is NOT included in Free** (Standard+ only — verified
   developer.hashicorp.com/terraform/cloud-docs/workspaces/health). Free
   substitute: occasional UI "Start run" plan-only runs — a plan diffs live
@@ -184,4 +189,7 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   `terraform.tfstate` + `.backup` stay until acceptance passes.
 - **Cost floor:** AWS side unchanged in free tier (analysis 2026-09-19); HCP
   Free adds $0. Drift detection (Standard+) explicitly out of scope — the
-  plan-on-PR + occasional UI plan is the free substitute.
+  plan-on-PR + occasional UI plan is the free substitute. (Mars,
+  2026-09-26: plan-on-PR is **cut** — tag-based VCS triggering and
+  speculative PR plans are mutually exclusive; the occasional UI plan-only
+  run remains the only substitute.)
