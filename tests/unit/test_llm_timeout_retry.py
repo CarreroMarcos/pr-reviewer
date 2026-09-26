@@ -394,9 +394,8 @@ def test_401_then_timeout_duration_covers_only_the_timed_out_attempt(caplog):
 
     Clock reads inside `_call_llm`: (1) original anchor 100.0 s, (2)
     re-anchor 200.0 s after the 401 refresh, (3) attempt-window close
-    212.5 s → 12_500 ms. A fourth read happens later (comment timestamp);
-    300.0 s remains unconsumed, proving no extra reads stretched the
-    window."""
+    212.5 s → 12_500 ms. The fourth tick is consumed by the comment
+    timestamp in review(); a fifth read would StopIteration."""
     ticks = iter([100.0, 200.0, 212.5, 300.0])
     with caplog.at_level(logging.WARNING, logger="worker_handler"):
         content, seen = _run_review(
