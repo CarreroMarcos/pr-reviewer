@@ -155,7 +155,12 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   changed findings before continuing; the loop is stable when only accepted
   residuals remain. If the canonical is unchanged or errored at 120s, wait
   another 45s and re-fetch once; still absent/errored → note it and proceed
-  (merge still requires green CI, never a bot verdict).
+  (merge still requires green CI, never a bot verdict). **Hard stop
+  (2026-09-26):** once the per-round finding count flattens — stable count
+  across 2 consecutive rounds — stop self-fixing: push the remaining open
+  findings into the gate brief as "open at freeze, rulings demanded" with
+  proposed dispositions and let the gate arbitrate. Chasing the bot's long
+  tail costs rounds without converging.
 - **tf-* tags are the HCP apply trigger (Mars, 2026-09-19):** agents may
   push `tf-*` tags only with Mars's explicit approval — ask when >=90%
   confident the tagged commit should be applied, and wait for his yes.

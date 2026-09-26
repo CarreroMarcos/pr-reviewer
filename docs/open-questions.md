@@ -157,3 +157,26 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
   (deterministic scheduler over scripted step boundaries) is a bigger
   investment than any current AC demands; US4.AC2/T050 cover the deploy-side.
   Decide whether to invest or keep the seed-based model.
+
+## 8. Carried backlog (non-ticket) — **tracked**
+
+Items surfaced by gates/bot reviews that no current AC owns; carried here so
+they survive session boundaries (2026-09-26, reflect pass with Mars).
+
+- **max=1 ordering pin:** pin the exact ordering guarantee the queue's
+  `max=1`-style delivery actually provides before code relies on it.
+- **HCL-parse robustness:** harden HCL/terraform parsing against the
+  failure classes seen in review rounds.
+- **Cross-generation convergence test:** prove repeat-delivery converges
+  across model generations, not only within one.
+- **Lease-window state-machine test** (HLD-004 scope, recorded in-diff):
+  mutex acquire/refresh/release/takeover transitions as a state machine.
+- **Contention-rate alarm** (Phase 1 operability, recorded in-diff).
+- **#91 polish trio** (from the #91 gate): docstring 4th-tick prose fix;
+  StatefulGitHub unknown-id PATCH should raise; matrix test `str()`
+  wire-leg.
+- **GUID flip-flop watch:** duplicate-queue-copies theory behind the
+  observed GUID flip-flop; watch for recurrence before investing.
+- **HLD-004 spec polish** (Gate 5 attempt 3 advisory, not a merge
+  condition): prefix "at offline scoring," to the adjudication-flag clause
+  so the flagging duty names its stager.
