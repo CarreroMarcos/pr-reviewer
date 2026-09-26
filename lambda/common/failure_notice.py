@@ -27,14 +27,30 @@ publish → conditional finalize — with the publish callback delegated to
 creation-lease POST when none exists, with re-check). No new executor
 logic, no new state fields (R6), no new permissions.
 
-Trigger mapping (`should_publish_notice`): pure function over the D2
-contract table. Transient/LLM-unusable rows publish only at the FINAL
-queue attempt (`receive_count >= max_receive_count`, default 5 —
-`maxReceiveCount`; tolerate above after redrive); assemble-invalid,
-LLM-401, and invalid-key publish immediately; GitHub-401 / lost-access
-/ invalid-envelope / superseded / stale / duplicate / non-failures
-skip. Parsing `int(Attributes["ApproximateReceiveCount"])` out of the
-SQS record is worker (T054) scope — this function takes the parsed ints.
+Trigger mapping (`should_publish_notice` + `notice_phase`): pure functions
+over the D2 contract table. Transient/LLM-unusable rows publish at the
+FIRST queue attempt (`receive_count <= 1` — an instant, friendly
+"retrying" notice so the failure is never silent) and again — replacing
+the first notice in place via the shared-marker PATCH path — at the FINAL
+attempt (`receive_count >= max_receive_count`, default 3 —
+`maxReceiveCount`, mirrored by `worker_handler._MAX_RECEIVE_COUNT` and
+pinned to terraform/messaging.tf by tests/contracts/
+test_terraform_contract.py; tolerate above after redrive). Intermediate
+attempts (1 < count < max) post NOTHING — the first notice stays
+untouched (post-once). Permanent rows (assemble-invalid, LLM-401,
+invalid-key) publish the FINAL notice immediately — no retry will happen,
+so the final wording is the honest one. GitHub-401 / lost-access /
+invalid-envelope / superseded / stale / duplicate / non-failures skip.
+Parsing `int(Attributes["ApproximateReceiveCount"])` out of the SQS
+record is worker (T054) scope — these functions take the parsed ints.
+
+Success clearing: no dedicated delete/edit step exists or is needed —
+the notice comment carries the same canonical marker and its id is
+persisted by `reconcile`, so the success-path publish (`_make_publish`)
+PATCHes that same comment with the review content, replacing the notice
+in place. A stale "retrying" notice therefore cannot survive a
+successful publish; tests/unit/test_error_classification.py pins the
+full first-failure → intermediate → final → success sequence.
 
 Disposition boundary: `publish_failure_notice` RETURNS the HLD §4.3 /
 research-R8 `failure_notice_published` value (`NoticeDisposition`:
@@ -67,15 +83,36 @@ from common.reconcile import reconcile
 from common.state import review_pk
 
 NOTICE_TEMPLATE = (
-    "Automated review could not be completed for revision {head_sha}. "
-    "The failure has been logged for the operator; "
-    "no findings are available for this revision."
+    "Automated review could not be completed for revision {head_sha} after {attempts}. "
+    "Push a new commit to trigger a fresh review. "
+    "The failure has been logged for the operator."
+)
+
+RETRYING_TEMPLATE = (
+    "Automated review did not complete for revision {head_sha}: the AI backend "
+    "was slow to respond. It will be retried automatically in about 30 minutes; "
+    "no action is needed. This comment will be updated with the review, or with "
+    "next steps if all retries fail."
 )
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _MAX_REPO_LENGTH = 128
 _MAX_PR_NUMBER = 10**9
+_MAX_ATTEMPTS = 99
+
+# SQS redrive budget default (HLD §2.2, terraform/messaging.tf
+# `maxReceiveCount = 3`); the worker mirrors it and the contract test
+# pins terraform == worker == this default.
+DEFAULT_MAX_RECEIVE_COUNT = 3
+
+
+class NoticePhase(StrEnum):
+    """Which fixed template a notice carries: RETRYING (first transient
+    failure — automatic retry ahead) or FINAL (no more retries)."""
+
+    RETRYING = "retrying"
+    FINAL = "final"
 
 
 class NoticeError(ValueError):
@@ -152,37 +189,88 @@ def _check_pr_number(pr_number: Any) -> int:
     return pr_number
 
 
-def build_failure_notice(repo_full_name: str, pr_number: int, head_sha: str) -> str:
+def _attempts_phrase(attempts: int) -> str:
+    """Plain-language attempts count for the final template."""
+    return f"{attempts} attempt" if attempts == 1 else f"{attempts} attempts"
+
+
+def build_failure_notice(
+    repo_full_name: str,
+    pr_number: int,
+    head_sha: str,
+    *,
+    phase: NoticePhase = NoticePhase.FINAL,
+    attempts: int = 1,
+) -> str:
     """Assemble the canonical failure-notice content: worker-injected
     marker, then the fixed D2 template with exactly the head SHA
-    interpolated. Inputs are validated strictly (`NoticeError`) — the SHA
-    is the only variable, so it must be beyond reproach."""
+    (and, for the final phase, the attempts count) interpolated. Inputs
+    are validated strictly (`NoticeError`) — the template variables must
+    be beyond reproach. `attempts` is ignored for the retrying phase (no
+    count is claimed for a review that will be retried)."""
     _check_repo(repo_full_name)
     _check_pr_number(pr_number)
     sha = _check_sha(head_sha)
-    return f"{build_marker(repo_full_name, pr_number)}\n\n{NOTICE_TEMPLATE.format(head_sha=sha)}"
+    if not isinstance(phase, NoticePhase):
+        raise NoticeError("phase", "bad_phase")
+    if isinstance(attempts, bool) or not isinstance(attempts, int):
+        raise NoticeError("attempts", "bad_attempts")
+    if not 1 <= attempts <= _MAX_ATTEMPTS:
+        raise NoticeError("attempts", "bad_attempts")
+    if phase is NoticePhase.RETRYING:
+        body = RETRYING_TEMPLATE.format(head_sha=sha)
+    else:
+        body = NOTICE_TEMPLATE.format(head_sha=sha, attempts=_attempts_phrase(attempts))
+    return f"{build_marker(repo_full_name, pr_number)}\n\n{body}"
 
 
 def should_publish_notice(
-    trigger: NoticeTrigger, *, receive_count: int = 0, max_receive_count: int = 5
+    trigger: NoticeTrigger,
+    *,
+    receive_count: int = 0,
+    max_receive_count: int = DEFAULT_MAX_RECEIVE_COUNT,
 ) -> bool:
     """D2 trigger mapping (contracts/canonical-comment.md table).
 
-    Transient rows publish only at the FINAL queue attempt
-    (`receive_count >= max_receive_count`); permanent content/auth rows
-    publish immediately; every No-row skips at any count. `receive_count`
-    arrives parsed (the worker reads the SQS attribute); this function
-    owns only the comparison.
+    Transient rows publish at the FIRST attempt (instant retrying notice
+    — failures are never silent) and at the FINAL attempt
+    (`receive_count >= max_receive_count`); intermediate attempts stay
+    silent so the first notice is never duplicated. Permanent content/
+    auth rows publish immediately; every No-row skips at any count.
+    `receive_count` arrives parsed (the worker reads the SQS attribute);
+    this function owns only the comparison.
+    """
+    return (
+        notice_phase(trigger, receive_count=receive_count, max_receive_count=max_receive_count)
+        is not None
+    )
+
+
+def notice_phase(
+    trigger: NoticeTrigger,
+    *,
+    receive_count: int = 0,
+    max_receive_count: int = DEFAULT_MAX_RECEIVE_COUNT,
+) -> NoticePhase | None:
+    """Which notice (if any) this trigger row authorizes at this count.
+
+    `None` → no notice. RETRYING only at the first attempt; FINAL at the
+    final attempt and for permanent rows (no retry will happen, so the
+    final wording is the honest one at any count).
     """
     if trigger in (NoticeTrigger.TRANSIENT, NoticeTrigger.LLM_UNUSABLE):
-        return receive_count >= max_receive_count
+        if receive_count <= 1:
+            return NoticePhase.RETRYING
+        if receive_count >= max_receive_count:
+            return NoticePhase.FINAL
+        return None
     if trigger in (
         NoticeTrigger.ASSEMBLE_INVALID,
         NoticeTrigger.LLM_401,
         NoticeTrigger.INVALID_KEY,
     ):
-        return True
-    return False
+        return NoticePhase.FINAL
+    return None
 
 
 def publish_failure_notice(
@@ -199,6 +287,8 @@ def publish_failure_notice(
     update_comment: Callable[[int, str], None],
     delete_comment: Callable[[int], None],
     max_establish_attempts: int = DEFAULT_MAX_ESTABLISH_ATTEMPTS,
+    phase: NoticePhase = NoticePhase.FINAL,
+    attempts: int = 1,
 ) -> NoticeResult:
     """Publish the failure notice through the fenced protocol (HLD §3.3).
 
@@ -206,12 +296,17 @@ def publish_failure_notice(
     the established `(head_sha, generation)` pair only for port-signature
     conformance (ignored — the notice carries no header);
     `publish` converges via `common.reconcile` (adopt + PATCH the
-    surviving marker comment, creation-lease POST when none exists).
-    Returns the log disposition — never raises on publish-path faults
-    (best-effort: `false`). Assembly-input faults (`NoticeError`) DO
-    propagate: invalid inputs are caller bugs, failed closed and loud.
+    surviving marker comment, creation-lease POST when none exists) — so
+    a retrying notice is REPLACED in place by the final notice, and by
+    the review content on eventual success. `phase`/`attempts` select
+    the fixed template (see `build_failure_notice`). Returns the log
+    disposition — never raises on publish-path faults (best-effort:
+    `false`). Assembly-input faults (`NoticeError`) DO propagate:
+    invalid inputs are caller bugs, failed closed and loud.
     """
-    content = build_failure_notice(repo_full_name, pr_number, head_sha)
+    content = build_failure_notice(
+        repo_full_name, pr_number, head_sha, phase=phase, attempts=attempts
+    )
     pk = review_pk(repo_full_name, pr_number)
 
     def review(head_sha: str, generation: int) -> str:

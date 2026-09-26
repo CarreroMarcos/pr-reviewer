@@ -95,8 +95,8 @@ from common.envelope import Envelope, EnvelopeError, validate_envelope
 from common.failure_notice import (
     NoticeDisposition,
     NoticeTrigger,
+    notice_phase,
     publish_failure_notice,
-    should_publish_notice,
 )
 from common.llm import LlmError, _read_timeout_s, review_diff
 from common.logs import build_event, emit, prompt_sha256
@@ -884,8 +884,11 @@ _OUTCOME_STATUS = {
 _STALE_DISCARDED_KINDS = frozenset({OutcomeKind.DISCARDED_SUPERSEDED, OutcomeKind.DISCARDED_STALE})
 
 # SQS redrive budget mirror (HLD §2.2, terraform/messaging.tf
-# `maxReceiveCount = 5`): the final attempt publishes the D2 notice.
-_MAX_RECEIVE_COUNT = 5
+# `maxReceiveCount = 3`): the first attempt publishes the retrying
+# notice, the final attempt the final notice. Kept in lockstep with
+# terraform by tests/contracts/test_terraform_contract.py — change both
+# together.
+_MAX_RECEIVE_COUNT = 3
 
 
 def _record_delivery_context(record: Any) -> tuple[str | None, int]:
@@ -984,19 +987,26 @@ def _attempt_notice(
 
     Returns `"false"` unless the trigger row authorizes AND the notice
     landed (`"true"`) or the revision proved stale (`"skipped-stale"`).
-    Never raises: notice failure must not mask the alert/DLQ flow (the
-    module is best-effort internally; this wrapper additionally guards
-    port construction and the trigger comparison).
+    First transient failure publishes the RETRYING notice; the final
+    attempt (and permanent rows) publish the FINAL notice, replacing the
+    first in place via the shared-marker PATCH path. Never raises:
+    notice failure must not mask the alert/DLQ flow (the module is
+    best-effort internally; this wrapper additionally guards port
+    construction and the trigger comparison).
     """
     trigger = _notice_trigger(exc)
-    if (
-        trigger is None
-        or creds is None
-        or not should_publish_notice(
-            trigger, receive_count=receive_count, max_receive_count=_MAX_RECEIVE_COUNT
-        )
-    ):
+    phase = (
+        notice_phase(trigger, receive_count=receive_count, max_receive_count=_MAX_RECEIVE_COUNT)
+        if trigger is not None
+        else None
+    )
+    if creds is None or phase is None:
         return NoticeDisposition.PUBLISHED_FALSE.value
+    # Final-template attempts count: the queue's own budget for
+    # transient exhaustion; exactly one for permanent rows.
+    attempts = (
+        receive_count if trigger in (NoticeTrigger.TRANSIENT, NoticeTrigger.LLM_UNUSABLE) else 1
+    )
     try:
         list_page, create_comment, update_comment, delete_comment = _github_comment_ports(
             repo_full_name=envelope.repo_full_name,
@@ -1016,6 +1026,8 @@ def _attempt_notice(
             create_comment=create_comment,
             update_comment=update_comment,
             delete_comment=delete_comment,
+            phase=phase,
+            attempts=attempts,
         )
     except Exception:
         logger.warning("failure_notice_failed", extra={"status": "notice_failed"})
