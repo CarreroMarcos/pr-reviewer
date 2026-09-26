@@ -23,8 +23,11 @@ nothing to do.
 SECRET=$(aws ssm get-parameter --name /pr-reviewer/webhook-secret \
   --with-decryption --query Parameter.Value --output text)
 
+URL=$(aws lambda get-function-url-config --function-name pr-reviewer-ingress \
+  --region us-west-2 --query FunctionUrl --output text)
+
 gh api repos/OWNER/NEW-REPO/hooks -f name=web \
-  -f config[url]="https://2clzftk3as32ofc7vxnv47pssu0zpajq.lambda-url.us-west-2.on.aws/" \
+  -f config[url]="$URL" \
   -f config[content_type]=json \
   -f config[secret]="$SECRET" \
   -F active=true \
