@@ -173,6 +173,47 @@ class ScriptedGitHub:
         ]
 
 
+class StatefulGitHub:
+    """Comment-store double: the list GET returns the ACCUMULATED state
+    (POST assigns ids and stores, PATCH updates in place, DELETE removes)
+    instead of a canned script — so a later delivery's prior-comment read
+    observes what earlier deliveries actually published, exactly as the
+    live API would. Records calls like `ScriptedGitHub`."""
+
+    def __init__(self, *, first_id=NOTICE_ID):
+        self.comments: dict[int, str] = {}
+        self._next_id = first_id
+        self.calls = []
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append({"method": method, "url": url, "body": body})
+        if method == "GET":
+            page = [{"id": cid, "body": text} for cid, text in sorted(self.comments.items())]
+            return 200, json.dumps(page).encode()
+        if method == "POST":
+            comment_id = self._next_id
+            self._next_id += 1
+            self.comments[comment_id] = json.loads(body.decode())["body"]
+            return 201, json.dumps({"id": comment_id}).encode()
+        if method == "PATCH":
+            comment_id = int(url.rsplit("/", 1)[-1])
+            self.comments[comment_id] = json.loads(body.decode())["body"]
+            return 200, json.dumps({"id": comment_id}).encode()
+        if method == "DELETE":
+            comment_id = int(url.rsplit("/", 1)[-1])
+            self.comments.pop(comment_id, None)
+            return 204, b""
+        raise AssertionError(f"unexpected GitHub method: {method}")
+
+    def methods(self):
+        return [call["method"] for call in self.calls]
+
+    def bodies(self, method):
+        return [
+            json.loads(call["body"].decode()) for call in self.calls if call["method"] == method
+        ]
+
+
 class FakeSSM:
     def __init__(self, values):
         self.values = dict(values)
@@ -248,13 +289,15 @@ class _FakeLLMConnection:
     def __init__(self, script, seen):
         self._script = script
         self.sock = _FakeLLMSocket()
+        self.request_bodies = []
         seen.append(self)
 
     def connect(self):
         pass
 
     def request(self, method, path, body=None, headers=None):
-        pass
+        if body is not None:
+            self.request_bodies.append(body)
 
     def getresponse(self):
         action = self._script.pop(0)
@@ -610,6 +653,41 @@ def test_final_attempt_transient_publishes_notice_then_raises():
     assert github.methods() == ["GET", "GET", "POST", "GET"]
     assert MARKER in posts[0]["body"]
     assert "could not be completed" in posts[0]["body"]
+    # Redrive tolerance: count 5 > maxReceiveCount 3 is CLAMPED to the
+    # configured budget — the notice must not claim attempts that never
+    # happened in this configuration (Gate #89 Finding 6).
+    assert "after 3 attempts" in posts[0]["body"]
+    assert "after 5 attempts" not in posts[0]["body"]
+    (line,) = h.log_lines()
+    assert line["status"] == "retry_queued"
+    assert line["failure_notice_published"] == "true"
+
+
+@pytest.mark.parametrize("receive_count", ["3", "4", "7"])
+def test_final_notice_attempts_clamped_to_queue_budget(receive_count):
+    """Matrix: at/past the final attempt (including redriven counts well
+    above maxReceiveCount 3), the FINAL notice always names the real
+    budget — 'after 3 attempts' — never the raw receive count."""
+    github = ScriptedGitHub(
+        [
+            (200, _list_body()),  # review-stage prior read (no marker yet)
+            (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),  # notice list
+            (200, json.dumps({"id": NOTICE_ID}).encode()),  # adopt-PATCH
+        ]
+    )
+    h = Harness(
+        meta=[(200, SHA_B), (200, SHA_B)],
+        llm_script=[("response", 500, b"{}")],
+        github=github,
+    )
+    with pytest.raises(Exception, match="llm request failed: http_500"):
+        h.run(receive_count=receive_count, env_queue_url=QUEUE_URL)
+    assert github.methods() == ["GET", "GET", "PATCH"]
+    patch_body = json.loads(github.calls[-1]["body"].decode())["body"]
+    assert "could not be completed" in patch_body
+    assert "after 3 attempts" in patch_body
+    # The clamp collapses every count to the budget — never the raw count.
+    assert f"after {receive_count} attempts" not in patch_body or receive_count == "3"
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
     assert line["failure_notice_published"] == "true"
@@ -708,7 +786,8 @@ def test_final_attempt_429_publishes_notice_then_raises_with_visibility():
 
 def test_notice_lifecycle_retrying_once_then_final_then_success_clears():
     """The full retry UX on one PR, four deliveries against the same
-    state (counts 1 → 2 → 3 → success):
+    state (counts 1 → 2 → 3 → success), on a STATEFUL GitHub double so
+    every list read observes what earlier deliveries actually published:
 
     * count 1: instant RETRYING notice (lease-POST) — failures are never
       silent; the notice's id is persisted.
@@ -716,30 +795,15 @@ def test_notice_lifecycle_retrying_once_then_final_then_success_clears():
       first notice stays untouched.
     * count 3 (max): the FINAL notice REPLACES the first in place
       (adopt-PATCH of the same comment id — never a second POST).
-    * success: the review content PATCHes that same comment id — the
-      stale "retrying" warning cannot survive a successful publish.
+    * success: the next review's prior-comment read FINDS the notice
+      (marker-bearing, stateful list), the notice text flows into the
+      LLM prompt as inert context, and the review still publishes —
+      PATCHing that SAME comment id. The stale "retrying" warning cannot
+      survive a successful publish (Gate #89 Coverage gap 1).
 
     Exactly ONE canonical comment id exists across the whole lifecycle.
     """
-    notice_body = "n " + MARKER
-    github = ScriptedGitHub(
-        [
-            # Delivery 1 (count 1, LLM timeout): prior read + notice lease-POST.
-            (200, _list_body()),
-            (200, _list_body()),
-            (201, json.dumps({"id": NOTICE_ID}).encode()),
-            (200, _list_body(_comment(NOTICE_ID, notice_body))),
-            # Delivery 2 (count 2, intermediate): prior read only, silent.
-            (200, _list_body()),
-            # Delivery 3 (count 3 = max): prior read + final adopt-PATCH.
-            (200, _list_body()),
-            (200, _list_body(_comment(NOTICE_ID, notice_body))),
-            (200, json.dumps({"id": NOTICE_ID}).encode()),
-            # Delivery 4 (success): prior read + review PATCH over the notice.
-            (200, _list_body()),
-            (200, json.dumps({"id": NOTICE_ID}).encode()),
-        ]
-    )
+    github = StatefulGitHub()
     h = Harness(
         meta=[(200, SHA_B)],
         llm_script=[
@@ -753,28 +817,41 @@ def test_notice_lifecycle_retrying_once_then_final_then_success_clears():
 
     with pytest.raises(Exception, match="llm request failed: timeout"):
         h.run(receive_count="1", env_queue_url=QUEUE_URL)
+    assert github.comments == {NOTICE_ID: github.bodies("POST")[0]["body"]}
+    assert "retried automatically" in github.comments[NOTICE_ID]
+
     with pytest.raises(Exception, match="llm request failed: timeout"):
         h.run(receive_count="2", env_queue_url=QUEUE_URL)
+    assert github.comments[NOTICE_ID] == github.bodies("POST")[0]["body"]  # untouched
+
     with pytest.raises(Exception, match="llm request failed: timeout"):
         h.run(receive_count="3", env_queue_url=QUEUE_URL)
+    assert set(github.comments) == {NOTICE_ID}  # replaced in place, not duplicated
+    final_notice = github.comments[NOTICE_ID]
+    assert "could not be completed" in final_notice
+    assert "retried automatically" not in final_notice
+
+    # Delivery 4: the prior read must see the FINAL notice (marker text),
+    # feed it to the LLM as context, and still publish over the same id.
     assert h.run(receive_count="3", env_queue_url=QUEUE_URL) == {
         "ok": True,
         "results": ["published"],
     }
+    prompt_raw = h._llm_conns[3].request_bodies[0]
+    prompt_body = prompt_raw.decode() if isinstance(prompt_raw, bytes) else prompt_raw
+    assert MARKER in prompt_body  # the notice traveled as prior context…
+    assert "Push a new commit" in prompt_body  # …inert: review proceeded anyway
+    assert set(github.comments) == {NOTICE_ID}
+    final_body = github.comments[NOTICE_ID]
+    assert REVIEW_BODY.strip() in final_body  # clean review content…
+    assert "could not be completed" not in final_body  # …notice fully replaced
+    assert h.table.items[PK]["comment_id"] == NOTICE_ID
 
-    # Exactly one canonical comment ever created; final content wins.
-    posts = github.bodies("POST")
-    assert len(posts) == 1
-    assert MARKER in posts[0]["body"]
-    assert "retried automatically" in posts[0]["body"]  # friendly first notice
-    # Notice hygiene: no credential material anywhere on the wire.
+    # Exactly one canonical comment ever created; no credential leakage.
+    assert len(github.bodies("POST")) == 1
     for call in github.calls:
         wire = call["body"] if isinstance(call["body"], str) else call["body"].decode()
         assert "glm-key-value" not in wire
-    final_patch = json.loads(github.calls[-1]["body"].decode())["body"]
-    assert "retried automatically" not in final_patch
-    assert REVIEW_BODY.strip() in final_patch  # review replaced the notice
-    assert h.table.items[PK]["comment_id"] == NOTICE_ID
 
     lines = h.log_lines()
     assert [line["status"] for line in lines] == [
@@ -794,11 +871,11 @@ def test_notice_lifecycle_retrying_once_then_final_then_success_clears():
         "GET",
         "GET",
         "POST",
-        "GET",  # delivery 1
-        "GET",  # delivery 2
+        "GET",  # delivery 1 (prior read, notice list, POST, re-check)
+        "GET",  # delivery 2 (prior read sees the notice; silent)
         "GET",
         "GET",
-        "PATCH",  # delivery 3
+        "PATCH",  # delivery 3 (prior read, notice list, adopt-PATCH)
         "GET",
-        "PATCH",  # delivery 4 (success)
+        "PATCH",  # delivery 4 (prior read sees the notice; success PATCH)
     ]

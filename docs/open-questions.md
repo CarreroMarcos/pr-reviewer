@@ -124,12 +124,6 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
 
 ## 7. Smaller questions — **open**
 
-- `assemble_approval_verdict` — **resolved 2026-09-20**: it recurred 5× in one
-  evening, all on PRs about the reviewer's own gate; root cause was the raw
-  substring `approv` matching quoted identifiers and descriptive prose. Fixed
-  by gate precision (code-span carve-out + word-bounded stem; PR #83,
-  DECISIONS 2026-09-20, deployed `tf-gate-precision`) — the bounded re-sample
-  alternative was not needed.
 - Same-SHA LLM cache: every reopen currently re-runs the LLM (bounded waste,
   accepted by HLD §3.2). Worth a content-hash cache when spend matters?
 - Two-stage review: a cheap model triages hunks → an expensive model
@@ -141,10 +135,6 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
   findings, shape-valid output — direction is reassuring but one mechanical
   diff answers nothing about depth on real large diffs.
 - Non-English PRs and non-code files: behavior untested.
-- **PT timestamp in bot comments** (Mars, 2026-09-14) — **resolved 2026-09-20**:
-  shipped with spec 003 T1; canonical comments carry
-  `updated <Mon DD, H:MM AM> PT`, rendered in code (America/Los_Angeles),
-  zero new runtime deps.
 - **(b) equality-path head gate** (Gate-3 F2 → Gate-4 A3c, 2026-09-14):
   repeat delivery of an already-superseded SHA takes the HLD §3.3 (b)
   equality fast-path, which returns the STORED head — so the run performs a
@@ -167,8 +157,3 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
   (deterministic scheduler over scripted step boundaries) is a bigger
   investment than any current AC demands; US4.AC2/T050 cover the deploy-side.
   Decide whether to invest or keep the seed-based model.
-- **Split HCP PLAN/APPLY run roles** (PR 63 self-review, 2026-09-19) —
-  **resolved same day**: round-4 review argued the split was cheap, so the
-  bootstrap now ships `pr-reviewer-hcp-plan` (read-only) +
-  `pr-reviewer-hcp-apply`, trust-pinned to `run_phase:plan` /
-  `run_phase:apply`; spec M4 sets both `TFC_AWS_*_ROLE_ARN` vars.

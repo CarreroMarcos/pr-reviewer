@@ -225,7 +225,7 @@ class _ScriptedLLMConnection:
         pass
 
 
-def _run_review(*, script, remaining_ms, caplog=None):
+def _run_review(*, script, remaining_ms, caplog=None, clock=None):
     """Drive `_make_review().review()`; return (content, invocations, retry_logs)."""
     ssm = _FakeSSM(_ssm_values())
     provider = ConfigProvider(
@@ -259,7 +259,7 @@ def _run_review(*, script, remaining_ms, caplog=None):
         diff_transport=_FakeDiffTransport(sha="bb" * 20),
         llm_factory=factory,
         system_prompt="SYSTEM-PROMPT",
-        clock=lambda: 1_750_000_000,
+        clock=clock if clock is not None else (lambda: 1_750_000_000),
         **kwargs,
     )
     if caplog is not None:
@@ -359,6 +359,31 @@ def test_401_then_timeout_composes_one_retry_per_class(caplog):
     assert REVIEW_BODY.strip() in content
     assert len(seen) == 3
     assert len(_retry_logs(caplog)) == 1
+
+
+def test_401_then_timeout_duration_covers_only_the_timed_out_attempt(caplog):
+    """Scripted advancing clock, 401 → timeout → retry fires: the
+    `llm_timeout_retry` line's `duration_ms` is anchored at the REFRESHED
+    attempt (re-anchored after the 401 re-fetch), so it measures only the
+    attempt that timed out — never the 401 round trip + attempt total
+    (Gate #88 advisory A1).
+
+    Clock reads inside `_call_llm`: (1) original anchor 100.0 s, (2)
+    re-anchor 200.0 s after the 401 refresh, (3) attempt-window close
+    212.5 s → 12_500 ms. A fourth read happens later (comment timestamp);
+    300.0 s remains unconsumed, proving no extra reads stretched the
+    window."""
+    ticks = iter([100.0, 200.0, 212.5, 300.0])
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        content, seen = _run_review(
+            script=[("response", 401, b"{}"), _timeout(), *_ok_script()],
+            remaining_ms=AMPLE_MS,
+            clock=lambda: next(ticks),
+        )
+    assert REVIEW_BODY.strip() in content
+    assert len(seen) == 3  # 401 + timed-out attempt + successful retry
+    (line,) = _retry_logs(caplog)
+    assert line.__dict__["duration_ms"] == 12_500
 
 
 def test_401_then_two_timeouts_raise_after_three_invocations(caplog):
