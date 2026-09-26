@@ -289,7 +289,9 @@ is a comment about a dropped reservation, not a setting.)
      OWN remaining budget: on failure it still attempts one single-pass with `SOCKET_READ_TIMEOUT_S`
      clamped to `remaining − BUDGET_MARGIN_S − ~90s fixed overhead` (floor 30s, the deployed clamp
      family); if that attempt also times out the failure classifies transient and follows the
-     existing re-raise/notice path — bounded by `maxReceiveCount`, publishing nothing.
+     existing re-raise/notice path — bounded by `maxReceiveCount`, publishing nothing. The clamped
+     value is FORWARDED as `read_timeout_s` on the fallback call — computed once, used for both the
+     gate and the socket (bot review #4).
    - Release timing (amended 2026-09-26): the lease is released only when the holder's invocation has
      completed its last LLM call (fan-out, or its own degraded single-pass) — never while a
      holder-initiated call is still in flight.
@@ -448,7 +450,7 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
 | `agent_completed` | specialist returns | specialty, findings_n, latency_ms, tokens_in/out, findings[] (JSON) |
 | `agent_retry` | fast-failing retryable error retried | specialty, attempt, error_code, backoff_ms |
 | `agent_failed` | specialist raised/timed out | specialty, error_class, latency_ms |
-| `verification_done` | verifier returns | survived_n, killed_n, escalated_n, latency_ms, tokens_in/out, verified[]/killed[]/escalated[] (JSON) |
+| `verification_done` | verifier returns | survived_n, killed_n, escalated_n, wave_survivors (int — specialists returning parseable findings, e.g. 2 after one 429/timeout loss; lets replay/eval attribute recall deltas to partial waves — bot review #4), latency_ms, tokens_in/out, verified[]/killed[]/escalated[] (JSON) |
 | `verification_failed` | verifier raised/timed out | error_class, latency_ms |
 | `review_synthesized` | synthesizer returns | findings_merged_n, dropped_as_duplicate_n, latency_ms, tokens_in/out, findings[] (merged JSON) |
 | `synthesizer_failed` | synthesizer raised/timed out | error_class, latency_ms |
