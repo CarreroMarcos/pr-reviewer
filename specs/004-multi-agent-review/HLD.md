@@ -1,0 +1,636 @@
+# HLD-004: Multi-agent review stage + interactive replay site
+
+**Status:** HARDENED SPECIFICATION (2026-09-26) — Implementation ready. Multi-agent review audit,
+adversarial pass, and Mars operational rulings (Decisions 1–4) incorporated 2026-09-26.
+Implementer-readiness amendments (blockers B1–B8, majors M1–M10, pinned contracts) folded in
+2026-09-26 from the orchestrator review + topology simulation; unedited text preserved verbatim.
+**Author:** Marcos + Vesper (hardened by Antigravity AI Engineering Directorate).
+
+## 1. Context
+
+The reviewer today is a single-pass pipeline: worker fetches the diff, one GLM-5.3-Flash call
+(temp 0.2) reviews it, one canonical comment gets PATCHed in place.
+It works and it's automatic — but one broad prompt is where hallucinations breed, and the
+review process itself is invisible. Nobody can see *how* the review happened, which is a
+demo gap for something meant to be resume-worthy.
+
+## 2. Goals
+
+1. **Measurably better reviews** via 3 non-overlapping specialist agents + a synthesizer.
+   Narrow focus per agent → less hallucination surface each.
+2. **A demoable replay**: an interactive, visually pleasing per-review page showing the
+   agent DAG animating, each agent's reasoning, review steps, and pipeline checkpoints.
+3. **Preserve what works**: exactly-one canonical comment (PATCH in place; canonical marker
+   `...:{repo}#{pr}` in `common/marker.py` + the `**Review #N · updated {stamp} PT**` header in
+   `common/assemble.py`),
+   the `protocol.py` fencing guarantees, and the eval-gated quality bar.
+
+## 3. Non-goals
+
+- Replacing `protocol.py` or the delivery/fencing layer. The multi-agent stage lives
+  strictly *inside* the review step.
+- RAG / embeddings pipelines (ideas.md #4, bounded whole-file context, covers the need).
+- Live (real-time) visualization in v1 — designed as a seam, not built.
+- Changing the GitHub-facing UX. One comment, same format.
+
+## 4. Decisions
+
+**D1 — Orchestration: hand-rolled `asyncio` + explicit `ThreadPoolExecutor` inside worker.**
+Research (2026-09-26) showed LangGraph runs on Lambda but buys nothing here: no checkpointer
+is needed for a single-invocation fan-out, Studio can't observe Lambda anyway, and it would
+break the stdlib-only purity for unused features. `asyncio` over specialist coroutines
++ a merge step. We own retries/timeouts — the existing error taxonomy (`is_retryable()` /
+`_llm_is_retryable`, both in `lambda/worker_handler.py:253-299`) extends to cover it.
+Implementation (settled 2026-09-25, hardened 2026-09-26): the repo's Constitution II (stdlib + boto3 only) is
+enforced by ruff `banned-api` rules — `aiohttp`/`httpx` are lint-banned, so concurrency is
+`concurrent.futures.ThreadPoolExecutor` + `loop.run_in_executor()` wrapping the existing sync `review_diff()`
+(pure function, thread-safe, injected connection factory).
+**CRITICAL RUNTIME FIX:** Do NOT use naive `asyncio.to_thread()`. In Python 3.12, `asyncio.run()` automatically
+invokes `loop.shutdown_default_executor(300)` on exit. If a specialist coroutine times out under `wait_for` while
+its underlying OS thread is still blocked on a socket read (which has a 240s read timeout), `asyncio.run`
+**will hang for up to 300 seconds** during teardown! Instead, instantiate an explicit per-invocation
+`ThreadPoolExecutor(max_workers=FANOUT_CONCURRENCY, thread_name_prefix=f"fanout-{run_id[:8]}")` and in the
+cleanup `finally:` block call `pool.shutdown(wait=False, cancel_futures=True)`. This guarantees `asyncio.run`
+exits immediately on timeout/degradation without hanging the Lambda process. (Boundary note
+2026-09-26: `shutdown(wait=False, cancel_futures=True)` only drains queued, not-yet-started work — a
+thread already blocked in a socket read is unaffected and would still be joined at true interpreter
+exit. That is acceptable here because the Lambda container freezes rather than exits after the handler
+returns, and `SOCKET_READ_TIMEOUT_S=240 < wait_for 300` bounds the abandoned thread's life. Never raise
+the wait_for caps above the socket timeout.)
+The sync `review()` closure calls `asyncio.run(_fanout(...))` fresh per invocation — never a cached loop.
+No fire-and-forget tasks: specialist coroutines run under an `asyncio.wait(ALL_COMPLETED)` or `FIRST_COMPLETED`
+loop, every task awaited inside the loop.
+**Event emission point (settled):** the specialist *coroutine* — running on the single event-loop thread — emits
+`agent_started` before dispatching to the executor and `agent_reasoning`/`agent_completed` as the executor call
+returns; the sync worker function itself never touches the events list, which preserves the no-cross-thread-race
+invariant. Consumers order events by `ts` on read/archive-write, since completion order across specialists is
+nondeterministic.
+**Credential Thread Safety (settled 2026-09-26 — Option 1 confirmed):** `AppConfig` is hydrated ONCE in
+`worker_handler` before fan-out (`cfg = creds.current()`) and passed as an immutable snapshot to `run_fanout`.
+Specialists treat configuration as read-only. If a specialist hits an HTTP 401 from Z.AI, it fails fast
+(`agent_failed {error_class: "http_401"}`). When all specialists fail on 401, `run_fanout` emits
+`degraded_to_single_pass {reason: "all_specialists_failed"}` and raises `FanoutDegraded`. The synchronous
+`worker_handler` fallback then owns the single-threaded `creds.refresh_once()` re-hydration from SSM safely.
+No locks are required inside fan-out, eliminating cross-thread race conditions by construction.
+
+**D2 — Models: GLM only.**
+His Z.AI plan makes GLM-5.3-Flash effectively unlimited, so a Bedrock migration is hassle
+with no payoff — decided 2026-09-25: GLM for all agents, no Bedrock in v1. (Bedrock research
+kept on file in case a future stronger-synthesizer experiment is ever eval-gated.)
+The agent interface stays provider-neutral behind the existing `common/llm.py` port.
+
+**D3 — Topology: 3 generator specialists + adversarial verifier + synthesizer.**
+Generators (non-overlapping): **correctness**, **security**, **tests**. Each gets the diff
+(via the existing `DiffResult` budget machinery), the accepted-residuals context (D7), and a
+prompt scoped to its specialty with an explicit do-not-flag list. A **verifier** then tries to
+*falsify* each candidate finding (reduce-only, evidence-grounded; high-severity findings it
+can't verify are escalated, not dropped). The **synthesizer** merges survivors into the single
+canonical comment. This mirrors Uber uReview's production shape (3 specialists + grading stage;
+per the Uber engineering blog it analyzes over 90% of the weekly ~65,000 diffs landed).
+The +0.08 precision bar in D8 is a Mars-set product target, not a citation-derived number — no
+external precision benchmark is claimed. (A prior citation to "Wang, AAMAS 2026 +10.3pp" was
+withdrawn 2026-09-26: unsourcable in the AAMAS '26 proceedings.)
+The old maintainability/style specialist is dropped — lowest signal, and the verifier kills
+its noise anyway. Blast-radius analysis (symbol lookup over unedited callers) is v2: it needs
+real tooling (ripgrep/LSP), not pure LLM reasoning, per Stengg et al.
+Inter-stage findings are untrusted input — see §5 injection hardening.
+
+**Verifier policy (pinned 2026-09-26):** unverifiable HIGH → `escalated`. Unverifiable MEDIUM/LOW →
+`killed` ONLY with a `kill_reason` citing the specific missing evidence; otherwise `escalated`.
+**Falsification standard (verifier prompt contract):** a finding is confirmed only with a stated
+failure mechanism plus exact diff lines; if the claimed failure is impossible under the language
+runtime's guarantees (e.g. a single C-level `dict(d)` copy is atomic under the CPython GIL and can
+neither raise nor tear), it is killed. Verifier output MUST re-anchor `file_path`/`line_start`/
+`line_end` to the post-image file; `run_fanout` clamps-and-flags out-of-range specialist coordinates
+and never echoes them silently.
+
+**Synthesizer contract (pinned 2026-09-26):** two survivors are duplicates iff same `file_path` AND
+$|\Delta\text{line\_start}| \le 2$ AND same `category` (deterministic; no runtime embedding).
+Cross-category same-location findings (e.g. a tests-coverage gap and the correctness bug it covers)
+are BOTH kept and adjacent-ordered. Merge duplicates keeping the highest severity. Output MUST be a
+`## Findings` section with one `- [SEVERITY] path:line — title. Description… Fix: …` bullet per
+survivor (verified and escalated alike; escalated carry `[Requires Verification]`), so
+`score_output`/`aggregate` run byte-identical. `dropped_as_duplicate_n` = survivors − bullets;
+invented = bullets with no survivor; both gated at 0 (D8 gate 4).
+
+### Specialist Scope Definitions & Do-Not-Flag Rules (Pinned Contract)
+
+#### 1. Correctness Specialist
+- **Scope:** Identifies functional and algorithmic bugs introduced in modified lines: unhandled edge cases,
+  broken state transitions, null/None dereferences, index/off-by-one errors, race conditions corrupting internal state,
+  unhandled exceptions, data structure invariants, and resource/connection leaks.
+- **Do-Not-Flag List:**
+  1. Security vulnerabilities (injection, auth, crypto, secrets). Reserved strictly for Security.
+  2. Test omissions or test fixture design. Reserved strictly for Tests.
+  3. Linter complaints, formatting, variable naming style, comments, or docstrings.
+  4. Bugs in unchanged, pre-existing code outside the diff hunk.
+  5. Accepted residuals previously reviewed and recorded in PR metadata.
+
+#### 2. Security Specialist
+- **Scope:** Identifies exploitable vulnerabilities and trust boundary violations introduced or altered in the diff:
+  injection flaws (SQLi, command, template), auth/authz bypasses, secret/token leaks, path traversal, SSRF, XSS,
+  insecure deserialization, and TOCTOU races. Every finding must demonstrate an exploitable path or violation of security posture.
+- **Do-Not-Flag List:**
+  1. Functional bugs, business logic errors, or calculation flaws with no security impact. Reserved for Correctness.
+  2. Absence of unit tests or test framework configurations. Reserved for Tests.
+  3. Low-entropy mock credentials or public non-secret tokens in test fixtures.
+  4. Code formatting, style, or micro-optimizations.
+  5. Accepted residuals.
+
+#### 3. Tests Specialist
+- **Scope:** Evaluates automated test coverage and assertion quality for modified code. Identifies untested branches,
+  tautological assertions (`assert True`, asserting mock without verifying calls), brittle tests dependent on system clock
+  or execution order, and test state pollution.
+- **Do-Not-Flag List:**
+  1. Implementation bugs in production application code. Reserved for Correctness.
+  2. Production security vulnerabilities. Reserved for Security.
+  3. Demanding tests for trivial boilerplate (e.g. pure constants, simple DTOs).
+  4. Test styling or naming conventions.
+  5. Accepted residuals.
+
+**D4 — Replay first, live as a seam: one versioned event schema.**
+The worker emits structured stage events for every run. v1 consumers: the replay site
+(reads archived events). v2 consumer (future): a WebSocket feed pushing the *same*
+events live. The schema is the seam — design it once.
+
+**D5 — Surface: bespoke webpage (S3 + viewer Lambda in v1), not X-Ray.**
+X-Ray is ops tooling (answers "why was this slow"); a custom page is the portfolio piece
+and gives full aesthetic control. v1 has NO CloudFront distribution — S3 + viewer Lambda
+only (see §7; a pre-public distribution without OAC would bypass bearer auth).
+X-Ray tracing can be added later for latency debugging without touching this design.
+
+**D6 — Thinking: enabled + `reasoning_effort`; truncate at capture time, default 4000 chars.**
+**[DECISION — CONFIRMED by Marcos 2026-09-26]**: send `thinking: {"type": "enabled"}` explicitly
+on all GLM-5.3 calls, with `reasoning_effort`: `low` for specialists confirmed
+(higher for verifier/synthesizer) — but NOT a mandate. Phase 0 (§8) measures **both**
+default effort and `low`; the D8 decision rule then picks the ship config from the
+measured p95 comparison (the rule is live, not dead). Rationale:
+the flagship demo goal (§2, goal 2) is visualizing agent reasoning — but do NOT just drop the
+param: omitting `reasoning_effort` silently defaults to `max` (~105 reasoning tokens median
+on a trivial prompt vs ~3 at `low`, measured Aug 2026) — the worst case. `low`
+approximates the old `disabled` cost floor (~3 tokens) while staying spec-compliant
+everywhere. What changes: thinking time joins the latency profile and is unmeasured —
+Phase 0 (§8) measures it before D9's numbers are finalized.
+Replay UI renders reasoning *when present* rather than assuming it always exists.
+Capture rule: `REASONING_MAX_CHARS` applies inside the specialist coroutine the moment the
+reasoning string arrives — before it touches the events list, the verifier prompt, or the
+synthesizer prompt. The emitted field is named **`reasoning_excerpt`** (not "summary"):
+it is the raw reasoning truncated at capture — **there is no LLM summarization call**
+(no 6th call per review; nothing in D9's budget covers one). Default 4000 chars, tunable up via env var.
+
+**D7 — Accepted-residuals as shared context.**
+ideas.md #5 becomes infrastructure for the multi-agent stage: all specialists receive the
+settled residuals so nobody re-flags decided nits. Kills a known noise source *and*
+shrinks per-agent prompt waste.
+**Prerequisite status (2026-09-26):** residuals infrastructure is entirely NEW — only a prose
+proposal exists (`docs/ideas.md:27`); no parsing, storage, or prompt-injection code exists today.
+It must land as its own prerequisite task, or specialists receive `residuals = []` indefinitely.
+
+**D8 — Eval gate (operationalized and hardened 2026-09-26).**
+End-to-end A/B: the scorer grades the final comment's `## Findings`
+section, and the synthesizer emits the same format — so `score_output`/`aggregate` stay
+byte-identical, no re-labeling, existing 13 seeded cases reused as-is. (Vocabulary pin 2026-09-26: the
+on-disk CORPUS registry has 15 entries = 13 SCORED cases + 2 robustness; "13 seeded" always means the
+scored set — do not conflate the two numbers.) New per-stage
+metrics on a separate `pinned_multi_agent.json` pin (never touch the single-pass
+pin/drift-guard chain).
+Corpus: **15 = 13 seeded + 2 robustness**, growing to 24: +3 tests-gap cases (the
+current corpus has ZERO tests-category coverage), +4 verifier-trap cases (plausible-but-
+false findings; one of the four is a prompt-injection case), +2 subtle-true cases
+(wrongful-kill guards).
+**Total ground truth positive defects ($N$) = 18 defects across 24 cases.**
+**Replication:** 3 runs/case per pipeline; report mean ± range; gates evaluated on means.
+
+Five hard gates, paired case-by-case vs the single-pass pin:
+1. **recall — no regression, ever:** let $d$ = mean recall_multi − mean recall_single (means over 3
+   runs/case; the noise band reflects one missed defect in an 18-defect corpus, $1/18 = 0.0556$).
+   $d \ge 0$ → pass outright. $-0.06 \le d < 0$ → exactly one full re-run of the comparison; pass iff
+   $(d_1 + d_2)/2 \ge 0$. $d < -0.06$ → fail on the first measurement.
+2. **precision:** let $p$ = mean precision_multi − mean precision_single. Bar = +0.08 (target +0.10;
+   Mars-set product target — see D3). $p \ge 0.15$ → pass outright. $p < 0.05$ → fail outright.
+   $0.05 \le p < 0.15$ → exactly one full re-run; pass iff $(p_1 + p_2)/2 \ge 0.08$.
+3. **wrongful kills:** match rule pre-registered — a killed candidate matches a manifest
+   finding iff location matches ($|\Delta\text{line}| \le 2$ on same path) OR embedding cosine ≥ 0.76
+   (using Amazon Bedrock Titan Text Embeddings `amazon.titan-embed-text-v2:0` pinned offline in
+   the eval harness; 0.76 is an app-tuned, pre-registered threshold, not a model property). Human
+   adjudication applies ONLY to ties/ambiguities flagged by the deterministic rule — the gate itself
+   is computed deterministically, and a run with zero deterministic matches passes without human input.
+   Gate: **0 wrongful kills across all runs** (all cases × 3 runs). The 2 subtle-true cases MUST
+   survive as verified-or-escalated (never killed) in all runs.
+4. **synthesizer fidelity:** dropped_in_synthesis = a verifier-survived finding with no
+   semantic match (same matching rule) in the final comment's `## Findings`;
+   invented_in_synthesis = a `## Findings` entry with no semantic match to any verified or
+   escalated finding. Gate: **0 on both**.
+5. **existing floors hold:** fabricated = 0, both robustness cases pass.
+
+**Offline Embedding Rule (Constitution II):** External ML libraries (`torch`, `sentence-transformers`,
+`numpy`, `scipy`) are strictly banned by `pyproject.toml`. Pytest in CI must run 100% offline without network.
+Embedding vectors are generated exclusively during out-of-band capture (`capture_multi_agent.py`) via
+`boto3.client("bedrock-runtime")` calling Titan Text Embeddings v2 in `us-west-2`, and serialized into
+`pinned_multi_agent.json`. Cosine similarity is computed in pure Python stdlib during offline scoring.
+**Trap Validation Protocol:** Trap vetting is a Phase 0 calibration task using a candidate pool of 6 traps
+until 4 are frozen. If a generator specialist avoids a trap pre-verifier, the multi-agent pipeline is awarded
+a pass for that run (source-level avoidance); generator prompts must **never** be degraded to force hallucinations.
+**True A/B Call Count & Wall Time:** Multi-agent executes 5 calls per run (3 specialists + 1 verifier + 1 synthesizer)
+$\times 24$ cases $\times 3$ runs = 360 calls. Re-baselining single-pass requires 72 calls.
+Total: **432 GLM calls**. Purely sequential this is ~28.8h at ~240s/call; because the wave parallelizes
+(FANOUT_CONCURRENCY=3), realistic wall-clock is ~3×240s per multi-agent case-run plus ~240s per
+single-pass case-run ≈ **~19.2h** — state the assumed parallelism beside any wall-clock claim.
+Harness must be designed for an unattended terminal run with checkpointed resume per case.
+
+**D9 — Concurrency & Timeout Budgets (Hardened 2026-09-26).**
+Measured (2026-09-25, coding-plan endpoint): a trivial 1-word prompt costs **~240s wall**
+(server-side queueing, near-identical across batches). Ramp: N=1/2/3 all-200; N=5 → one
+429 (code 1302) after ~240s of waiting — never ride the limit. Effective tier ≈ 4 concurrent;
+production cap = 3.
+
+### Concurrency Resolution: Option A Confirmed (Mars Ruling 2026-09-26)
+AWS Lambda EventSourceMapping API rejects `maximum_concurrency = 1` (the AWS API minimum is **2**).
+Furthermore, AWS regional concurrency rules enforce $\ge 10$ unreserved executions account-wide;
+this account's total regional concurrency limit is 10, so reserving even 1 execution for the worker
+would leave only 9 unreserved and `terraform apply` fails. (No `reserved_concurrent_executions`
+resource exists in `compute.tf` today; stale cite `compute.tf:76-80` removed 2026-09-26 — that range
+is a comment about a dropped reservation, not a setting.)
+**Resolution:**
+1. Worker Lambda remains **unreserved** in Terraform (`compute.tf`).
+2. SQS ESM is configured with `scaling_config { maximum_concurrency = 2 }`.
+3. **Application-Level Distributed Mutex:** To strictly serialize multi-agent reviews and prevent two
+   workers from simultaneously making 6 concurrent requests to Z.AI (tripping the 1302 cap), the worker
+   implements a lightweight DynamoDB mutex at invocation start:
+   - Mutex row lives in the existing state table: `pk = "mutex:pr-reviewer-worker"`, attributes
+     `owner = delivery_guid`, `lease_until = epoch_s`, `token = uuid4`.
+   - Acquire = conditional write succeeding iff `attribute_not_exists(pk) OR lease_until < now - 30`
+     (30s clock-skew margin). The holder refreshes the lease at 50% TTL while fan-out is active;
+     worst-case fan-out (per the elapsed-budget gates below) MUST stay within the refreshed lease so
+     it can never expire mid-run and admit a second fan-out.
+   - Release = `REMOVE` conditioned on the stored `token` (only the holder can release; crash recovery
+     is expiry takeover). Count 2–3 WCUs per review against the base-table budget in §7.
+   - **Contention path (fixed 2026-09-26):** if another worker holds the lock, the arriving worker does
+     NOT defer and does NOT touch message visibility — with SQS Lambda event source mappings a
+     successful return deletes the message regardless of any `change_message_visibility` call, so a
+     visibility-based deferral silently loses the review (and raising for redelivery would burn
+     `maxReceiveCount` toward the DLQ while the holder still runs). Instead the contender executes the
+     existing single-pass path inline (1 LLM call; total Z.AI concurrency ≤ 4, under the measured trip
+     point), emits `concurrency_single_pass {reason: "mutex_held"}`, and completes normally.
+   - On completion (or before its single-pass execution), the lease is released.
+   This guarantees $\le 1$ worker runs fan-out at any instant, ensuring total concurrent calls to `api.z.ai`
+   never exceed 3 (under the measured trip point of 4).
+
+### Elapsed-Budget Gate (Cumulative Downstream Protection)
+To prevent the catastrophic failure mode where the Verifier runs, burns the budget, and leaves the pipeline
+with insufficient time to synthesize or fall back to single-pass (publishing NO comment), the elapsed-budget
+gate checks **all remaining downstream stages to publication**:
+1. **Before Stage 1 (Wave):**
+   `remaining_ms >= (WAVE_WAIT_FOR_S + VERIFIER_WAIT_FOR_S + SYNTHESIZER_WAIT_FOR_S + BUDGET_MARGIN_S) * 1000`
+2. **Before Stage 2 (Verifier):**
+   `remaining_ms >= (VERIFIER_WAIT_FOR_S + SYNTHESIZER_WAIT_FOR_S + BUDGET_MARGIN_S) * 1000`
+   *If false $\to$ immediately degrade to single-pass fallback while single-pass has budget!*
+3. **Before Stage 3 (Synthesizer):**
+   `remaining_ms >= (SYNTHESIZER_WAIT_FOR_S + BUDGET_MARGIN_S) * 1000`
+4. **Before Single-Pass Fallback:**
+   `remaining_ms >= (SINGLE_PASS_WAIT_FOR_S + BUDGET_MARGIN_S) * 1000`
+Provisional caps (amended 2026-09-26): `WAVE_WAIT_FOR_S=300`, `VERIFIER_WAIT_FOR_S=240`,
+`SYNTHESIZER_WAIT_FOR_S=180`, `SINGLE_PASS_WAIT_FOR_S=240`, `BUDGET_MARGIN_S=60` — gate-1 total 780s,
+tuned in Phase 0. The original "300s each + 60s margin" (960s) could NEVER pass: the worker Lambda
+timeout is 900s (`terraform/compute.tf:104`) — the AWS maximum, it cannot be raised — so every gate
+total MUST fit within 900s − ~90s fixed claim/fence/publish/finalize/archive overhead ≈ 810s.
+**Risk note:** at the measured ~240s/call Z.AI queue latency, per-stage headroom is ~30s. If Phase 0
+measures sustained per-call latency above ~250s, multi-agent degrades to single-pass on most runs;
+the Phase 0 exit criteria (§8) must quantify this BEFORE Phase 1.
+
+### Partial-Success & Retry-Ownership Rules (added 2026-09-26)
+- The wave succeeds iff ≥2 specialists return parseable findings within `WAVE_WAIT_FOR_S`. A 429/1302
+  failure is never retried in-executor: fail fast to survivors. 0–1 survivors, verifier timeout, or
+  synthesizer timeout → emit the corresponding `*_failed` event and raise `FanoutDegraded`.
+- The executor retries NOTHING except one immediate retry of a socket read timeout (`timeout`
+  error_class) inside the wait window; all other retry ownership stays with the SQS queue.
+  `agent_retry` is emitted only for that single timeout retry, with `backoff_ms = 0`.
+
+## 5. Architecture
+
+```
+SQS → worker (existing: validate → hydrate → establish → acquire mutex lease → fetch diff)
+  → worker_handler: emit review_started {pr, sha, diff_stats}
+  → empty diff? → emit review_skipped {reason: "empty_diff"} → existing empty-diff handling
+  → NEW: run_fanout(diff_result, residuals, cfg, context) -> str   # raises FanoutDegraded(reason, failed_stage)
+  │     ├─ cumulative budget gate: remaining ≥ wave + verifier + synth + margin
+  │     ├─ Custom ThreadPoolExecutor (max_workers=3) over specialist coroutines:
+  │     │     specialist("correctness") → findings[] + reasoning_excerpt   (coroutine emits
+  │     │     specialist("security")    → findings[] + reasoning_excerpt    agent_started /
+  │     │     specialist("tests")       → findings[] + reasoning_excerpt    agent_reasoning /
+  │     │                                                                  agent_completed
+  │     │     # socket read timeout 240s; wait_for 300s; fast-fail to survivors on 429/1302
+  │     │     # executor shutdown(wait=False, cancel_futures=True) in finally:
+  │     ├─ cumulative budget gate: remaining ≥ verifier + synth + margin (else degrade to single-pass NOW)
+  │     ├─ verifier(candidate_findings) → verified[] + killed[] + escalated[]
+  │     │     # reduce-only, evidence-grounded; high-severity unverifiable → escalated
+  │     ├─ emit: verification_done / verification_failed
+  │     ├─ cumulative budget gate: remaining ≥ synth + margin (else degrade to single-pass NOW)
+  │     ├─ synthesizer(verified, escalated, residuals) → comment body
+  │     │     # span-preserving markdown sanitization before PATCH
+  │     ├─ emit: review_synthesized / synthesizer_failed
+  │     └─ on total fan-out failure: emit degraded_to_single_pass {reason} → raise FanoutDegraded
+  → review closure catches FanoutDegraded → budget gate → single-pass inline (NEVER propagates to
+     run_review or the worker boundary — see wiring pin below)
+  → existing: claim → live-head fence → publish (PATCH) → finalize
+  → release mutex lease
+  → run archive → S3 (events.jsonl + meta.json, written AFTER finalize, 90-day Expiration)
+  → DDB index row (best-effort; GSI pr_number + started_ts)
+```
+
+### FanoutDegraded Wiring (load-bearing pin, added 2026-09-26)
+`FanoutDegraded` is caught INSIDE the review closure passed to `run_review` (around `run_fanout` only);
+the closure then runs the budget gate and the existing single-pass LLM call inline and returns its
+content. `FanoutDegraded` MUST NEVER propagate to `run_review` or the worker boundary:
+`is_retryable()` (`worker_handler.py:278-299`) returns True for unknown faults, so an escaped
+`FanoutDegraded` triggers SQS redelivery instead of single-pass fallback, plus a spurious D2 transient
+notice. A state-machine test MUST prove the containment.
+
+### Injection Hardening & Sanitization Specifications
+
+1. **Dynamic Delimiter Noncing:** To prevent an attacker from breaking parsing boundaries by including
+   literal delimiter strings inside the PR diff or description, `run_fanout` generates a cryptographically
+   random 64-bit hex nonce (`nonce = secrets.token_hex(8)`). Delimiters between stages bind this nonce:
+   `<<<CANDIDATE_FINDINGS nonce="{nonce}">>> ... <<<END_CANDIDATE_FINDINGS nonce="{nonce}">>>`
+   Delimiters are per-stage and nonced: each stage boundary (wave → verifier → synthesizer) generates
+   a fresh nonce, and verifier/synthesizer prompts use a DIFFERENT nonce than the wave; the nonce MUST
+   NOT appear in any model-visible prompt more than once. The diff itself is passed VERBATIM inside
+   fenced blocks — never escaped or mutated (a correctness tool must not review altered text; the
+   original `replace("<<<", "<\\<<")` escaping was withdrawn 2026-09-26 for exactly that reason).
+   The prompt-injection trap case passes iff the trap finding is killed without the nonce appearing in
+   any finding field.
+2. **Span-Preserving Markdown Sanitization:** Naive regex neutralization of `<...>` or `[...]` corrupts
+   generic type signatures (e.g. `List<T>`, `Dict[str, Any]`), JSX tags, and code blocks.
+   The sanitizer must extract and stash fenced code blocks (```` ```...``` ````) and inline backtick spans (`` `...` ``)
+   into indexed placeholders (`\x00CODE_SPAN_N\x00`), neutralize active web elements in prose
+   (`![img](url)` $\to$ `[Image: img] (url)`, `[link](url)` $\to$ `link (url)`, `<http...>` $\to$ `` `<http...>` ``),
+   and re-substitute the original code spans.
+3. **Escalated Findings Presentation:** Verifier-escalated findings carry `[HIGH]` severity and are rendered
+   in the canonical comment's `## Findings` with an explicit verification warning:
+   `- [HIGH] path/file.py:42 — [Requires Verification] Description... Fix: ...`
+   This guarantees compliance with Gate 4 (`dropped_in_synthesis = 0`) while maintaining complete developer transparency.
+
+### S3 Archive Retention & Local Sync (Mars Ruling 2026-09-26)
+- **S3 Lifecycle:** Transitioning KB-scale files to Glacier Instant Retrieval triggers a 128 KB minimum billable size
+  penalty (12x cost inflation) and request fees. The S3 Lifecycle rule is configured as **Expiration (Delete) at 90 days**
+  on the `runs/` prefix.
+- **Local Machine Archive Sync:** To retain the complete historical archive for local evaluation, replaying, and
+  corpus building on this development box without paying cloud storage or busting the free tier, a documented
+  runbook command — NOT a tracked script (no new top-level directories; AGENTS.md layout law; the prior
+  `tools/sync_archives.py` proposal was withdrawn 2026-09-26) — pulls new runs from S3 to local storage
+  (`~/.pr-reviewer/archives/`) before the 90-day cloud expiration deletes them:
+  `aws s3 sync s3://pr-reviewer-archives/runs/ ~/.pr-reviewer/archives/ --exclude "*" --include "*.jsonl" --include "*.json"`
+
+## 6. Event Schema & Data Contracts
+
+Every event: `{v: 1, run_id, ts, type, ...}`.
+
+| type | emitted when | key fields |
+|---|---|---|
+| `review_started` | review step begins (worker_handler) | pr, sha, diff_stats {files, additions, deletions} |
+| `review_skipped` | fan-out skipped (worker_handler) | reason ∈ {empty_diff, phase0_no_budget}, pr, sha |
+| `checkpoint` | pipeline stage reached | stage ∈ {established, diff_fetched, claimed, published, finalized} |
+| `agent_started` | specialist coroutine begins | specialty |
+| `agent_reasoning` | reasoning excerpt available (coroutine emits as executor returns) | specialty, reasoning_excerpt (raw reasoning truncated at `REASONING_MAX_CHARS`) |
+| `agent_completed` | specialist returns | specialty, findings_n, latency_ms, tokens_in/out, findings[] (JSON) |
+| `agent_retry` | fast-failing retryable error retried | specialty, attempt, error_code, backoff_ms |
+| `agent_failed` | specialist raised/timed out | specialty, error_class, latency_ms |
+| `verification_done` | verifier returns | survived_n, killed_n, escalated_n, latency_ms, tokens_in/out, verified[]/killed[]/escalated[] (JSON) |
+| `verification_failed` | verifier raised/timed out | error_class, latency_ms |
+| `review_synthesized` | synthesizer returns | findings_merged_n, dropped_as_duplicate_n, latency_ms, tokens_in/out, findings[] (merged JSON) |
+| `synthesizer_failed` | synthesizer raised/timed out | error_class, latency_ms |
+| `degraded_to_single_pass` | fan-out abandoned for single-pass | reason, failed_stage |
+| `concurrency_single_pass` | mutex held; contender executes single-pass inline (no deferral) | reason: "mutex_held", elapsed_ms |
+| `degraded_no_budget` | no budget left even for fallback (terminal) | reason, elapsed_ms |
+| `review_published` | canonical comment PATCHed | comment_id |
+
+### Coordinate Space & Candidate Identity (pinned 2026-09-26)
+- `line_start`/`line_end` are 1-based lines in the POST-IMAGE file (the file as it exists after the PR
+  applies), NOT diff-relative positions. Simulation evidence 2026-09-26: 2 of 3 specialists emitted
+  diff-relative coordinates when unpinned. `run_fanout` validates ranges against post-image file length;
+  out-of-range specialist coordinates are clamped-and-flagged, and the verifier re-anchors coordinates
+  against the diff.
+- `candidate_id` is assigned by `run_fanout` immediately after the wave: `"{specialty}:{index}"`
+  (index = position in that specialist's findings array, stable per run). It is deliberately NOT part of
+  the specialist output schema — specialists never see or generate IDs. The verifier prompt carries the
+  IDs verbatim; verifier output MUST echo assigned IDs and MUST NOT invent new ones; unknown IDs in
+  verifier output are a `verification_failed` error, not silently dropped.
+
+### Archive & Index Contracts (pinned 2026-09-26)
+- `meta.json` = `{v: 1, run_id (uuid4 hex), pr, sha, pipeline: "multi_agent"|"single_pass"|"phase0_shadow",
+  status, started_ts, finished_ts, archive_version: 1}` (timestamps epoch ms).
+- `ts` on every event is epoch milliseconds (integer); consumers order by `ts`.
+- The DDB index row is written best-effort AFTER finalize by `worker_handler` (never inside the review
+  callback); `status ∈ {published, degraded_single_pass, failed}`.
+- Single-pass fallback emits `review_started`, `degraded_to_single_pass`, `checkpoint {published,
+  finalized}`, `review_published` — never `agent_*`/`verification_*` — so every archived run renders on
+  the replay site.
+
+### Candidate Finding JSON Schema (Specialists Output)
+```json
+{
+  "type": "object",
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file_path", "line_start", "line_end", "title", "description", "suggested_fix", "severity", "category"],
+        "properties": {
+          "file_path": { "type": "string" },
+          "line_start": { "type": "integer", "minimum": 1 },
+          "line_end": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "maxLength": 120 },
+          "description": { "type": "string" },
+          "suggested_fix": { "type": "string" },
+          "severity": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+          "category": { "type": "string", "enum": ["correctness", "security", "tests"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+### Verifier Output JSON Schema
+```json
+{
+  "type": "object",
+  "required": ["verified", "killed", "escalated"],
+  "properties": {
+    "verified": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "file_path", "line_start", "line_end", "title", "description", "suggested_fix", "severity", "category", "verification_note"]
+      }
+    },
+    "killed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "kill_reason"]
+      }
+    },
+    "escalated": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "file_path", "line_start", "line_end", "title", "description", "suggested_fix", "severity", "category", "escalation_reason"]
+      }
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+## 7. Replay Site & Viewer Architecture
+
+- Static assets + archives served by a **viewer Lambda behind a Function URL** (`authorization_type = "NONE"`).
+  **Oct-2025 Hardening:** Requires the explicit `lambda:InvokeFunction` permission statement gated on
+  `lambda:InvokedViaFunctionUrl = true`. No viewer resources exist yet (`compute.tf:126-135` is an
+  ingress-URL note — stale cite removed 2026-09-26); per AWS docs the NONE-auth Function URL pattern needs
+  BOTH statements: `lambda:InvokeFunctionUrl` (Principal `*`, condition `lambda:FunctionUrlAuthType = NONE`)
+  and `lambda:InvokeFunction` (Principal `*`, condition `lambda:InvokedViaFunctionUrl = true`).
+
+### Routing Specification
+```
+[Function URL GET Request]
+        │
+        ├── Path: `/runs/{pr}/{sha}/`
+        │         └── Returns: `static/index.html` (Unauthenticated shell)
+        │
+        ├── Path: `/static/{file}`
+        │         └── Regex: `^static/[A-Za-z0-9._-]+$`
+        │         └── Returns: S3 `static/{file}` (Unauthenticated CSS/JS)
+        │
+        ├── Path: `/api/runs/{pr}/latest` (Index Query)
+        │         └── Headers: `Authorization: Bearer <token>` (REQUIRED)
+        │         └── Queries: DynamoDB GSI `pr-runs-index`
+        │         └── Returns: `{"run_id", "sha", "status", "archive_s3_key"}`
+        │
+        └── Path: `/runs/{pr}/{sha}/{run_id}/{file}`
+                  └── Headers: `Authorization: Bearer <token>` (REQUIRED)
+                  └── Regex: `^runs/\d+/[0-9a-f]{40}/[0-9a-f-]{36}/(events\.jsonl|meta\.json)$`
+                  └── Returns: S3 Archive Object
+```
+
+- **Authentication:** In-memory bearer token stored in browser session, sent via `Authorization: Bearer <token>`
+  on `/api/...` and archive routes. Token compared with `hmac.compare_digest`. Token lifecycle: provisioned
+  out-of-band via `aws ssm put-parameter --type SecureString`; the static shell exposes a password-field
+  login that stores the token in `sessionStorage` only (never URL, never localStorage) and attaches it as
+  `Authorization: Bearer` via fetch; rotation = new SSM value, no code deploy.
+- **Viewer Lambda IAM:**
+  - `ssm:GetParameter` on token parameter ARN, plus `kms:Decrypt` on the parameter's KMS key ARN
+    (SecureString reads fail without it — missing this makes the viewer 500 on every authed route).
+  - `s3:GetObject` on `["${bucket.arn}/runs/*", "${bucket.arn}/static/*"]` (permits serving static assets and archives).
+  - `dynamodb:Query` on `"${table.arn}/index/pr-runs-index"`.
+- **DynamoDB State Store & GSI Capacity Rebalancing (Mars Ruling 2026-09-26):**
+  Table `pr-reviewer-state` provisioned capacity is rebalanced to preserve the AWS Always Free allowance (25/25):
+  - Base table: `read_capacity = 20`, `write_capacity = 20`.
+  - GSI `pr-runs-index`: `read_capacity = 5`, `write_capacity = 5`.
+  - Partition key: `pr_number (N)`. Sort key: `started_ts (S)`.
+  - `ProjectionType: INCLUDE` with non-key attributes `["sha", "status", "archive_s3_key", "archive_written_at", "findings_n"]`.
+    (Answers "latest run for PR #123" without requiring a secondary base-table `GetItem`).
+
+## 8. Rollout & Hardened Terraform Checklist
+
+### Phase 0 — Latency Smoke Test
+- Existing worker + ONE specialist (`correctness`) behind `MULTI_AGENT_PHASE0` flag.
+- Shadow ordering (pinned 2026-09-26): single-pass publishes FIRST with unchanged latency; the shadow
+  correctness specialist runs inline AFTER publish iff remaining Lambda time ≥ `WAVE_WAIT_FOR_S +
+  BUDGET_MARGIN_S`; if budget is insufficient the shadow is skipped with
+  `review_skipped {reason: "phase0_no_budget"}`. The shadow NEVER blocks publish and NEVER shares the
+  401-refresh budget.
+- Measure per-stage (wave / verifier / synth) p95 latency with thinking enabled (`default` vs `low`
+  effort), and baseline claim/fence/publish timings to tune `BUDGET_MARGIN_S` and pin the ~90s
+  fixed-overhead estimate.
+- **Exit criteria (added 2026-09-26):** measured per-stage p95 + `BUDGET_MARGIN_S` fits each stage
+  budget, AND the measured end-to-end multi-agent path (gates included) fits the 900s worker timeout
+  with the single-pass fallback still affordable. If per-stage p95 + margin exceeds its budget, STOP —
+  revisit D9 budgets before Phase 1. Do not ship a path that degrades to single-pass on most runs.
+
+### Phase 1 — Full Fan-out
+- Deploy behind `MULTI_AGENT` flag.
+
+### Phase 2 — Replay Site
+- Deploy viewer Lambda, Function URL, and static assets in S3.
+
+### Flag Precedence (pinned 2026-09-26)
+`MULTI_AGENT=1` ignores `MULTI_AGENT_PHASE0` entirely (full fan-out). PHASE0 shadow runs iff
+`MULTI_AGENT=0 AND MULTI_AGENT_PHASE0=1`. Both 0 = legacy single-pass: no shadow, no multi-agent events
+beyond `review_started` / `checkpoint` / `review_published`.
+
+### Hardened Terraform Checklist
+1. **S3 Bucket for Archives:** Block Public Access pinned; Bucket policy Deny on public ACLs;
+   Lifecycle configuration: **Expiration at 90 days** on `runs/` prefix (no Glacier transition).
+2. **SQS Messaging (`terraform/messaging.tf`):** `visibility_timeout_seconds = 5400`.
+   Redrive policy updated:
+   ```hcl
+   redrive_policy = jsonencode({
+     deadLetterTargetArn = aws_sqs_queue.dlq.arn
+     maxReceiveCount     = 3
+   })
+   ```
+   (Updated 5 $\to$ 3 per Mars ruling 2026-09-26; recorded in `docs/DECISIONS.md`).
+   Three-way contract: change `messaging.tf` AND the worker's `_MAX_RECEIVE_COUNT` constant (the
+   final-attempt D2-notice logic keys off it) in the SAME PR, and add a contract test asserting the
+   Terraform value equals the code constant.
+3. **SQS Event Source Mapping (`terraform/compute.tf`):**
+   `scaling_config { maximum_concurrency = 2 }`. Worker remains unreserved.
+4. **Worker Mutual Exclusion:** Handled via the §D9 DynamoDB mutex contract (`mutex:pr-reviewer-worker`;
+   conditional-write acquire with 30s skew margin, 50%-TTL refresh while fan-out is active,
+   token-conditioned release). Contention → contender runs single-pass inline; no visibility deferral.
+5. **DynamoDB State Table (`terraform/state.tf`):**
+   Rebalance capacity to 20/20 base. Add GSI `pr-runs-index` (`pr_number (N)` + `started_ts (S)`) with
+   `read_capacity = 5`, `write_capacity = 5`, `projection_type = "INCLUDE"`.
+6. **Viewer Lambda & Function URL:**
+   - Function URL `authorization_type = "NONE"`.
+   - Add permission statement `lambda:InvokeFunction` with condition `lambda:InvokedViaFunctionUrl = true`.
+   - Viewer IAM role: `s3:GetObject` on `runs/*` and `static/*`; `dynamodb:Query` on GSI ARN;
+     `ssm:GetParameter` on token ARN plus `kms:Decrypt` on the parameter's KMS key ARN (§7).
+7. **Environment Variables:**
+   - `MULTI_AGENT` (0/1), `MULTI_AGENT_PHASE0` (0/1), `FANOUT_CONCURRENCY` (default 3),
+   - `REASONING_MAX_CHARS` (default 4000), `REASONING_EFFORT` (default `low`),
+   - `WAVE_WAIT_FOR_S` (300), `VERIFIER_WAIT_FOR_S` (240), `SYNTHESIZER_WAIT_FOR_S` (180),
+   - `SINGLE_PASS_WAIT_FOR_S` (240), `SOCKET_READ_TIMEOUT_S` (240), `BUDGET_MARGIN_S` (60).
+   - Naming pin: `MARGIN_S` and `DEGRADED_BUDGET_MARGIN_S` are withdrawn; `BUDGET_MARGIN_S` is the
+     single margin used in all four elapsed-budget gates, tuned in Phase 0.
+8. **Alarm Recalibration:** Recalibrate daily LLM-spend alarm in the same PR.
+
+## 9. GLM API Constraints & `llm.py` Modifications
+
+### Required Changes to `lambda/common/llm.py`
+1. **Configurable Read Timeout:** Parameterize `review_diff(..., read_timeout_s=READ_TIMEOUT_S)` —
+   today a module constant (`READ_TIMEOUT_S = 45`, `llm.py:42`, applied via `sock.settimeout`).
+2. **Explicit Max Tokens:** Pass `max_tokens: 16384` in payload.
+3. **Finish Reason Length Detection:** In `_parse_result`, check `first.get("finish_reason") == "length"`.
+   If true, raise `LlmError("length")` so caller can treat truncation as an error rather than silent success.
+4. **Thinking & Reasoning Effort:** Pass `thinking: {"type": "enabled"}` and `reasoning_effort: reasoning_effort`
+   when `thinking_enabled=True`.
+5. **Reasoning Trace Extraction:** Extract `reasoning_content = message.get("reasoning_content")` and return
+   it on `ReviewResult(..., reasoning_content=reasoning_content)`.
+6. **Z.AI Error Taxonomy:** Classify HTTP 429 error code 1302 as `LlmError("rate_limit")` (fail-fast to survivors).
+
+## 10. Decisions & Open Questions Log
+
+- **Q1: RESOLVED (2026-09-25).** Topology: 3 generator specialists + verifier + synthesizer.
+- **Q2: RESOLVED (2026-09-25).** Event store: both (DynamoDB index + S3 JSONL blob).
+- **Q3: RESOLVED (2026-09-25).** Frontend: bespoke Mermaid/Studio aesthetic.
+- **Q4: RESOLVED (2026-09-25).** Private first via bearer token in SSM SecureString.
+- **Q5: RESOLVED (2026-09-25).** Reasoning verbosity: enabled + `reasoning_effort`, truncate at capture.
+- **Q6: RESOLVED (2026-09-25).** Model: GLM only across all agents.
+- **Q7: RESOLVED (2026-09-26, Mars ruling).** Explicit `thinking: {"type": "enabled"}` + `reasoning_effort: "low"`
+  confirmed for production build.
+- **Q8: RESOLVED (2026-09-26, Mars ruling).** Worker concurrency strategy: Option A confirmed (unreserved worker,
+  ESM concurrency 2, single-worker execution enforced via the §D9 DynamoDB mutex contract
+  `mutex:pr-reviewer-worker`; contention → contender runs single-pass inline, never a visibility deferral).
+- **Q9: RESOLVED (2026-09-26, Mars ruling).** S3 Archive retention: S3 Expiration (Delete) at 90 days confirmed
+  to stay within Free Tier; a documented runbook `aws s3 sync` command (no tracked script) syncs archives
+  down to this local machine.
+- **Q10: RESOLVED (2026-09-26, Mars ruling).** DynamoDB capacity: rebalance base table to 20/20 and allocate 5/5
+  to GSI `pr-runs-index` to preserve $0 Always Free Tier.
+- **Q11: RESOLVED (2026-09-26, Mars ruling).** SQS redrive: update `maxReceiveCount` from 5 to 3 in `messaging.tf`.
