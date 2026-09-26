@@ -307,8 +307,10 @@ is a comment about a dropped reservation, not a setting.)
      visibility-based deferral silently loses the review (and raising for redelivery would burn
      `maxReceiveCount` toward the DLQ while the holder still runs). Instead the contender executes the
      existing single-pass path inline (1 LLM call), emits `concurrency_single_pass {reason:
-     "mutex_held"}`, and completes normally. The contender runs elapsed-budget gate 4 against its
-     OWN remaining budget. On failure the clamp `remaining − BUDGET_MARGIN_S − ~90s fixed overhead`
+     "mutex_held"}`, and completes normally. The contender's budget decision is its OWN predicate —
+     the CONTENDER VIABILITY CHECK, distinct from elapsed-budget gate 4 (which governs the single-pass
+     fallback inside a holder's run; the two can disagree where gate 4 passes but the clamp sits below
+     the floor — bot review #9). The clamp `remaining − BUDGET_MARGIN_S − ~90s fixed overhead`
      is compared against a VIABILITY FLOOR pinned from the Phase 0 per-call p95 (provisionally the
      measured ~240s server-side queue latency, pre-Phase-0). Below the floor the call is SKIPPED —
      fail-fast by design: a socket budget under the measured queue latency cannot succeed (bot
@@ -316,13 +318,16 @@ is a comment about a dropped reservation, not a setting.)
      `concurrency_single_pass {reason: "mutex_held_no_budget"}`, classifies transient, and follows
      the existing re-raise/notice path — bounded by `maxReceiveCount`, publishing nothing; SQS
      redelivery is the recovery. At or above the floor it attempts one single-pass with the clamped
-     value FORWARDED as `read_timeout_s` — computed once, used for both the gate and the socket
+     value FORWARDED as `read_timeout_s` — computed once, used for both the check and the socket
      (bot review #4).
-   - Release timing (amended 2026-09-26): the lease is released only when the holder's invocation has
-     completed its last LLM call (fan-out, or its own degraded single-pass) — never while a
-     holder-initiated call is still in flight. The Phase 0 post-publish shadow specialist is NOT
-     lease-covered; release precedes it (gate 5): shadow and fan-out never co-occur — `MULTI_AGENT=1`
-     ignores `MULTI_AGENT_PHASE0` (flag precedence), so the Phase-0 concurrency ceiling is 2 regardless.
+   - Release timing (order pinned 2026-09-26, gate 5 / bot review #9): the lease is released
+     immediately after the holder's LAST lease-covered LLM call completes (fan-out + synthesizer, or
+     its own degraded single-pass) and BEFORE the claim/fence/publish/finalize sequence — publication
+     is owner-guarded, not mutex-protected, so holding the lease through publish would only delay
+     contenders; the lease is never held while no holder-initiated call is in flight. The Phase 0
+     post-publish shadow specialist is NOT lease-covered; release precedes it: shadow and fan-out
+     never co-occur — `MULTI_AGENT=1` ignores `MULTI_AGENT_PHASE0` (flag precedence), so the Phase-0
+     concurrency ceiling is 2 regardless.
    **Concurrency ceiling (amended 2026-09-26; supersedes the earlier "never exceed 3" claim):**
    $\le 1$ worker runs fan-out at any instant, but total concurrent calls to `api.z.ai` reach **4** in
    the contention window — 3 fan-out calls plus a contender single-pass still in flight when the lease
@@ -408,8 +413,9 @@ SQS → worker (existing: validate → hydrate → establish → acquire mutex l
   │     └─ on total fan-out failure: emit degraded_to_single_pass {reason} → raise FanoutDegraded
   → review closure catches FanoutDegraded → budget gate → single-pass inline (NEVER propagates to
      run_review or the worker boundary — see wiring pin below)
+  → release mutex lease (immediately after the last lease-covered LLM call, BEFORE claim/fence/
+    publish/finalize — publication is owner-guarded, not mutex-protected — gate 5 / bot review #9)
   → existing: claim → live-head fence → publish (PATCH) → finalize
-  → release mutex lease
   → Phase 0 only: shadow correctness specialist (post-publish, post-release; NOT lease-covered — gate 5)
   → run archive → S3 (events.jsonl + meta.json, written AFTER finalize AND after any shadow call —
     archiving before shadow completion silently drops shadow events from the run)
@@ -422,7 +428,8 @@ the closure then runs the budget gate and the existing single-pass LLM call inli
 content. `FanoutDegraded` MUST NEVER propagate to `run_review` or the worker boundary:
 `is_retryable()` (`worker_handler.py:278-299`) returns True for unknown faults, so an escaped
 `FanoutDegraded` triggers SQS redelivery instead of single-pass fallback, plus a spurious D2 transient
-notice. A state-machine test MUST prove the containment.
+notice. A state-machine test MUST prove the containment, and MUST pin the mutex release ordering (release
+after the last lease-covered LLM call, before claim/publish/finalize — bot review #9).
 
 ### Injection Hardening & Sanitization Specifications
 
@@ -564,27 +571,51 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["candidate_id", "file_path", "line_start", "line_end", "title", "description", "suggested_fix", "severity", "category", "verification_note"]
+        "required": ["candidate_id", "file_path", "line_start", "line_end", "title", "description", "suggested_fix", "severity", "category", "verification_note"],
+        "properties": {
+          "candidate_id": {"type": "string"}, "file_path": {"type": "string"},
+          "line_start": {"type": "integer"}, "line_end": {"type": "integer"},
+          "title": {"type": "string"}, "description": {"type": "string"},
+          "suggested_fix": {"type": "string"}, "severity": {"type": "string"},
+          "category": {"type": "string"}, "verification_note": {"type": "string"}
+        },
+        "additionalProperties": false
       }
     },
     "killed": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["candidate_id", "kill_reason"]
+        "required": ["candidate_id", "kill_reason"],
+        "properties": {
+          "candidate_id": {"type": "string"}, "kill_reason": {"type": "string"}
+        },
+        "additionalProperties": false
       }
     },
     "escalated": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["candidate_id", "file_path", "line_start", "line_end", "title", "description", "suggested_fix", "severity", "category", "escalation_reason"]
+        "required": ["candidate_id", "file_path", "line_start", "line_end", "title", "description", "suggested_fix", "severity", "category", "escalation_reason"],
+        "properties": {
+          "candidate_id": {"type": "string"}, "file_path": {"type": "string"},
+          "line_start": {"type": "integer"}, "line_end": {"type": "integer"},
+          "title": {"type": "string"}, "description": {"type": "string"},
+          "suggested_fix": {"type": "string"}, "severity": {"type": "string"},
+          "category": {"type": "string"}, "escalation_reason": {"type": "string"}
+        },
+        "additionalProperties": false
       }
     }
   },
   "additionalProperties": false
 }
 ```
+
+Verifier output is CLOSED-SCHEMA (added 2026-09-26, gate 5 / bot review #9): `run_fanout` rejects any
+item carrying a field outside its `properties` — unknown fields are a `verification_failed` error,
+never silently forwarded into the synthesizer prompt.
 
 ## 7. Replay Site & Viewer Architecture
 
