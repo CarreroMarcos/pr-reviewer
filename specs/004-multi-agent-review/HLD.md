@@ -104,10 +104,16 @@ neither raise nor tear), it is killed. Verifier output MUST re-anchor `file_path
 `line_end` to the post-image file; `run_fanout` clamps-and-flags out-of-range specialist coordinates
 and never echoes them silently.
 
-**Synthesizer contract (pinned 2026-09-26):** two survivors are duplicates iff same `file_path` AND
-$|\Delta\text{line\_start}| \le 2$ AND same `category` (deterministic; no runtime embedding).
-Cross-category same-location findings (e.g. a tests-coverage gap and the correctness bug it covers)
-are BOTH kept and adjacent-ordered. Merge duplicates keeping the highest severity. Output MUST be a
+**Synthesizer contract (pinned 2026-09-26; title guard amended 2026-09-26):** two survivors are
+duplicates iff same `file_path` AND $|\Delta\text{line\_start}| \le 2$ AND same `category` AND
+normalized-title overlap (lowercased token Jaccard ≥ 0.6, stopwords removed, pure stdlib — no runtime
+embeddings; threshold pre-registered, tunable only by Phase 0 data — Constitution II holds). The title
+guard exists because two DISTINCT bugs can sit within two lines of each other in the same category;
+line proximity alone would wrongfully merge them (Gate 4 fail-closes any residual wrongful merge in
+the corpus: a merged-away distinct bug has no semantic match, so `dropped_in_synthesis` ≥ 1 fails the gate).
+Cross-category same-location findings (e.g. a tests-coverage gap and the correctness bug it covers) —
+and same-location pairs failing the title guard — are BOTH kept and adjacent-ordered. Merge duplicates
+keeping the highest severity. Output MUST be a
 `## Findings` section with one `- [SEVERITY] path:line — title. Description… Fix: …` bullet per
 survivor (verified and escalated alike; escalated carry `[Requires Verification]`), so
 `score_output`/`aggregate` run byte-identical. `dropped_as_duplicate_n` = survivors − bullets;
@@ -263,6 +269,11 @@ is a comment about a dropped reservation, not a setting.)
      (30s clock-skew margin). The holder refreshes the lease at 50% TTL while fan-out is active;
      worst-case fan-out (per the elapsed-budget gates below) MUST stay within the refreshed lease so
      it can never expire mid-run and admit a second fan-out.
+   - **Lease TTL (pinned 2026-09-26):** `MUTEX_LEASE_TTL_S = 900` — equal to the worker Lambda's hard
+     timeout (`terraform/compute.tf:104`, the AWS maximum). No live invocation can outlive its lease,
+     so expiry takeover recovers only genuinely dead holders; the 50% refresh (450s) is retained as
+     belt-and-braces against clock skew. A dead holder delays a contender by at most one TTL, and the
+     contender path below never blocks on the lease.
    - Release = `REMOVE` conditioned on the stored `token` (only the holder can release; crash recovery
      is expiry takeover). Count 2–3 WCUs per review against the base-table budget in §7.
    - **Contention path (fixed 2026-09-26):** if another worker holds the lock, the arriving worker does
@@ -270,11 +281,28 @@ is a comment about a dropped reservation, not a setting.)
      successful return deletes the message regardless of any `change_message_visibility` call, so a
      visibility-based deferral silently loses the review (and raising for redelivery would burn
      `maxReceiveCount` toward the DLQ while the holder still runs). Instead the contender executes the
-     existing single-pass path inline (1 LLM call; total Z.AI concurrency ≤ 4, under the measured trip
-     point), emits `concurrency_single_pass {reason: "mutex_held"}`, and completes normally.
-   - On completion (or before its single-pass execution), the lease is released.
-   This guarantees $\le 1$ worker runs fan-out at any instant, ensuring total concurrent calls to `api.z.ai`
-   never exceed 3 (under the measured trip point of 4).
+     existing single-pass path inline (1 LLM call), emits `concurrency_single_pass {reason:
+     "mutex_held"}`, and completes normally.
+   - Release timing (amended 2026-09-26): the lease is released only when the holder's invocation has
+     completed its last LLM call (fan-out, or its own degraded single-pass) — never while a
+     holder-initiated call is still in flight.
+   **Concurrency ceiling (amended 2026-09-26; supersedes the earlier "never exceed 3" claim):**
+   $\le 1$ worker runs fan-out at any instant, but total concurrent calls to `api.z.ai` reach **4** in
+   the contention window — 3 fan-out calls plus a contender single-pass still in flight when the lease
+   changes hands (the contender holds no lease, so the holder cannot see its call). 4 sits AT the
+   measured tier edge (N=5 → 429/1302; N=4 was never explicitly measured). **Phase 0 MUST measure N=4
+   explicitly before Phase 1**; if N=4 trips, the contention path queues behind the lease (bounded by
+   `SINGLE_PASS_WAIT_FOR_S`) instead of running inline, restoring a hard ceiling of 3.
+
+**Per-PR claim lease vs. review budget (gate-traced 2026-09-26, PR #88 Oracle Q1):** the current
+single-pass system's claim row uses `CLAIM_LEASE_SECONDS=180`, predating the 240s socket-read budget.
+At 240s-class reviews the claim conditional's expired-self branch always fires at claim time (the
+self-lease has lapsed) — converge-safe via re-anchor. The residual is the steal window between lease
+expiry and claim: a same-head second delivery may claim and publish concurrently; the finalize
+owner-guard forces the loser to `PUBLISHED_FINALIZE_CONFLICT`, and reconcile converges. Multi-agent
+reviews are 780s-class, widening that window ~4×. **Standing remediation (Phase 1 prerequisite):**
+raise `CLAIM_LEASE_SECONDS` to ≥ the review budget, or refresh the claim row mid-review. Not blocking
+today; recorded so the widening is a decision, not a surprise.
 
 ### Elapsed-Budget Gate (Cumulative Downstream Protection)
 To prevent the catastrophic failure mode where the Verifier runs, burns the budget, and leaves the pipeline
@@ -365,10 +393,19 @@ notice. A state-machine test MUST prove the containment.
    into indexed placeholders (`\x00CODE_SPAN_N\x00`), neutralize active web elements in prose
    (`![img](url)` $\to$ `[Image: img] (url)`, `[link](url)` $\to$ `link (url)`, `<http...>` $\to$ `` `<http...>` ``),
    and re-substitute the original code spans.
-3. **Escalated Findings Presentation:** Verifier-escalated findings carry `[HIGH]` severity and are rendered
-   in the canonical comment's `## Findings` with an explicit verification warning:
-   `- [HIGH] path/file.py:42 — [Requires Verification] Description... Fix: ...`
+3. **Escalated Findings Presentation (amended 2026-09-26):** Verifier-escalated findings render at their
+   ORIGINAL candidate severity — the verifier policy escalates unverifiable HIGH, and unverifiable
+   MEDIUM/LOW absent a `kill_reason`, so stamping every escalation `[HIGH]` silently inflates severity
+   in the published comment. Escalated findings carry an explicit verification warning:
+   `- [<original severity>] path/file.py:42 — [Requires Verification] Description... Fix: ...`
    This guarantees compliance with Gate 4 (`dropped_in_synthesis = 0`) while maintaining complete developer transparency.
+4. **Reasoning Excerpts Are Untrusted Inter-Stage Data (added 2026-09-26):** `reasoning_excerpt` is
+   model-controlled free text (≤ `REASONING_MAX_CHARS`) and reaches verifier and synthesizer prompts —
+   an injection channel exactly like candidate findings. Excerpts enter downstream prompts ONLY inside
+   per-stage nonced delimiter blocks
+   (`<<<SPECIALIST_REASONING nonce="{nonce}">>> ... <<<END_SPECIALIST_REASONING nonce="{nonce}">>>`)
+   generated under item 1's rules; excerpt text is never spliced into prompt prose, instructions, or
+   structured fields outside those blocks.
 
 ### S3 Archive Retention & Local Sync (Mars Ruling 2026-09-26)
 - **S3 Lifecycle:** Transitioning KB-scale files to Glacier Instant Retrieval triggers a 128 KB minimum billable size
@@ -594,7 +631,10 @@ beyond `review_started` / `checkpoint` / `review_published`.
      `ssm:GetParameter` on token ARN plus `kms:Decrypt` on the parameter's KMS key ARN (§7).
 7. **Environment Variables:**
    - `MULTI_AGENT` (0/1), `MULTI_AGENT_PHASE0` (0/1), `FANOUT_CONCURRENCY` (default 3),
-   - `REASONING_MAX_CHARS` (default 4000), `REASONING_EFFORT` (default `low`),
+   - `MUTEX_LEASE_TTL_S` (default 900 — see the lease TTL pin under §Concurrency Resolution),
+   - `REASONING_MAX_CHARS` (default 4000), `REASONING_EFFORT` (default `low` — PROVISIONAL until the
+     Phase 0 exit ruling; D6/D8 pick the ship config from measured p95 and this infrastructure default
+     must not pre-decide it),
    - `WAVE_WAIT_FOR_S` (300), `VERIFIER_WAIT_FOR_S` (240), `SYNTHESIZER_WAIT_FOR_S` (180),
    - `SINGLE_PASS_WAIT_FOR_S` (240), `SOCKET_READ_TIMEOUT_S` (240), `BUDGET_MARGIN_S` (60).
    - Naming pin: `MARGIN_S` and `DEGRADED_BUDGET_MARGIN_S` are withdrawn; `BUDGET_MARGIN_S` is the
