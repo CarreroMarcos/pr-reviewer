@@ -160,7 +160,16 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   push `tf-*` tags only with Mars's explicit approval — ask when >=90%
   confident the tagged commit should be applied, and wait for his yes.
   Tag exactly one commit (`git tag tf-<reason> <sha>`, push that tag
-  only); never `git push --tags`.
+  only); never `git push --tags`. The push itself starts the HCP run and
+  the apply happens **automatically** — there is no manual UI approval
+  step (Mars, 2026-09-26).
+- **HCP workspace must define `operator_principal_arn` (Mars, 2026-09-26):**
+  set it to the live operator principal
+  (`arn:aws:iam::395799817120:user/terraform-admin`). Left empty, terraform
+  tries to rewrite `aws_iam_role.operator`'s trust policy (root+MFA
+  fallback) and the run dies on a 403 — `pr-reviewer-hcp-apply` has no
+  `iam:UpdateAssumeRolePolicy` and we deliberately keep it that way (least
+  privilege; parity via the variable, not a broader pipeline grant).
 - **Worker-log diagnosis (2026-09-20):** worker logs are lowercase
   structured JSON — a CloudWatch `--filter-pattern ERROR` matches nothing.
   Filter by field: `--filter-pattern '{ $.error_class =
