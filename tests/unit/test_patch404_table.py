@@ -336,12 +336,23 @@ def test_patch_404_with_unparseable_list_completes_without_post():
 
 def test_patch_404_with_transient_list_failure_raises_for_retry():
     """PATCH 555 → 404; list GET → 500 → raise; `retry_queued` is logged
-    first so the queue (not a silent complete) owns the retry."""
-    github = ScriptedGitHub([(200, _list_body()), (404, b"{}"), (500, b"boom")])
+    so the queue (not a silent complete) owns the retry. The
+    first-failure RETRYING notice then publishes: its reconcile list
+    finds the surviving marker comment and adopts it (adopt-PATCH)."""
+    github = ScriptedGitHub(
+        [
+            (200, _list_body()),  # prior read
+            (404, b"{}"),  # PATCH 555 (dead)
+            (500, b"boom"),  # reconcile list → raise
+            (200, _list_body(_comment(ADOPTED_ID, "n " + MARKER))),  # notice list
+            (200, json.dumps({"id": ADOPTED_ID}).encode()),  # notice PATCH
+        ]
+    )
     h = Harness(github)
     with pytest.raises(GitHubError) as exc_info:
         h.run()
     assert exc_info.value.status == 500
-    assert github.methods() == ["GET", "PATCH", "GET"]
+    assert github.methods() == ["GET", "PATCH", "GET", "GET", "PATCH"]
     (line,) = (json.loads(entry) for entry in h.sink)
     assert line["status"] == "retry_queued"
+    assert line["failure_notice_published"] == "true"

@@ -726,27 +726,35 @@ def test_assemble_refused_completes():
 
 
 def test_llm_timeout_raises_for_queue_retry():
-    """LLM read timeout is side-effect-free → raise; `retry_queued` logged."""
+    """LLM read timeout on the FIRST delivery is side-effect-free → the
+    friendly RETRYING notice posts instantly, then raise; `retry_queued`
+    logged with `failure_notice_published: "true"`."""
     h = Harness(meta=[(200, SHA_B)], llm_script=[("raise", TimeoutError("read timed out"))])
     with pytest.raises(LlmError) as exc_info:
         h.run(envelope(sha=SHA_B))
     assert exc_info.value.error_class == "timeout"
-    # Review ran through the prior-context GET before the LLM failed.
-    assert h.github.methods() == ["GET"]
+    # Review ran through the prior-context GET before the LLM failed; the
+    # first-failure notice added the reconcile list GET, POST, re-check.
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
+    (post,) = [call for call in h.github.calls if call["method"] == "POST"]
+    assert "retried automatically" in post["body"]["body"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
     assert line["error_class"] == "timeout"
+    assert line["failure_notice_published"] == "true"
 
 
 def test_llm_invalid_output_raises_for_queue_retry():
-    """Structurally unusable LLM output → raise for the bounded queue retry
-    (the invalid content itself is never published)."""
+    """Structurally unusable LLM output → RETRYING notice on first
+    delivery, then raise for the bounded queue retry (the invalid content
+    itself is never published)."""
     h = Harness(meta=[(200, SHA_B)], llm_script=[("response", 200, b"{not json")])
     with pytest.raises(LlmError) as exc_info:
         h.run(envelope(sha=SHA_B))
     assert exc_info.value.error_class == "invalid_response"
-    # Review ran through the prior-context GET before the LLM failed.
-    assert h.github.methods() == ["GET"]
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
+    (line,) = h.log_lines()
+    assert line["failure_notice_published"] == "true"
 
 
 def _validating_llm_factory(harness):
@@ -792,12 +800,19 @@ def test_newline_key_replays_to_terminal_invalid_key_with_notice():
 
 
 def test_diff_transport_error_raises_for_queue_retry():
-    """F4 `transport_error` (DNS/refused/reset class) → raise for redelivery."""
+    """F4 `transport_error` (DNS/refused/reset class) → raise for
+    redelivery. The RETRYING notice is authorized (first transient
+    failure) but its fenced publish cannot clear the live-head fence —
+    the same broken transport raises at the fence — so the best-effort
+    notice lands `false` and GitHub is never touched."""
     h = Harness(meta=[DiffError("request", "transport_error")])
     with pytest.raises(DiffError) as exc_info:
         h.run(envelope(sha=SHA_B))
     assert exc_info.value.reason == "transport_error"
     assert h.github.calls == []
+    (line,) = h.log_lines()
+    assert line["status"] == "retry_queued"
+    assert line["failure_notice_published"] == "false"
 
 
 def test_diff_403_completes():
@@ -812,16 +827,27 @@ def test_diff_403_completes():
 
 
 def test_github_post_500_raises_for_queue_retry():
-    """Transient GitHub 5xx on POST → raise; nothing finalized. The script
-    leads with the reconcile list GET (200 empty) so the 500 lands on the
-    lease-POST, preserving the pre-T040 row semantics."""
+    """Transient GitHub 5xx on the review publish → raise; the review
+    content never lands (the script's 500 hits the publish reconcile
+    call). The first-failure RETRYING notice then runs its own fenced
+    publish against GitHub's default replies — and that notice run, by
+    D2 design, finalizes the record ACTIVE with the notice comment
+    persisted."""
     h = Harness(meta=[(200, SHA_B)], github=FakeGitHub(script=[(200, b"[]"), (500, b"boom")]))
     with pytest.raises(GitHubError) as exc_info:
         h.run(envelope(sha=SHA_B))
     assert exc_info.value.status == 500
-    assert PK not in h.table.items or h.table.items[PK]["status"] != "ACTIVE"
+    # Only the NOTICE landed: one POST total, carrying the notice (never
+    # the review), and the notice's fenced run finalized the record.
+    posts = [call for call in h.github.calls if call["method"] == "POST"]
+    assert len(posts) == 1
+    assert "retried automatically" in posts[0]["body"]["body"]
+    assert h.table.items[PK]["status"] == "ACTIVE"
+    assert h.table.items[PK]["comment_id"] == POST_ID
+    assert h.github.methods() == ["GET", "GET", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
+    assert line["failure_notice_published"] == "true"
 
 
 def test_github_patch_404_with_unreadable_list_completes():

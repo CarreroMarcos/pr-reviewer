@@ -377,14 +377,18 @@ def test_list_403_completes():
 
 
 def test_github_429_retry_after_adjusts_visibility():
-    """Lease-POST → 429 with `Retry-After: 120`: the worker extends the
-    message visibility per the header, then raises for queue retry (the
-    `retry_queued` line is emitted first)."""
+    """Lease-POST → 429 with `Retry-After: 120` on the FIRST delivery:
+    the worker extends the message visibility per the header, then the
+    first-failure RETRYING notice publishes, then raises for queue retry
+    (the `retry_queued` line is emitted last)."""
     github = ScriptedGitHub(
         [
             (200, _list_body()),  # review-stage prior read (no marker yet)
             (200, _list_body()),
             (429, b'{"message":"throttled"}', {"Retry-After": "120"}),
+            (200, _list_body()),  # notice: reconcile list (no marker)
+            (201, json.dumps({"id": NOTICE_ID}).encode()),  # notice POST
+            (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),  # re-check
         ]
     )
     h = Harness(meta=[(200, SHA_B)], github=github)
@@ -394,31 +398,46 @@ def test_github_429_retry_after_adjusts_visibility():
     assert h.sqs.visibility_calls == [
         {"QueueUrl": QUEUE_URL, "ReceiptHandle": "rh-1", "VisibilityTimeout": 120}
     ]
+    assert github.methods() == ["GET", "GET", "POST", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
+    assert line["failure_notice_published"] == "true"
 
 
 # --- 5xx → raise, no visibility touch without a hint ---
 
 
 def test_github_500_raises_without_visibility():
-    """Lease-POST → 500 with no Retry-After: raise for queue retry under
-    the queue's own visibility (no extension call without a hint)."""
-    github = ScriptedGitHub([(200, _list_body()), (200, _list_body()), (500, b"boom")])
+    """Lease-POST → 500 with no Retry-After on the FIRST delivery: the
+    first-failure RETRYING notice publishes, then raise for queue retry
+    under the queue's own visibility (no extension call without a hint)."""
+    github = ScriptedGitHub(
+        [
+            (200, _list_body()),
+            (200, _list_body()),
+            (500, b"boom"),
+            (200, _list_body()),
+            (201, json.dumps({"id": NOTICE_ID}).encode()),
+            (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),
+        ]
+    )
     h = Harness(meta=[(200, SHA_B)], github=github)
     with pytest.raises(GitHubError) as exc_info:
         h.run(env_queue_url=QUEUE_URL)
     assert exc_info.value.status == 500
     assert h.sqs.visibility_calls == []
+    assert github.methods() == ["GET", "GET", "POST", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
+    assert line["failure_notice_published"] == "true"
 
 
 # --- LLM 429 → raise; no visibility adjustment possible ---
 
 
 def test_llm_429_raises_without_visibility_adjustment():
-    """LLM 429 → raise for the bounded queue retry. Limitation pinned:
+    """LLM 429 on the FIRST delivery → the first-failure RETRYING notice
+    publishes, then raise for the bounded queue retry. Limitation pinned:
     `Retry-After` headers die inside `common.llm` (which surfaces only
     `error_class`), so the worker edge cannot adjust visibility — the
     queue default applies. `common.llm`/`common.diff` are out of scope
@@ -426,7 +445,14 @@ def test_llm_429_raises_without_visibility_adjustment():
     h = Harness(
         meta=[(200, SHA_B)],
         llm_script=[("response", 429, b"{}")],
-        github=ScriptedGitHub([(200, _list_body())]),
+        github=ScriptedGitHub(
+            [
+                (200, _list_body()),
+                (200, _list_body()),
+                (201, json.dumps({"id": NOTICE_ID}).encode()),
+                (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),
+            ]
+        ),
     )
     with pytest.raises(Exception, match="llm request failed: http_429"):
         h.run(env_queue_url=QUEUE_URL)
@@ -434,6 +460,7 @@ def test_llm_429_raises_without_visibility_adjustment():
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
     assert line["error_class"] == "http_429"
+    assert line["failure_notice_published"] == "true"
 
 
 # --- 401 → single re-fetch, then non-retryable complete ---
@@ -470,35 +497,57 @@ def test_401_twice_completes_after_single_refetch():
 
 
 def test_llm_timeout_raises():
-    """LLM read timeout is side-effect-free → raise; `retry_queued` first."""
+    """LLM read timeout on the FIRST delivery is side-effect-free → the
+    friendly RETRYING notice publishes instantly, then raise; the
+    `retry_queued` line carries `failure_notice_published: true`."""
     h = Harness(
         meta=[(200, SHA_B)],
         llm_script=[("raise", TimeoutError("read timed out"))],
-        github=ScriptedGitHub([(200, _list_body())]),
+        github=ScriptedGitHub(
+            [
+                (200, _list_body()),
+                (200, _list_body()),
+                (201, json.dumps({"id": NOTICE_ID}).encode()),
+                (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),
+            ]
+        ),
     )
     with pytest.raises(Exception, match="llm request failed: timeout"):
         h.run()
-    # Review ran through the prior-context GET before the LLM failed.
-    assert h.github.methods() == ["GET"]
+    # Review ran through the prior-context GET before the LLM failed;
+    # the notice added a list GET, the POST, and the re-check GET.
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
+    assert line["failure_notice_published"] == "true"
+    posted = h.github.bodies("POST")[0]["body"]
+    assert MARKER in posted
+    assert "retried automatically" in posted
 
 
 def test_llm_invalid_output_raises():
-    """Structurally unusable LLM output → raise for the bounded retry (the
-    invalid content itself is never published)."""
+    """Structurally unusable LLM output on the FIRST delivery → the
+    RETRYING notice publishes, then raise for the bounded queue retry
+    (the invalid content itself is never published)."""
     h = Harness(
         meta=[(200, SHA_B)],
         llm_script=[("response", 200, b"{not json")],
-        github=ScriptedGitHub([(200, _list_body())]),
+        github=ScriptedGitHub(
+            [
+                (200, _list_body()),
+                (200, _list_body()),
+                (201, json.dumps({"id": NOTICE_ID}).encode()),
+                (200, _list_body(_comment(NOTICE_ID, "n " + MARKER))),
+            ]
+        ),
     )
     with pytest.raises(Exception, match="llm request failed: invalid_response"):
         h.run()
     # Review ran through the prior-context GET before the LLM failed.
-    assert h.github.methods() == ["GET"]
+    assert h.github.methods() == ["GET", "GET", "POST", "GET"]
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
-    assert line["error_class"] == "invalid_response"
+    assert line["failure_notice_published"] == "true"
 
 
 # --- assembled-comment validation failure → non-retryable ---
@@ -536,11 +585,12 @@ def test_assemble_refused_completes():
 
 
 def test_final_attempt_transient_publishes_notice_then_raises():
-    """LLM 500 at `ApproximateReceiveCount` 5 (final attempt): the D2
-    failure notice is published through the fenced path (marker + fixed
-    template via lease-POST), the `retry_queued` line carries
-    `failure_notice_published: true`, and the ORIGINAL error still raises
-    so DLQ/alert/redrive proceed unchanged."""
+    """LLM 500 at `ApproximateReceiveCount` 5 (past max 3 — tolerated
+    after redrive): the FINAL notice replaces any earlier retrying notice
+    through the fenced path (marker + fixed template, adopt-PATCH here),
+    the `retry_queued` line carries `failure_notice_published: true`, and
+    the ORIGINAL error still raises so DLQ/alert/redrive proceed
+    unchanged."""
     github = ScriptedGitHub(
         [
             (200, _list_body()),  # review-stage prior read (no marker yet)
@@ -623,12 +673,12 @@ def test_notice_trigger_invalid_key_maps_to_immediate_row():
 
 
 def test_final_attempt_429_publishes_notice_then_raises_with_visibility():
-    """429-combination (current final-attempt semantics, pinned — not
-    changed): GitHub 429 with `Retry-After: 120` at
-    `ApproximateReceiveCount == maxReceiveCount` (5) → visibility extended
-    per the hint, the D2 notice publishes (transient-at-final), the
-    `retry_queued` line carries `failure_notice_published: true`, and the
-    ORIGINAL error still raises so DLQ/alert/redrive proceed unchanged."""
+    """429-combination (final-attempt semantics, pinned — not changed):
+    GitHub 429 with `Retry-After: 120` at `ApproximateReceiveCount` 5
+    (past max 3) → visibility extended per the hint, the FINAL notice
+    publishes (transient-at-final), the `retry_queued` line carries
+    `failure_notice_published: true`, and the ORIGINAL error still raises
+    so DLQ/alert/redrive proceed unchanged."""
     github = ScriptedGitHub(
         [
             (200, _list_body()),  # review-stage prior read (no marker yet)
@@ -651,3 +701,104 @@ def test_final_attempt_429_publishes_notice_then_raises_with_visibility():
     assert line["status"] == "retry_queued"
     assert line["error_class"] == "http_429"
     assert line["failure_notice_published"] == "true"
+
+
+# --- first-failure → intermediate → final → success lifecycle (post-once) ---
+
+
+def test_notice_lifecycle_retrying_once_then_final_then_success_clears():
+    """The full retry UX on one PR, four deliveries against the same
+    state (counts 1 → 2 → 3 → success):
+
+    * count 1: instant RETRYING notice (lease-POST) — failures are never
+      silent; the notice's id is persisted.
+    * count 2 (intermediate): NO new comment — post-once semantics; the
+      first notice stays untouched.
+    * count 3 (max): the FINAL notice REPLACES the first in place
+      (adopt-PATCH of the same comment id — never a second POST).
+    * success: the review content PATCHes that same comment id — the
+      stale "retrying" warning cannot survive a successful publish.
+
+    Exactly ONE canonical comment id exists across the whole lifecycle.
+    """
+    notice_body = "n " + MARKER
+    github = ScriptedGitHub(
+        [
+            # Delivery 1 (count 1, LLM timeout): prior read + notice lease-POST.
+            (200, _list_body()),
+            (200, _list_body()),
+            (201, json.dumps({"id": NOTICE_ID}).encode()),
+            (200, _list_body(_comment(NOTICE_ID, notice_body))),
+            # Delivery 2 (count 2, intermediate): prior read only, silent.
+            (200, _list_body()),
+            # Delivery 3 (count 3 = max): prior read + final adopt-PATCH.
+            (200, _list_body()),
+            (200, _list_body(_comment(NOTICE_ID, notice_body))),
+            (200, json.dumps({"id": NOTICE_ID}).encode()),
+            # Delivery 4 (success): prior read + review PATCH over the notice.
+            (200, _list_body()),
+            (200, json.dumps({"id": NOTICE_ID}).encode()),
+        ]
+    )
+    h = Harness(
+        meta=[(200, SHA_B)],
+        llm_script=[
+            ("raise", TimeoutError("read timed out")),
+            ("raise", TimeoutError("read timed out")),
+            ("raise", TimeoutError("read timed out")),
+            ("response", 200, _completion()),
+        ],
+        github=github,
+    )
+
+    with pytest.raises(Exception, match="llm request failed: timeout"):
+        h.run(receive_count="1", env_queue_url=QUEUE_URL)
+    with pytest.raises(Exception, match="llm request failed: timeout"):
+        h.run(receive_count="2", env_queue_url=QUEUE_URL)
+    with pytest.raises(Exception, match="llm request failed: timeout"):
+        h.run(receive_count="3", env_queue_url=QUEUE_URL)
+    assert h.run(receive_count="3", env_queue_url=QUEUE_URL) == {
+        "ok": True,
+        "results": ["published"],
+    }
+
+    # Exactly one canonical comment ever created; final content wins.
+    posts = github.bodies("POST")
+    assert len(posts) == 1
+    assert MARKER in posts[0]["body"]
+    assert "retried automatically" in posts[0]["body"]  # friendly first notice
+    # Notice hygiene: no credential material anywhere on the wire.
+    for call in github.calls:
+        wire = call["body"] if isinstance(call["body"], str) else call["body"].decode()
+        assert "glm-key-value" not in wire
+    final_patch = json.loads(github.calls[-1]["body"].decode())["body"]
+    assert "retried automatically" not in final_patch
+    assert REVIEW_BODY.strip() in final_patch  # review replaced the notice
+    assert h.table.items[PK]["comment_id"] == NOTICE_ID
+
+    lines = h.log_lines()
+    assert [line["status"] for line in lines] == [
+        "retry_queued",
+        "retry_queued",
+        "retry_queued",
+        "published",
+    ]
+    assert [line["failure_notice_published"] for line in lines] == [
+        "true",  # count 1: retrying notice posted
+        "false",  # count 2: intermediate — silent
+        "true",  # count 3: final notice replaced in place
+        "false",  # success: no notice machinery on the publish path
+    ]
+    # Delivery 3 replaced the notice via PATCH of the SAME id, no POST.
+    assert github.methods() == [
+        "GET",
+        "GET",
+        "POST",
+        "GET",  # delivery 1
+        "GET",  # delivery 2
+        "GET",
+        "GET",
+        "PATCH",  # delivery 3
+        "GET",
+        "PATCH",  # delivery 4 (success)
+    ]
