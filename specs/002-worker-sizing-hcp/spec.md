@@ -189,4 +189,7 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   `terraform.tfstate` + `.backup` stay until acceptance passes.
 - **Cost floor:** AWS side unchanged in free tier (analysis 2026-09-19); HCP
   Free adds $0. Drift detection (Standard+) explicitly out of scope — the
-  plan-on-PR + occasional UI plan is the free substitute.
+  plan-on-PR + occasional UI plan is the free substitute. (Mars,
+  2026-09-26: plan-on-PR is **cut** — tag-based VCS triggering and
+  speculative PR plans are mutually exclusive; the occasional UI plan-only
+  run remains the only substitute.)
