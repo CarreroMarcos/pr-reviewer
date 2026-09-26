@@ -75,8 +75,11 @@ No locks are required inside fan-out, eliminating cross-thread race conditions b
 
 **D2 — Models: GLM only.**
 His Z.AI plan makes GLM-5.3-Flash effectively unlimited, so a Bedrock migration is hassle
-with no payoff — decided 2026-09-25: GLM for all agents, no Bedrock in v1. (Bedrock research
-kept on file in case a future stronger-synthesizer experiment is ever eval-gated.)
+with no payoff — decided 2026-09-25: GLM for all agents, no Bedrock in the v1 RUNTIME path.
+(Bedrock research kept on file in case a future stronger-synthesizer experiment is ever eval-gated.)
+Carve-out (added 2026-09-26, bot review #5): Bedrock Titan Text Embeddings is permitted in the OFFLINE
+eval harness only — `capture_multi_agent.py`, out-of-band, per the D8 Offline Embedding Rule — never
+in any request-serving path.
 The agent interface stays provider-neutral behind the existing `common/llm.py` port.
 
 **D3 — Topology: 3 generator specialists + adversarial verifier + synthesizer.**
@@ -399,8 +402,12 @@ notice. A state-machine test MUST prove the containment.
    random 64-bit hex nonce (`nonce = secrets.token_hex(8)`). Delimiters between stages bind this nonce:
    `<<<CANDIDATE_FINDINGS nonce="{nonce}">>> ... <<<END_CANDIDATE_FINDINGS nonce="{nonce}">>>`
    Delimiters are per-stage and nonced: each stage boundary (wave → verifier → synthesizer) generates
-   a fresh nonce, and verifier/synthesizer prompts use a DIFFERENT nonce than the wave; the nonce MUST
-   NOT appear in any model-visible prompt more than once. The diff itself is passed VERBATIM inside
+   a fresh nonce, and verifier/synthesizer prompts use a DIFFERENT nonce than the wave. Invariant
+   (reworded 2026-09-26, bot review #5 — the earlier "must not appear more than once" phrasing was
+   violated by the format itself): a stage nonce appears EXACTLY TWICE in the model-visible prompt —
+   the opening and closing tag of its own block — and is never reused across stages or prompts; any
+   OTHER occurrence of the nonce (in a finding field, in the diff echo, in reasoning text) is a
+   boundary-break signal. The diff itself is passed VERBATIM inside
    fenced blocks — never escaped or mutated (a correctness tool must not review altered text; the
    original `replace("<<<", "<\\<<")` escaping was withdrawn 2026-09-26 for exactly that reason).
    The prompt-injection trap case passes iff the trap finding is killed without the nonce appearing in
