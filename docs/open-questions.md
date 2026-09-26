@@ -180,7 +180,7 @@ they survive session boundaries (2026-09-26, reflect pass with Mars).
 - **Contention-rate alarm** (Phase 1 operability, recorded in-diff).
 - **#91 polish trio** (from the #91 gate): docstring 4th-tick prose fix;
   StatefulGitHub unknown-id PATCH should raise; matrix test `str()`
-  wire-leg.
+  wire-leg. — DONE 2026-09-26 (PR #93, Gate 6 APPROVE).
 - **GUID flip-flop watch:** duplicate-queue-copies theory behind the
   observed GUID flip-flop; watch for recurrence before investing.
 - **HLD-004 spec polish** (Gate 5 attempt 3 advisory, not a merge
