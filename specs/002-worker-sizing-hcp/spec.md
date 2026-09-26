@@ -60,8 +60,8 @@ qa ledger + chat analysis (2026-09-19). HLD §5 memory note amended by T102.
   Keep `terraform.tfstate` + `.backup` locally until acceptance passes.
 - **M4 — Workspace variables** (workspace `pr-reviewer` → Variables →
   Environment): `TFC_AWS_PROVIDER_AUTH = true`,
-  `TFC_AWS_PLAN_ROLE_ARN = arn:aws:iam::395799817120:role/pr-reviewer-hcp-plan`,
-  `TFC_AWS_APPLY_ROLE_ARN = arn:aws:iam::395799817120:role/pr-reviewer-hcp-apply`.
+  `TFC_AWS_PLAN_ROLE_ARN = arn:aws:iam::<ACCOUNT_ID>:role/pr-reviewer-hcp-plan`,
+  `TFC_AWS_APPLY_ROLE_ARN = arn:aws:iam::<ACCOUNT_ID>:role/pr-reviewer-hcp-apply`.
   Provider region is hardcoded (`us-west-2`) — nothing else needed.
 - **M5 — GitHub link.** HCP → Settings → Version Control → GitHub.com (GitHub
   App): authorize user, install on `CarreroMarcos/pr-reviewer`. Workspace

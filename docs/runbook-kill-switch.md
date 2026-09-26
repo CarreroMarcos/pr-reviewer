@@ -19,7 +19,7 @@ the ingress, so nothing invokes the worker or the LLM.
 
 ```bash
 # 1. List repo webhooks; find the one pointing at the pr-reviewer
-#    Function URL (2clzftk…lambda-url.us-west-2.on.aws or current).
+#    Function URL (*.lambda-url.us-west-2.on.aws or current).
 gh api repos/CarreroMarcos/pr-reviewer/hooks --jq '.[] | {id, active, config: .config.url}'
 
 # 2. Disable it (active=false) — keep the hook so re-enable is one call.

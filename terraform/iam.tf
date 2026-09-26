@@ -25,13 +25,10 @@
 #    "naming" of the operator role is structural (byQueue + DLQ ARN in
 #    messaging.tf) plus the StartMessageMoveTask grant here.
 # 3. HLD §5.1 names an SSO principal for the operator trust; SPR-60
-#    (Mars decision 2026-09-14) pins it to the IAM user
-#    arn:aws:iam::395799817120:user/terraform-admin instead — Mars's
-#    deliberate choice over an SSO role. The pre-existing MFA condition
-#    (aws:MultiFactorAuthPresent) composes cleanly with the pinned
-#    principal and stays as tightening.
-#    (was: account root gated on MFA — interim until a named principal
-#    existed).
+#    (Mars decision 2026-09-14) pins it to a named IAM user via
+#    var.operator_principal_arn (falling back to account root with MFA if
+#    empty). The pre-existing MFA condition (aws:MultiFactorAuthPresent)
+#    composes cleanly with the principal and stays as tightening.
 # 4. LeadingKeys is a multivalued condition key, so it requires the
 #    ForAllValues modifier: bare "StringLike" never matches and every
 #    GetItem/PutItem is denied ("no identity-based policy allows …" —
@@ -208,9 +205,11 @@ resource "aws_iam_role" "operator" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect    = "Allow"
-      Principal = { AWS = "arn:aws:iam::395799817120:user/terraform-admin" }
-      Action    = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        AWS = var.operator_principal_arn != "" ? var.operator_principal_arn : "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"
+      }
+      Action = "sts:AssumeRole"
       Condition = {
         Bool = { "aws:MultiFactorAuthPresent" = "true" }
       }

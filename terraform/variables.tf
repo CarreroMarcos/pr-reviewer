@@ -65,3 +65,9 @@ variable "daily_llm_spend_budget_usd" {
   type        = number
   default     = 5
 }
+
+variable "operator_principal_arn" {
+  description = "IAM principal permitted to assume the operator role with MFA (HLD §5.1, failure mode 21). When empty, defaults to the AWS account root principal."
+  type        = string
+  default     = ""
+}

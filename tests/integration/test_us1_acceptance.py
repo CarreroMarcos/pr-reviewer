@@ -64,10 +64,12 @@ if os.environ.get("ACCEPTANCE_LIVE") != "1":
         allow_module_level=True,
     )
 
-FUNCTION_URL = os.environ.get(
-    "ACCEPTANCE_FUNCTION_URL",
-    "https://2clzftk3as32ofc7vxnv47pssu0zpajq.lambda-url.us-west-2.on.aws/",
-)
+FUNCTION_URL = os.environ.get("ACCEPTANCE_FUNCTION_URL", "")
+if not FUNCTION_URL:
+    pytest.fail(
+        "ACCEPTANCE_FUNCTION_URL must be set when ACCEPTANCE_LIVE=1",
+        pytrace=False,
+    )
 REPO = os.environ.get("ACCEPTANCE_REPO", "CarreroMarcos/pr-reviewer")
 PR_NUMBER = int(os.environ.get("ACCEPTANCE_PR", "22"))
 REGION = os.environ.get("AWS_REGION", "us-west-2")
