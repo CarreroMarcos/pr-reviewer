@@ -172,8 +172,8 @@ X-Ray tracing can be added later for latency debugging without touching this des
 **[DECISION — CONFIRMED by Marcos 2026-09-26]**: send `thinking: {"type": "enabled"}` explicitly
 on all GLM-5.3 calls, with `reasoning_effort`: `low` for specialists confirmed
 (higher for verifier/synthesizer) — but NOT a mandate. Phase 0 (§8) measures **both**
-default effort and `low`; the D8 decision rule then picks the ship config from the
-measured p95 comparison (the rule is live, not dead). Rationale:
+default effort and `low`; the D8 effort-selection rule then picks the ship config from the
+measured p95 comparison — pinned in D8 (added 2026-09-26, gate 5). Rationale:
 the flagship demo goal (§2, goal 2) is visualizing agent reasoning — but do NOT just drop the
 param: omitting `reasoning_effort` silently defaults to `max` (~105 reasoning tokens median
 on a trivial prompt vs ~3 at `low`, measured Aug 2026) — the worst case. `low`
@@ -236,6 +236,11 @@ Five hard gates, paired case-by-case vs the single-pass pin:
    escalated finding. Gate: **0 on both**.
 5. **existing floors hold:** fabricated = 0, both robustness cases pass.
 
+**Effort-selection rule (pinned 2026-09-26, gate 5 — the rule D6/Q7/§8 point to):** ship
+`reasoning_effort: low` iff all five gates above pass with `low` AND the measured p95 latency under
+`low` is ≤ the default-effort p95; otherwise the ship config is a Mars ruling from the Phase 0 data —
+never a silent infrastructure default.
+
 **Offline Embedding Rule (Constitution II):** External ML libraries (`torch`, `sentence-transformers`,
 `numpy`, `scipy`) are strictly banned by `pyproject.toml`. Pytest in CI must run 100% offline without network.
 Embedding vectors are generated exclusively during out-of-band capture (`capture_multi_agent.py`) via
@@ -269,7 +274,8 @@ resource exists in `compute.tf` today; stale cite `compute.tf:76-80` removed 202
 is a comment about a dropped reservation, not a setting.)
 **Resolution:**
 1. Worker Lambda remains **unreserved** in Terraform (`compute.tf`).
-2. SQS ESM is configured with `scaling_config { maximum_concurrency = 2 }`.
+2. SQS ESM is to be configured with `scaling_config { maximum_concurrency = 2 }` (instructional — the
+   live ESM does not set it yet; checklist item 3 carries the action — gate 5 tense fix).
 3. **Application-Level Distributed Mutex:** To strictly serialize multi-agent reviews and prevent two
    workers from simultaneously making 6 concurrent requests to Z.AI (tripping the 1302 cap), the worker
    implements a lightweight DynamoDB mutex at invocation start:
@@ -278,10 +284,13 @@ is a comment about a dropped reservation, not a setting.)
    - Acquire = conditional write succeeding iff `attribute_not_exists(pk) OR lease_until < now - 30`
      (30s clock-skew margin). The holder refreshes the lease at 50% TTL while fan-out is active; the
      refresh is a conditional write on the stored `token` — same condition family as release (added
-     2026-09-26, bot review #7): a failed refresh means ownership was lost to expiry takeover, and
-     the holder MUST immediately stop issuing LLM work and take the degraded path (it never
-     re-asserts a lease it no longer owns). Worst-case fan-out (per the elapsed-budget gates below)
-     MUST stay within the refreshed lease so it can never expire mid-run and admit a second fan-out.
+     2026-09-26, bot review #7) — writing `lease_until = now + MUTEX_LEASE_TTL_S`; a failed refresh
+     means ownership was lost to expiry takeover, and the holder MUST immediately stop issuing LLM
+     work and take the degraded path (it never re-asserts a lease it no longer owns). Expiry takeover
+     (acquire's second arm) writes the SAME attribute shape as acquire — `owner`,
+     `lease_until = now + MUTEX_LEASE_TTL_S`, fresh `token = uuid4` (gate 5). Worst-case fan-out (per
+     the elapsed-budget gates below) MUST stay within the refreshed lease so it can never expire
+     mid-run and admit a second fan-out.
    - **Lease TTL (pinned 2026-09-26):** `MUTEX_LEASE_TTL_S = 900` — equal to the worker Lambda's hard
      timeout (`terraform/compute.tf:104`, the AWS maximum). No live invocation can outlive its lease,
      so expiry takeover recovers only genuinely dead holders; the 50% refresh (450s) is retained as
@@ -311,7 +320,9 @@ is a comment about a dropped reservation, not a setting.)
      (bot review #4).
    - Release timing (amended 2026-09-26): the lease is released only when the holder's invocation has
      completed its last LLM call (fan-out, or its own degraded single-pass) — never while a
-     holder-initiated call is still in flight.
+     holder-initiated call is still in flight. The Phase 0 post-publish shadow specialist is NOT
+     lease-covered; release precedes it (gate 5): shadow and fan-out never co-occur — `MULTI_AGENT=1`
+     ignores `MULTI_AGENT_PHASE0` (flag precedence), so the Phase-0 concurrency ceiling is 2 regardless.
    **Concurrency ceiling (amended 2026-09-26; supersedes the earlier "never exceed 3" claim):**
    $\le 1$ worker runs fan-out at any instant, but total concurrent calls to `api.z.ai` reach **4** in
    the contention window — 3 fan-out calls plus a contender single-pass still in flight when the lease
@@ -329,7 +340,9 @@ is a comment about a dropped reservation, not a setting.)
 **Per-PR claim lease vs. review budget (gate-traced 2026-09-26, PR #88 Oracle Q1):** the current
 single-pass system's claim row uses `CLAIM_LEASE_SECONDS=180`, predating the 240s socket-read budget.
 At 240s-class reviews the claim conditional's expired-self branch always fires at claim time (the
-self-lease has lapsed) — converge-safe via re-anchor. The residual is the steal window between lease
+self-lease has lapsed) — converge-safe via claim-lease refresh (the expired-self branch rewrites
+`claim_until`; the term "re-anchor" is avoided here because, since PR #91, it names the attempt-clock
+fix — gate 5). The residual is the steal window between lease
 expiry and claim: a same-head second delivery may claim and publish concurrently; the finalize
 owner-guard forces the loser to `PUBLISHED_FINALIZE_CONFLICT`, and reconcile converges. Multi-agent
 reviews are 780s-class, widening that window ~4×. **Standing remediation (Phase 1 prerequisite):**
@@ -397,7 +410,9 @@ SQS → worker (existing: validate → hydrate → establish → acquire mutex l
      run_review or the worker boundary — see wiring pin below)
   → existing: claim → live-head fence → publish (PATCH) → finalize
   → release mutex lease
-  → run archive → S3 (events.jsonl + meta.json, written AFTER finalize, 90-day Expiration)
+  → Phase 0 only: shadow correctness specialist (post-publish, post-release; NOT lease-covered — gate 5)
+  → run archive → S3 (events.jsonl + meta.json, written AFTER finalize AND after any shadow call —
+    archiving before shadow completion silently drops shadow events from the run)
   → DDB index row (best-effort; GSI pr_number + started_ts)
 ```
 
@@ -494,10 +509,18 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
 
 ### Archive & Index Contracts (pinned 2026-09-26)
 - `meta.json` = `{v: 1, run_id (uuid4 hex), pr, sha, pipeline: "multi_agent"|"single_pass"|"phase0_shadow",
-  status, started_ts, finished_ts, archive_version: 1}` (timestamps epoch ms).
+  status, started_ts, finished_ts, archive_version: 1}` (timestamps epoch ms). `run_id` is `uuid4().hex`
+  — 32 lowercase hex chars, no dashes — in the S3 key, meta.json, and index alike (amended 2026-09-26,
+  gate 5: the route regex previously required a dashed 36-char shape no generated run_id could match).
 - `ts` on every event is epoch milliseconds (integer); consumers order by `ts`.
 - The DDB index row is written best-effort AFTER finalize by `worker_handler` (never inside the review
   callback); `status ∈ {published, degraded_single_pass, failed}`.
+- Status mapping per pipeline (added 2026-09-26, gate 5): `multi_agent` → published |
+  degraded_single_pass | failed by outcome; `single_pass` (fallback, contender, and skipped-shadow
+  Phase 0 runs) → published | failed; `phase0_shadow` → published | failed — status describes the
+  REVIEW outcome (the single-pass publish that precedes the shadow), `pipeline` is the discriminator,
+  and shadow telemetry lives in events. `review_skipped {reason: "phase0_no_budget"}` is an EVENT,
+  never a row class — it writes no index row.
 - Single-pass fallback emits `review_started`, `degraded_to_single_pass`, `checkpoint {published,
   finalized}`, `review_published` — never `agent_*`/`verification_*` — so every archived run renders on
   the replay site.
@@ -593,7 +616,7 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
         │
         └── Path: `/runs/{pr}/{sha}/{run_id}/{file}`
                   └── Headers: `Authorization: Bearer <token>` (REQUIRED)
-                  └── Regex: `^runs/\d+/[0-9a-f]{40}/[0-9a-f-]{36}/(events\.jsonl|meta\.json)$`
+                  └── Regex: `^runs/\d+/[0-9a-f]{40}/[0-9a-f]{32}/(events\.jsonl|meta\.json)$`
                   └── Returns: S3 Archive Object
 ```
 
@@ -621,8 +644,9 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
   - Base table: `read_capacity = 20`, `write_capacity = 20`.
   - GSI `pr-runs-index`: `read_capacity = 5`, `write_capacity = 5`.
   - Partition key: `pr_number (N)`. Sort key: `started_ts (S)`.
-  - `ProjectionType: INCLUDE` with non-key attributes `["sha", "status", "archive_s3_key", "archive_written_at", "findings_n"]`.
-    (Answers "latest run for PR #123" without requiring a secondary base-table `GetItem`).
+  - `ProjectionType: INCLUDE` with non-key attributes `["sha", "status", "pipeline", "archive_s3_key", "archive_written_at", "findings_n"]`.
+    (Answers "latest run for PR #123" without requiring a secondary base-table `GetItem`; `pipeline`
+    is projected so latest-run queries can discriminate shadow runs — gate 5).
 
 ## 8. Rollout & Hardened Terraform Checklist
 
@@ -658,7 +682,10 @@ beyond `review_started` / `checkpoint` / `review_published`.
 ### Hardened Terraform Checklist
 1. **S3 Bucket for Archives:** Block Public Access pinned; Bucket policy Deny on public ACLs;
    Lifecycle configuration: **Expiration at 90 days** on `runs/` prefix (no Glacier transition).
-2. **SQS Messaging (`terraform/messaging.tf`):** `visibility_timeout_seconds = 5400`.
+2. **SQS Messaging (`terraform/messaging.tf`):** `visibility_timeout_seconds = 1800` (= 2 × the 900s
+   worker timeout; amended 2026-09-26, gate 5 — the earlier 5400 contradicted both the live value and
+   the pinned three-way contract in `tests/contracts/test_terraform_contract.py`; any future change
+   lands in the same PR as its contract-test update).
    Redrive policy updated:
    ```hcl
    redrive_policy = jsonencode({
@@ -698,8 +725,12 @@ beyond `review_started` / `checkpoint` / `review_published`.
 ## 9. GLM API Constraints & `llm.py` Modifications
 
 ### Required Changes to `lambda/common/llm.py`
-1. **Configurable Read Timeout:** Parameterize `review_diff(..., read_timeout_s=READ_TIMEOUT_S)` —
-   today a module constant (`READ_TIMEOUT_S = 45`, `llm.py:42`, applied via `sock.settimeout`).
+1. **Configurable Read Timeout (rewritten 2026-09-26, gate 5 — supersedes the stale
+   `READ_TIMEOUT_S = 45` description; that symbol no longer exists):** `lambda/common/llm.py` already
+   resolves the read timeout at request time via `_read_timeout_s()` (`GLM_READ_TIMEOUT_S`, default
+   240, clamped [30, 600]; applied at `llm.py:229`). Multi-agent specialist/verifier/synthesizer
+   calls pass the resolved value explicitly as `read_timeout_s`, and the contender path overrides it
+   per the clamp pin above — no new module constant is introduced.
 2. **Explicit Max Tokens:** Pass `max_tokens: 16384` in payload.
 3. **Finish Reason Length Detection:** In `_parse_result`, check `first.get("finish_reason") == "length"`.
    If true, raise `LlmError("length")` so caller can treat truncation as an error rather than silent success.
@@ -720,7 +751,7 @@ beyond `review_started` / `checkpoint` / `review_published`.
 - **Q7: RESOLVED (2026-09-26, Mars ruling; wording amended 2026-09-26, bot review #3).** Explicit
   `thinking: {"type": "enabled"}` is confirmed for production; `reasoning_effort` STARTS at `low`
   (specialists) as the provisional default, and the SHIP config is resolved by the Phase 0 p95
-  comparison under the D8 decision rule (see D6 — "the rule is live, not dead"). This entry does not
+  comparison under the D8 effort-selection rule (see D8 — pinned 2026-09-26). This entry does not
   pre-decide that ruling.
 - **Q8: RESOLVED (2026-09-26, Mars ruling).** Worker concurrency strategy: Option A confirmed (unreserved worker,
   ESM concurrency 2, single-worker execution enforced via the §D9 DynamoDB mutex contract
