@@ -13,6 +13,9 @@ mirrors them:
   outlive the invisibility window, so no concurrent duplicate
   processing; failed messages redeliver at ~30 min, which is the delay
   the retrying notice quotes to users.
+* ESM `batch_size` == 1 (terraform/compute.tf) — the ordering-semantics
+  pin (see the ordering comment in messaging.tf): one message per worker
+  invocation, so the worker never reorders within a batch.
 """
 
 import re
@@ -25,6 +28,7 @@ COMPUTE_TF = (TERRAFORM_DIR / "compute.tf").read_text(encoding="utf-8")
 EXPECTED_VISIBILITY = 1800
 EXPECTED_MAX_RECEIVE_COUNT = 3
 EXPECTED_WORKER_TIMEOUT = 900
+EXPECTED_BATCH_SIZE = 1
 
 
 def _int_assignment(text: str, key: str) -> int:
@@ -58,6 +62,13 @@ def test_failure_notice_default_matches_terraform_max_receive_count():
     from common.failure_notice import DEFAULT_MAX_RECEIVE_COUNT
 
     assert DEFAULT_MAX_RECEIVE_COUNT == _max_receive_count()
+
+
+def test_esm_batch_size_is_one():
+    """Ordering pin (messaging.tf ordering comment): the ESM delivers one
+    message per worker invocation — a drift here silently changes the
+    delivery semantics that comment describes."""
+    assert _int_assignment(COMPUTE_TF, "batch_size") == EXPECTED_BATCH_SIZE
 
 
 def _worker_lambda_timeout() -> int:
