@@ -164,12 +164,16 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   the apply happens **automatically** — there is no manual UI approval
   step (Mars, 2026-09-26).
 - **HCP workspace must define `operator_principal_arn` (Mars, 2026-09-26):**
-  set it to the live operator principal
-  (`arn:aws:iam::395799817120:user/terraform-admin`). Left empty, terraform
-  tries to rewrite `aws_iam_role.operator`'s trust policy (root+MFA
-  fallback) and the run dies on a 403 — `pr-reviewer-hcp-apply` has no
-  `iam:UpdateAssumeRolePolicy` and we deliberately keep it that way (least
-  privilege; parity via the variable, not a broader pipeline grant).
+  the HCP workspace VARIABLE is the single source of truth — set it there to
+  the live operator principal (verification example:
+  `arn:aws:iam::395799817120:user/terraform-admin`; do not treat the example
+  as the authority). Left empty, terraform tries to rewrite
+  `aws_iam_role.operator`'s trust policy (root+MFA fallback) and the run
+  dies on a 403 — `pr-reviewer-hcp-apply` has no `iam:UpdateAssumeRolePolicy`
+  and we deliberately keep it that way (least privilege; parity via the
+  variable, not a broader pipeline grant). Watch the value for a trailing
+  space when pasting: invisible whitespace yields a phantom trust-policy
+  diff → the same 403.
 - **Worker-log diagnosis (2026-09-20):** worker logs are lowercase
   structured JSON — a CloudWatch `--filter-pattern ERROR` matches nothing.
   Filter by field: `--filter-pattern '{ $.error_class =

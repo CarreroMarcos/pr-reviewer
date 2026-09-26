@@ -526,6 +526,10 @@ def _make_review(
         except LlmError as exc:
             if exc.error_class == "http_401" and creds.refresh_once():
                 cfg = creds.current()
+                # Re-anchor the attempt clock: the timeout retry's
+                # `duration_ms` must measure the attempt that timed out,
+                # not the 401 round trip before it (Gate #88 advisory A1).
+                attempt_start = now()
                 try:
                     return _invoke(cfg)
                 except LlmError as fresh_exc:
@@ -1003,9 +1007,14 @@ def _attempt_notice(
     if creds is None or phase is None:
         return NoticeDisposition.PUBLISHED_FALSE.value
     # Final-template attempts count: the queue's own budget for
-    # transient exhaustion; exactly one for permanent rows.
+    # transient exhaustion, CLAMPED — a redriven message can arrive with
+    # a receive count above the budget, and the notice must not claim
+    # attempts that never happened in this configuration (Gate #89
+    # Finding 6); exactly one for permanent rows.
     attempts = (
-        receive_count if trigger in (NoticeTrigger.TRANSIENT, NoticeTrigger.LLM_UNUSABLE) else 1
+        min(receive_count, _MAX_RECEIVE_COUNT)
+        if trigger in (NoticeTrigger.TRANSIENT, NoticeTrigger.LLM_UNUSABLE)
+        else 1
     )
     try:
         list_page, create_comment, update_comment, delete_comment = _github_comment_ports(
