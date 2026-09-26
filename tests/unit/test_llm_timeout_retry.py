@@ -350,6 +350,30 @@ def test_401_then_success_arm_still_works(caplog):
     assert _retry_logs(caplog) == []  # no timeout involved → no timeout retry
 
 
+def test_401_then_success_emits_no_retry_log_and_reanchors_clock(caplog):
+    """Happy-path 401 arm (re-fetch succeeds, no timeout): the worker
+    emits NO retry/duration record — the only duration-bearing log on
+    this seam is `llm_timeout_retry`, which is timeout-specific (the LLM
+    module's own `llm_review` warning for the 401 response lives in
+    `common.llm`, out of scope here). The re-anchored attempt clock is
+    still consumed exactly once more (the comment timestamp): three clock
+    reads total — original anchor, re-anchor after the 401 refresh, and
+    the comment timestamp — proving the re-anchor took place. Old code
+    (no re-anchor) would consume only two reads, failing loudly."""
+    ticks = iter([100.0, 150.0, 175.0])
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        content, seen = _run_review(
+            script=[("response", 401, b"{}"), *_ok_script()],
+            remaining_ms=AMPLE_MS,
+            clock=lambda: next(ticks),
+        )
+    assert REVIEW_BODY.strip() in content
+    assert len(seen) == 2  # the 401 + the successful re-fetch; no retry
+    assert _retry_logs(caplog) == []
+    with pytest.raises(StopIteration):
+        next(ticks)  # exactly three reads: anchor, re-anchor, comment ts
+
+
 def test_401_then_timeout_composes_one_retry_per_class(caplog):
     with caplog.at_level(logging.WARNING, logger="worker_handler"):
         content, seen = _run_review(

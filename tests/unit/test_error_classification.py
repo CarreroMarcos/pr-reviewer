@@ -48,7 +48,7 @@ import pytest
 
 from common.failure_notice import NoticeTrigger
 from common.llm import LlmError
-from worker_handler import GitHubError, _notice_trigger, handler
+from worker_handler import GitHubError, _notice_trigger, _record_delivery_context, handler
 
 REPO = "octo-org/hello-world"
 PR_NUMBER = 42
@@ -663,11 +663,14 @@ def test_final_attempt_transient_publishes_notice_then_raises():
     assert line["failure_notice_published"] == "true"
 
 
-@pytest.mark.parametrize("receive_count", ["3", "4", "7"])
+@pytest.mark.parametrize("receive_count", [3, 4, 7])
 def test_final_notice_attempts_clamped_to_queue_budget(receive_count):
     """Matrix: at/past the final attempt (including redriven counts well
     above maxReceiveCount 3), the FINAL notice always names the real
-    budget — 'after 3 attempts' — never the raw receive count."""
+    budget — 'after 3 attempts' — never the raw receive count. Counts are
+    ints, the exact type `_record_delivery_context` hands to
+    `_attempt_notice` (the wire string is coerced at ingestion — pinned
+    by `test_receive_count_wire_string_coerced_to_int_at_ingestion`)."""
     github = ScriptedGitHub(
         [
             (200, _list_body()),  # review-stage prior read (no marker yet)
@@ -684,13 +687,41 @@ def test_final_notice_attempts_clamped_to_queue_budget(receive_count):
         h.run(receive_count=receive_count, env_queue_url=QUEUE_URL)
     assert github.methods() == ["GET", "GET", "PATCH"]
     patch_body = json.loads(github.calls[-1]["body"].decode())["body"]
-    assert "could not be completed" in patch_body
+    # The exact rendered count equals the clamped budget in every case.
     assert "after 3 attempts" in patch_body
-    # The clamp collapses every count to the budget — never the raw count.
-    assert f"after {receive_count} attempts" not in patch_body or receive_count == "3"
+    if receive_count > 3:
+        # Above budget the raw count must NOT render — a clamp regression
+        # to the constant budget would silently pass; to the raw count it
+        # fails loudly here.
+        assert f"after {receive_count} attempts" not in patch_body
     (line,) = h.log_lines()
     assert line["status"] == "retry_queued"
     assert line["failure_notice_published"] == "true"
+
+
+def test_receive_count_wire_string_coerced_to_int_at_ingestion():
+    """Type pin (Gate #91 follow-up 1): `ApproximateReceiveCount` is a
+    STRING on the SQS wire; `_record_delivery_context` coerces it to a
+    real int BEFORE any consumer — the final-attempt notice clamp does
+    `min(receive_count, _MAX_RECEIVE_COUNT)`, which would TypeError on a
+    string. A regression to string-typed values fails loudly here."""
+    receipt_handle, receive_count = _record_delivery_context(
+        {"receiptHandle": "rh-9", "attributes": {"ApproximateReceiveCount": "7"}}
+    )
+    assert receipt_handle == "rh-9"
+    assert receive_count == 7
+    assert isinstance(receive_count, int) and not isinstance(receive_count, bool)
+    # Whitespace-tolerant, int-tolerant, garbage- and absence-defaulting —
+    # every path yields an int (never a str, never a bool).
+    assert _record_delivery_context({"attributes": {"ApproximateReceiveCount": "  3  "}})[1] == 3
+    assert _record_delivery_context({"attributes": {"ApproximateReceiveCount": 4}})[1] == 4
+    for raw in (None, "bogus", ""):
+        _, count = _record_delivery_context({"attributes": {"ApproximateReceiveCount": raw}})
+        assert count == 1
+        assert isinstance(count, int) and not isinstance(count, bool)
+    _, missing = _record_delivery_context({})
+    assert missing == 1
+    assert isinstance(missing, int) and not isinstance(missing, bool)
 
 
 # --- D2: permanent assemble failure → notice immediately ---
