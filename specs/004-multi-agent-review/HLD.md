@@ -557,7 +557,10 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
         │         └── Returns: `static/index.html` (Unauthenticated shell)
         │
         ├── Path: `/static/{file}`
-        │         └── Regex: `^static/[A-Za-z0-9._-]+$`
+        │         └── Regex: `^static/[A-Za-z0-9._-]+$` AND explicit dot-segment rejection: the viewer
+        │             normalizes the path and rejects with 404 any segment resolving to `.` or `..`
+        │             BEFORE constructing the S3 key (the character class alone admits `static/..`;
+        │             added 2026-09-26, bot review #3)
         │         └── Returns: S3 `static/{file}` (Unauthenticated CSS/JS)
         │
         ├── Path: `/api/runs/{pr}/latest` (Index Query)
@@ -575,7 +578,13 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
   on `/api/...` and archive routes. Token compared with `hmac.compare_digest`. Token lifecycle: provisioned
   out-of-band via `aws ssm put-parameter --type SecureString`; the static shell exposes a password-field
   login that stores the token in `sessionStorage` only (never URL, never localStorage) and attaches it as
-  `Authorization: Bearer` via fetch; rotation = new SSM value, no code deploy.
+  `Authorization: Bearer` via fetch; rotation = new SSM value, no code deploy. XSS posture (added
+  2026-09-26, bot review #3): archived event content rendered by the replay UI — reasoning excerpts and
+  finding text are model-controlled and traverse the same trust boundary as review output — passes
+  through the SAME span-preserving sanitization (§5) before render; no model-controlled string is ever
+  inserted via markup-unsafe rendering. Residual risk accepted for v1: `sessionStorage` is readable by
+  any script on the origin, so the sanitization layer IS the boundary (no third-party scripts ship on
+  the viewer origin).
 - **Viewer Lambda IAM:**
   - `ssm:GetParameter` on token parameter ARN, plus `kms:Decrypt` on the parameter's KMS key ARN
     (SecureString reads fail without it — missing this makes the viewer 500 on every authed route).
@@ -682,8 +691,11 @@ beyond `review_started` / `checkpoint` / `review_published`.
 - **Q4: RESOLVED (2026-09-25).** Private first via bearer token in SSM SecureString.
 - **Q5: RESOLVED (2026-09-25).** Reasoning verbosity: enabled + `reasoning_effort`, truncate at capture.
 - **Q6: RESOLVED (2026-09-25).** Model: GLM only across all agents.
-- **Q7: RESOLVED (2026-09-26, Mars ruling).** Explicit `thinking: {"type": "enabled"}` + `reasoning_effort: "low"`
-  confirmed for production build.
+- **Q7: RESOLVED (2026-09-26, Mars ruling; wording amended 2026-09-26, bot review #3).** Explicit
+  `thinking: {"type": "enabled"}` is confirmed for production; `reasoning_effort` STARTS at `low`
+  (specialists) as the provisional default, and the SHIP config is resolved by the Phase 0 p95
+  comparison under the D8 decision rule (see D6 — "the rule is live, not dead"). This entry does not
+  pre-decide that ruling.
 - **Q8: RESOLVED (2026-09-26, Mars ruling).** Worker concurrency strategy: Option A confirmed (unreserved worker,
   ESM concurrency 2, single-worker execution enforced via the §D9 DynamoDB mutex contract
   `mutex:pr-reviewer-worker`; contention → contender runs single-pass inline, never a visibility deferral).
