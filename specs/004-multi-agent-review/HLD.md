@@ -207,7 +207,10 @@ Corpus: **15 = 13 seeded + 2 robustness**, growing to 24: +3 tests-gap cases (th
 current corpus has ZERO tests-category coverage), +4 verifier-trap cases (plausible-but-
 false findings; one of the four is a prompt-injection case), +2 subtle-true cases
 (wrongful-kill guards).
-**Total ground truth positive defects ($N$) = 18 defects across 24 cases.**
+**Total ground truth positive defects ($N$) = 18 defects across 24 cases.** Corpus pin (added
+2026-09-26, bot review #7): the five gates are evaluated on the grown 24-case / 18-defect corpus;
+the current on-disk 15-case corpus (13 scored + 2 robustness, defect count not yet frozen) is
+Phase 0 calibration only — interim runs report metrics but render no gate verdicts.
 **Replication:** 3 runs/case per pipeline; report mean ± range; gates evaluated on means.
 
 Five hard gates, paired case-by-case vs the single-pass pin:
@@ -273,9 +276,12 @@ is a comment about a dropped reservation, not a setting.)
    - Mutex row lives in the existing state table: `pk = "mutex:pr-reviewer-worker"`, attributes
      `owner = delivery_guid`, `lease_until = epoch_s`, `token = uuid4`.
    - Acquire = conditional write succeeding iff `attribute_not_exists(pk) OR lease_until < now - 30`
-     (30s clock-skew margin). The holder refreshes the lease at 50% TTL while fan-out is active;
-     worst-case fan-out (per the elapsed-budget gates below) MUST stay within the refreshed lease so
-     it can never expire mid-run and admit a second fan-out.
+     (30s clock-skew margin). The holder refreshes the lease at 50% TTL while fan-out is active; the
+     refresh is a conditional write on the stored `token` — same condition family as release (added
+     2026-09-26, bot review #7): a failed refresh means ownership was lost to expiry takeover, and
+     the holder MUST immediately stop issuing LLM work and take the degraded path (it never
+     re-asserts a lease it no longer owns). Worst-case fan-out (per the elapsed-budget gates below)
+     MUST stay within the refreshed lease so it can never expire mid-run and admit a second fan-out.
    - **Lease TTL (pinned 2026-09-26):** `MUTEX_LEASE_TTL_S = 900` — equal to the worker Lambda's hard
      timeout (`terraform/compute.tf:104`, the AWS maximum). No live invocation can outlive its lease,
      so expiry takeover recovers only genuinely dead holders; the 50% refresh (450s) is retained as
@@ -601,7 +607,10 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
   through the SAME span-preserving sanitization (§5) before render; no model-controlled string is ever
   inserted via markup-unsafe rendering. Residual risk accepted for v1: `sessionStorage` is readable by
   any script on the origin, so the sanitization layer IS the boundary (no third-party scripts ship on
-  the viewer origin).
+  the viewer origin). Raw archive contract (added 2026-09-26, bot review #7): the archive routes
+  serving `events.jsonl` and `meta.json` return UNTRUSTED model-controlled data by definition — raw
+  files are data, not rendered markup, and every consumer (the replay UI today, any future consumer)
+  MUST treat them as adversarial input and apply §5 sanitization before any render path.
 - **Viewer Lambda IAM:**
   - `ssm:GetParameter` on token parameter ARN, plus `kms:Decrypt` on the parameter's KMS key ARN
     (SecureString reads fail without it — missing this makes the viewer 500 on every authed route).
