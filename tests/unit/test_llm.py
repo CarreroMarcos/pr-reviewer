@@ -1,9 +1,10 @@
 """T028: LLM chat-completions contract tests (HLD §2.3 item 5, §2.7).
 
 Stubbed transport — never network: temperature 0.2 sent, model/endpoint
-from injected config, timeouts connect 2 s / read 45 s, error path raises
-for queue retry, logs carry only status/duration/token usage (never prompt,
-diff, completion, or key material).
+from injected config, timeouts connect 2 s / read env-configurable
+(default 240 s), error path raises for queue retry, logs carry only
+status/duration/token usage (never prompt, diff, completion, or key
+material).
 """
 
 import json
@@ -15,7 +16,7 @@ import pytest
 from common import llm
 from common.llm import (
     CONNECT_TIMEOUT_S,
-    READ_TIMEOUT_S,
+    DEFAULT_READ_TIMEOUT_S,
     TEMPERATURE,
     LlmError,
     ReviewResult,
@@ -145,7 +146,9 @@ def test_temperature_constant_is_exactly_0_2():
 
 def test_timeout_constants():
     assert CONNECT_TIMEOUT_S == 2
-    assert READ_TIMEOUT_S == 45
+    assert DEFAULT_READ_TIMEOUT_S == 240
+    assert llm.READ_TIMEOUT_MIN_S == 30
+    assert llm.READ_TIMEOUT_MAX_S == 600
 
 
 # --- request contract ---------------------------------------------------------
@@ -250,11 +253,12 @@ def test_connect_timeout_is_2s():
     assert conn.timeout == CONNECT_TIMEOUT_S
 
 
-def test_read_timeout_set_to_45s_after_connect():
+def test_read_timeout_defaults_to_240s_after_connect(monkeypatch):
+    monkeypatch.delenv("GLM_READ_TIMEOUT_S", raising=False)
     seen = []
     invoke(_connection_factory=make_factory(seen=seen))
-    assert seen[0].sock.settimeout_calls == [45]
-    assert seen[0].sock.settimeout_calls == [READ_TIMEOUT_S]
+    assert seen[0].sock.settimeout_calls == [240]
+    assert seen[0].sock.settimeout_calls == [DEFAULT_READ_TIMEOUT_S]
 
 
 # --- response contract --------------------------------------------------------
@@ -392,7 +396,7 @@ def test_error_path_logs_llm_error_status(caplog):
 def test_module_surface():
     assert llm.TEMPERATURE == 0.2
     assert llm.CONNECT_TIMEOUT_S == 2
-    assert llm.READ_TIMEOUT_S == 45
+    assert llm.DEFAULT_READ_TIMEOUT_S == 240
     assert issubclass(llm.LlmError, Exception)
 
 

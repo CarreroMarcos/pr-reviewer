@@ -6,10 +6,13 @@ key arrive as injected parameters: their VALUES originate from SSM
 hydration (`common.config`), but this module performs no SSM access itself —
 the worker (T034) injects the hydrated values, keeping the client pure.
 
-Timeout policy (HLD §2.3): connect 2 s, read 45 s. stdlib exposes a single
-socket timeout, so the connection is opened with `timeout=CONNECT_TIMEOUT_S`
-and, once connected, the socket is switched to `READ_TIMEOUT_S` for the
-response read. Both constants are exported for tests to pin.
+Timeout policy (HLD §2.3): connect 2 s, read env-configurable
+(`GLM_READ_TIMEOUT_S`, default 240 s, clamped to [30, 600] — see
+`_read_timeout_s`). stdlib exposes a single socket timeout, so the
+connection is opened with `timeout=CONNECT_TIMEOUT_S` and, once
+connected, the socket is switched to the resolved read timeout for the
+response read. `CONNECT_TIMEOUT_S` and `DEFAULT_READ_TIMEOUT_S` are
+exported for tests to pin.
 
 Error semantics: HTTP errors, timeouts, connection failures, and malformed
 responses raise typed `LlmError` (machine-readable `error_class`) — never
@@ -31,6 +34,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,7 +43,16 @@ from urllib.parse import urlsplit
 
 TEMPERATURE = 0.2
 CONNECT_TIMEOUT_S = 2
-READ_TIMEOUT_S = 45
+# Default server-wait budget (s): the endpoint's real latency bulk
+# straddles the old 45 s single-pass budget (live successes at
+# 45.9 s/46.9 s/47.7 s each burned a 90-minute redelivery + DLQ trip),
+# so the default covers the observed p99 with headroom. Override per
+# deploy via `GLM_READ_TIMEOUT_S`; resolved at request time (not import
+# time) so tests can monkeypatch/env-override cleanly.
+DEFAULT_READ_TIMEOUT_S = 240
+READ_TIMEOUT_MIN_S = 30
+READ_TIMEOUT_MAX_S = 600
+READ_TIMEOUT_ENV_VAR = "GLM_READ_TIMEOUT_S"
 
 # Thinking portability gate (SPR-62, Gate-1 advisory; open-questions Q1 stays
 # open): the `"thinking": {"type": "disabled"}` payload key is GLM-specific
@@ -89,6 +102,22 @@ class ReviewResult:
 
 def _default_factory(host: str, port: int, *, timeout: int) -> http.client.HTTPSConnection:
     return http.client.HTTPSConnection(host, port, timeout=timeout)
+
+
+def _read_timeout_s() -> int:
+    """Resolve the read (server-wait) budget in seconds, at request time.
+
+    `GLM_READ_TIMEOUT_S` parsed as int; missing/unparseable → the
+    documented default; clamped to `[READ_TIMEOUT_MIN_S,
+    READ_TIMEOUT_MAX_S]`. Import-time resolution would freeze the value
+    for the container lifetime — request-time keeps env-override and
+    test monkeypatching clean.
+    """
+    try:
+        value = int(os.environ.get(READ_TIMEOUT_ENV_VAR, ""))
+    except (TypeError, ValueError):
+        return DEFAULT_READ_TIMEOUT_S
+    return max(READ_TIMEOUT_MIN_S, min(READ_TIMEOUT_MAX_S, value))
 
 
 def _split_endpoint(endpoint: Any) -> tuple[str, int, str]:
@@ -173,7 +202,7 @@ def review_diff(
         "model": model,
         # Provider default runs GLM reasoning (~1.3K tokens, ~45s) before
         # answering, which makes the quickstart ≤15s comment bar (HLD
-        # §2.2 (b)) unreachable and overruns READ_TIMEOUT_S — surfaced
+        # §2.2 (b)) unreachable and overruns the read budget — surfaced
         # live by the T035 acceptance run. Thinking-off measured 5-8s.
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -195,8 +224,9 @@ def review_diff(
         conn = factory(host, port, timeout=CONNECT_TIMEOUT_S)
         conn.connect()
         # Read budget starts after the TCP/TLS handshake: switch the
-        # connected socket from the connect timeout to the read timeout.
-        conn.sock.settimeout(READ_TIMEOUT_S)
+        # connected socket from the connect timeout to the resolved read
+        # timeout (env-configurable, default `DEFAULT_READ_TIMEOUT_S`).
+        conn.sock.settimeout(_read_timeout_s())
         conn.request(
             "POST",
             path,
