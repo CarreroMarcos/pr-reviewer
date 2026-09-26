@@ -163,8 +163,14 @@ lever here). Remaining: stronger non-GLM models, repo-history corpus.
 Items surfaced by gates/bot reviews that no current AC owns; carried here so
 they survive session boundaries (2026-09-26, reflect pass with Mars).
 
-- **max=1 ordering pin:** pin the exact ordering guarantee the queue's
-  `max=1`-style delivery actually provides before code relies on it.
+- **max=1 ordering pin — PINNED (2026-09-26):** the work queue is a
+  standard (non-FIFO) queue with ESM `batch_size = 1` — one message per
+  worker invocation, but NO cross-message ordering guarantee; correctness
+  never depends on arrival order (establish/generation + live-head fence +
+  `last_seen_sha` dedupe supersede out-of-order reviews by content).
+  Pinned as a comment in `terraform/messaging.tf`; `batch_size = 1` is
+  contract-tested; the order-independence behavior is exercised by the
+  state-machine interleaving/reconcile suites.
 - **HCL-parse robustness:** harden HCL/terraform parsing against the
   failure classes seen in review rounds.
 - **Cross-generation convergence test:** prove repeat-delivery converges
