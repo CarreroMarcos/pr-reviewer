@@ -215,9 +215,10 @@ Five hard gates, paired case-by-case vs the single-pass pin:
    runs/case; the noise band reflects one missed defect in an 18-defect corpus, $1/18 = 0.0556$).
    $d \ge 0$ → pass outright. $-0.06 \le d < 0$ → exactly one full re-run of the comparison; pass iff
    $(d_1 + d_2)/2 \ge 0$. $d < -0.06$ → fail on the first measurement.
-2. **precision:** let $p$ = mean precision_multi − mean precision_single. Bar = +0.08 (target +0.10;
-   Mars-set product target — see D3). $p \ge 0.15$ → pass outright. $p < 0.05$ → fail outright.
-   $0.05 \le p < 0.15$ → exactly one full re-run; pass iff $(p_1 + p_2)/2 \ge 0.08$.
+2. **precision:** let $p$ = mean precision_multi − mean precision_single. Bar = +0.08 — the re-run
+   midpoint threshold, i.e. the number the re-run rule below compares against (target +0.10 is the
+   Mars-set product aspiration, not a gate bound — see D3). $p \ge 0.15$ → pass outright. $p < 0.05$
+   → fail outright. $0.05 \le p < 0.15$ → exactly one full re-run; pass iff $(p_1 + p_2)/2 \ge 0.08$.
 3. **wrongful kills:** match rule pre-registered — a killed candidate matches a manifest
    finding iff location matches ($|\Delta\text{line}| \le 2$ on same path) OR embedding cosine ≥ 0.76
    (using Amazon Bedrock Titan Text Embeddings `amazon.titan-embed-text-v2:0` pinned offline in
@@ -279,7 +280,10 @@ is a comment about a dropped reservation, not a setting.)
      timeout (`terraform/compute.tf:104`, the AWS maximum). No live invocation can outlive its lease,
      so expiry takeover recovers only genuinely dead holders; the 50% refresh (450s) is retained as
      belt-and-braces against clock skew. A dead holder delays a contender by at most one TTL, and the
-     contender path below never blocks on the lease.
+     contender path below never blocks on the lease. A throttled or lost release `REMOVE` is the same
+     class as a crash — expiry takeover recovers it, degradation is bounded at one TTL, and the
+     contention path keeps publishing single-pass reviews throughout; a contention-rate alarm is a
+     Phase 1 operability item, not a correctness gate (bot review #6, accepted).
    - Release = `REMOVE` conditioned on the stored `token` (only the holder can release; crash recovery
      is expiry takeover). Count 2–3 WCUs per review against the base-table budget in §7.
    - **Contention path (fixed 2026-09-26):** if another worker holds the lock, the arriving worker does
@@ -289,12 +293,16 @@ is a comment about a dropped reservation, not a setting.)
      `maxReceiveCount` toward the DLQ while the holder still runs). Instead the contender executes the
      existing single-pass path inline (1 LLM call), emits `concurrency_single_pass {reason:
      "mutex_held"}`, and completes normally. The contender runs elapsed-budget gate 4 against its
-     OWN remaining budget: on failure it still attempts one single-pass with `SOCKET_READ_TIMEOUT_S`
-     clamped to `remaining − BUDGET_MARGIN_S − ~90s fixed overhead` (floor 30s, the deployed clamp
-     family); if that attempt also times out the failure classifies transient and follows the
-     existing re-raise/notice path — bounded by `maxReceiveCount`, publishing nothing. The clamped
-     value is FORWARDED as `read_timeout_s` on the fallback call — computed once, used for both the
-     gate and the socket (bot review #4).
+     OWN remaining budget. On failure the clamp `remaining − BUDGET_MARGIN_S − ~90s fixed overhead`
+     is compared against a VIABILITY FLOOR pinned from the Phase 0 per-call p95 (provisionally the
+     measured ~240s server-side queue latency, pre-Phase-0). Below the floor the call is SKIPPED —
+     fail-fast by design: a socket budget under the measured queue latency cannot succeed (bot
+     review #6; the earlier unconditional 30s-floor attempt was guaranteed-dead code). The run emits
+     `concurrency_single_pass {reason: "mutex_held_no_budget"}`, classifies transient, and follows
+     the existing re-raise/notice path — bounded by `maxReceiveCount`, publishing nothing; SQS
+     redelivery is the recovery. At or above the floor it attempts one single-pass with the clamped
+     value FORWARDED as `read_timeout_s` — computed once, used for both the gate and the socket
+     (bot review #4).
    - Release timing (amended 2026-09-26): the lease is released only when the holder's invocation has
      completed its last LLM call (fan-out, or its own degraded single-pass) — never while a
      holder-initiated call is still in flight.
