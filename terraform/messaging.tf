@@ -11,6 +11,17 @@
 # (`worker_handler._MAX_RECEIVE_COUNT`) by
 # tests/contracts/test_terraform_contract.py — change both together.
 #
+# Ordering (pinned 2026-09-26): this is a STANDARD (non-FIFO) queue and the
+# SQS event source mapping delivers batch_size = 1 (terraform/compute.tf)
+# — one message per worker invocation, so there is no intra-batch
+# reordering — but standard queues give NO cross-message ordering
+# guarantee: an older review can be delivered after a newer one (retry
+# gap, concurrent polls). Correctness never depends on arrival order:
+# establish/generation + the live-head fence + last_seen_sha dedupe
+# discard or supersede out-of-order reviews by content, not by arrival
+# sequence (HLD §3.3; proven by tests/state_machine/test_interleaving.py
+# and tests/state_machine/test_reconcile.py).
+#
 # Interpretation (flagged, not silently decided): the AWS redrive-allow
 # policy object carries no principal field — it names the DLQ as an allowed
 # redrive source (byQueue). Naming the operator role as the permitted
