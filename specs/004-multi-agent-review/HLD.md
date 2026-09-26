@@ -233,7 +233,10 @@ Five hard gates, paired case-by-case vs the single-pass pin:
 `numpy`, `scipy`) are strictly banned by `pyproject.toml`. Pytest in CI must run 100% offline without network.
 Embedding vectors are generated exclusively during out-of-band capture (`capture_multi_agent.py`) via
 `boto3.client("bedrock-runtime")` calling Titan Text Embeddings v2 in `us-west-2`, and serialized into
-`pinned_multi_agent.json`. Cosine similarity is computed in pure Python stdlib during offline scoring.
+`pinned_multi_agent.json` — for manifest findings AND for every candidate and verifier-killed finding
+text of each captured run: the wrongful-kill rule scores the killed side's vector, so the cosine arm
+is unscorable without it (amended 2026-09-26, bot review #2). Cosine similarity is computed in pure
+Python stdlib during offline scoring.
 **Trap Validation Protocol:** Trap vetting is a Phase 0 calibration task using a candidate pool of 6 traps
 until 4 are frozen. If a generator specialist avoids a trap pre-verifier, the multi-agent pipeline is awarded
 a pass for that run (source-level avoidance); generator prompts must **never** be degraded to force hallucinations.
@@ -282,7 +285,11 @@ is a comment about a dropped reservation, not a setting.)
      visibility-based deferral silently loses the review (and raising for redelivery would burn
      `maxReceiveCount` toward the DLQ while the holder still runs). Instead the contender executes the
      existing single-pass path inline (1 LLM call), emits `concurrency_single_pass {reason:
-     "mutex_held"}`, and completes normally.
+     "mutex_held"}`, and completes normally. The contender runs elapsed-budget gate 4 against its
+     OWN remaining budget: on failure it still attempts one single-pass with `SOCKET_READ_TIMEOUT_S`
+     clamped to `remaining − BUDGET_MARGIN_S − ~90s fixed overhead` (floor 30s, the deployed clamp
+     family); if that attempt also times out the failure classifies transient and follows the
+     existing re-raise/notice path — bounded by `maxReceiveCount`, publishing nothing.
    - Release timing (amended 2026-09-26): the lease is released only when the holder's invocation has
      completed its last LLM call (fan-out, or its own degraded single-pass) — never while a
      holder-initiated call is still in flight.
@@ -293,6 +300,12 @@ is a comment about a dropped reservation, not a setting.)
    measured tier edge (N=5 → 429/1302; N=4 was never explicitly measured). **Phase 0 MUST measure N=4
    explicitly before Phase 1**; if N=4 trips, the contention path queues behind the lease (bounded by
    `SINGLE_PASS_WAIT_FOR_S`) instead of running inline, restoring a hard ceiling of 3.
+   **Scope pin (2026-09-26):** the mutex serializes the LLM phase only — publication is NOT
+   mutex-protected. A contender's single-pass can reach publish while the holder sits between its
+   last LLM call and its publish; that race belongs to the existing claim → live-head fence →
+   publish (PATCH) → finalize owner-guard, where the loser lands in `PUBLISHED_FINALIZE_CONFLICT`
+   and reconcile converges — identical to same-head redeliveries today. No mutex re-check is added
+   at publish.
 
 **Per-PR claim lease vs. review budget (gate-traced 2026-09-26, PR #88 Oracle Q1):** the current
 single-pass system's claim row uses `CLAIM_LEASE_SECONDS=180`, predating the 240s socket-read budget.
@@ -330,9 +343,12 @@ the Phase 0 exit criteria (§8) must quantify this BEFORE Phase 1.
 - The wave succeeds iff ≥2 specialists return parseable findings within `WAVE_WAIT_FOR_S`. A 429/1302
   failure is never retried in-executor: fail fast to survivors. 0–1 survivors, verifier timeout, or
   synthesizer timeout → emit the corresponding `*_failed` event and raise `FanoutDegraded`.
-- The executor retries NOTHING except one immediate retry of a socket read timeout (`timeout`
-  error_class) inside the wait window; all other retry ownership stays with the SQS queue.
-  `agent_retry` is emitted only for that single timeout retry, with `backoff_ms = 0`.
+- The executor retries NOTHING (amended 2026-09-26, bot review #2: an earlier draft allowed one
+  immediate retry of a socket read timeout inside the wait window — dead code, since a timeout fires
+  at t≈240s under `wait_for(300)` and the retry would hold ≤60s of window against a 240s budget).
+  Specialist calls are single-attempt; a timed-out specialist is lost to the wave and the
+  ≥2-survivor rule absorbs one loss. All retry ownership stays with the SQS queue. `agent_retry`
+  is reserved in the event schema but not emitted on the fan-out path in v1.
 
 ## 5. Architecture
 
@@ -585,10 +601,13 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
 - Measure per-stage (wave / verifier / synth) p95 latency with thinking enabled (`default` vs `low`
   effort), and baseline claim/fence/publish timings to tune `BUDGET_MARGIN_S` and pin the ~90s
   fixed-overhead estimate.
-- **Exit criteria (added 2026-09-26):** measured per-stage p95 + `BUDGET_MARGIN_S` fits each stage
-  budget, AND the measured end-to-end multi-agent path (gates included) fits the 900s worker timeout
-  with the single-pass fallback still affordable. If per-stage p95 + margin exceeds its budget, STOP —
-  revisit D9 budgets before Phase 1. Do not ship a path that degrades to single-pass on most runs.
+- **Exit criteria (added 2026-09-26; N=4 clause added 2026-09-26, bot review #2):** measured
+  per-stage p95 + `BUDGET_MARGIN_S` fits each stage budget, AND the measured end-to-end multi-agent
+  path (gates included) fits the 900s worker timeout with the single-pass fallback still affordable,
+  AND the explicit N=4 concurrency probe (mutex ceiling amendment) returns all-200. Any failure is a
+  STOP: per-stage budget miss → revisit D9 budgets before Phase 1; N=4 tripping → the contention
+  path queues behind the lease (hard ceiling 3) and Phase 1 ships only with that queuing design.
+  Do not ship a path that degrades to single-pass on most runs.
 
 ### Phase 1 — Full Fan-out
 - Deploy behind `MULTI_AGENT` flag.
