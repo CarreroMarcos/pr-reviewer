@@ -112,8 +112,12 @@ duplicates iff same `file_path` AND $|\Delta\text{line\_start}| \le 2$ AND same 
 normalized-title overlap (lowercased token Jaccard ≥ 0.6, stopwords removed, pure stdlib — no runtime
 embeddings; threshold pre-registered, tunable only by Phase 0 data — Constitution II holds). The title
 guard exists because two DISTINCT bugs can sit within two lines of each other in the same category;
-line proximity alone would wrongfully merge them (Gate 4 fail-closes any residual wrongful merge in
-the corpus: a merged-away distinct bug has no semantic match, so `dropped_in_synthesis` ≥ 1 fails the gate).
+line proximity alone would wrongfully merge them (Gate 4 catches a wrongful merge only when the
+merged-away finding matches the kept bullet by NEITHER match arm — different path, or same path with
+|Δline| > 2 and cosine < 0.76 — a proximate same-path pair still matches by the location arm, so
+`dropped_in_synthesis` stays 0. Proximate-pair protection is the title guard at runtime plus
+adjudication: any merged bullet subsuming same-location manifest defects from distinct survivors is
+flagged for human adjudication of whether both mechanisms survived in the text).
 Cross-category same-location findings (e.g. a tests-coverage gap and the correctness bug it covers) —
 and same-location pairs failing the title guard — are BOTH kept and adjacent-ordered. Merge duplicates
 keeping the highest severity. Output MUST be a
@@ -215,7 +219,9 @@ Phase 0 calibration only — interim runs report metrics but render no gate verd
 
 Five hard gates, paired case-by-case vs the single-pass pin:
 1. **recall — no regression, ever:** let $d$ = mean recall_multi − mean recall_single (means over 3
-   runs/case; the noise band reflects one missed defect in an 18-defect corpus, $1/18 = 0.0556$).
+   runs/case; the noise band reflects one missed defect in an 18-defect corpus, $1/18 = 0.0556$; the
+   −0.06 bound is −1/18 ≈ −0.0556 rounded outward, so exactly one missed defect earns a re-run rather
+   than failing outright).
    $d \ge 0$ → pass outright. $-0.06 \le d < 0$ → exactly one full re-run of the comparison; pass iff
    $(d_1 + d_2)/2 \ge 0$. $d < -0.06$ → fail on the first measurement.
 2. **precision:** let $p$ = mean precision_multi − mean precision_single. Bar = +0.08 — the re-run
@@ -278,7 +284,8 @@ is a comment about a dropped reservation, not a setting.)
    live ESM does not set it yet; checklist item 3 carries the action — gate 5 tense fix).
 3. **Application-Level Distributed Mutex:** To strictly serialize multi-agent reviews and prevent two
    workers from simultaneously making 6 concurrent requests to Z.AI (tripping the 1302 cap), the worker
-   implements a lightweight DynamoDB mutex at invocation start:
+   implements a lightweight DynamoDB mutex early in the invocation (acquired after
+   validate/hydrate/establish and before any Z.AI call — see the §5 flow):
    - Mutex row lives in the existing state table: `pk = "mutex:pr-reviewer-worker"`, attributes
      `owner = delivery_guid`, `lease_until = epoch_s`, `token = uuid4`.
    - Acquire = conditional write succeeding iff `attribute_not_exists(pk) OR lease_until < now - 30`
@@ -321,8 +328,9 @@ is a comment about a dropped reservation, not a setting.)
      value FORWARDED as `read_timeout_s` — computed once, used for both the check and the socket
      (bot review #4).
    - Release timing (order pinned 2026-09-26, gate 5 / bot review #9): the lease is released
-     immediately after the holder's LAST lease-covered LLM call completes (fan-out + synthesizer, or
-     its own degraded single-pass) and BEFORE the claim/fence/publish/finalize sequence — publication
+     immediately after the holder's LAST lease-covered LLM call completes (the full run_fanout —
+     wave, verifier, and synthesizer stages — or its own degraded single-pass) and BEFORE the
+     claim/fence/publish/finalize sequence — publication
      is owner-guarded, not mutex-protected, so holding the lease through publish would only delay
      contenders; the lease is never held while no holder-initiated call is in flight. The Phase 0
      post-publish shadow specialist is NOT lease-covered; release precedes it: shadow and fan-out
