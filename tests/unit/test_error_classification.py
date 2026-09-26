@@ -175,10 +175,12 @@ class ScriptedGitHub:
 
 class StatefulGitHub:
     """Comment-store double: the list GET returns the ACCUMULATED state
-    (POST assigns ids and stores, PATCH updates in place, DELETE removes)
-    instead of a canned script — so a later delivery's prior-comment read
-    observes what earlier deliveries actually published, exactly as the
-    live API would. Records calls like `ScriptedGitHub`."""
+    (POST assigns ids and stores, PATCH updates a KNOWN id in place and
+    raises on an unknown id — like the live API's 404, never an upsert;
+    DELETE removes) instead of a canned script — so a later delivery's
+    prior-comment read observes what earlier deliveries actually
+    published, exactly as the live API would. Records calls like
+    `ScriptedGitHub`."""
 
     def __init__(self, *, first_id=NOTICE_ID):
         self.comments: dict[int, str] = {}
@@ -197,6 +199,8 @@ class StatefulGitHub:
             return 201, json.dumps({"id": comment_id}).encode()
         if method == "PATCH":
             comment_id = int(url.rsplit("/", 1)[-1])
+            if comment_id not in self.comments:
+                raise AssertionError(f"PATCH of unknown comment id {comment_id}")
             self.comments[comment_id] = json.loads(body.decode())["body"]
             return 200, json.dumps({"id": comment_id}).encode()
         if method == "DELETE":
@@ -667,10 +671,11 @@ def test_final_attempt_transient_publishes_notice_then_raises():
 def test_final_notice_attempts_clamped_to_queue_budget(receive_count):
     """Matrix: at/past the final attempt (including redriven counts well
     above maxReceiveCount 3), the FINAL notice always names the real
-    budget — 'after 3 attempts' — never the raw receive count. Counts are
-    ints, the exact type `_record_delivery_context` hands to
-    `_attempt_notice` (the wire string is coerced at ingestion — pinned
-    by `test_receive_count_wire_string_coerced_to_int_at_ingestion`)."""
+    budget — 'after 3 attempts' — never the raw receive count. Each count
+    takes the full wire-string leg (SQS attributes are strings; the test
+    passes `str(count)` into the event) and the post-ingestion int is
+    what reaches the clamp — pinned directly by
+    `test_receive_count_wire_string_coerced_to_int_at_ingestion`."""
     github = ScriptedGitHub(
         [
             (200, _list_body()),  # review-stage prior read (no marker yet)
@@ -684,7 +689,7 @@ def test_final_notice_attempts_clamped_to_queue_budget(receive_count):
         github=github,
     )
     with pytest.raises(Exception, match="llm request failed: http_500"):
-        h.run(receive_count=receive_count, env_queue_url=QUEUE_URL)
+        h.run(receive_count=str(receive_count), env_queue_url=QUEUE_URL)
     assert github.methods() == ["GET", "GET", "PATCH"]
     patch_body = json.loads(github.calls[-1]["body"].decode())["body"]
     # The exact rendered count equals the clamped budget in every case.
