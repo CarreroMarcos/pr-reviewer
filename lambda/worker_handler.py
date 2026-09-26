@@ -2,7 +2,8 @@
 
 Review execution engine: SQS event (`batch_size = 1`) → per-record pipeline
 in HLD §2.3 order — validate envelope (T006) → hydrate credentials (T014;
-single 401 re-fetch is the ONLY in-request retry) → establish → diff (T031)
+single 401 re-fetch plus one budgeted immediate retry on LLM timeout are
+the ONLY in-request retries) → establish → diff (T031)
 → LLM (T032) → assemble + gate (T033) → claim → live-head fence → publish
 (POST via creation lease when no `comment_id`, else PATCH) → finalize.
 Superseded/stale/claim-held/finalize-conflict → discard (log, complete, no
@@ -97,7 +98,7 @@ from common.failure_notice import (
     publish_failure_notice,
     should_publish_notice,
 )
-from common.llm import LlmError, review_diff
+from common.llm import LlmError, _read_timeout_s, review_diff
 from common.logs import build_event, emit, prompt_sha256
 from common.marker import build_marker
 from common.protocol import ConditionalCheckFailed, OutcomeKind, run_review
@@ -117,6 +118,12 @@ GITHUB_API_BASE = "https://api.github.com"
 GITHUB_API_VERSION = "2026-03-10"
 GITHUB_USER_AGENT = "pr-reviewer/1.0"
 GITHUB_TIMEOUT_SECONDS = 10
+
+# In-executor LLM timeout-retry headroom (s): the single immediate retry
+# needs the full read budget again plus room to publish/finalize before
+# the Lambda deadline — otherwise the retry just moves the timeout closer
+# to a hard freeze.
+LLM_TIMEOUT_RETRY_HEADROOM_S = 90
 
 # Warm-container config cache — production path only (see module docstring).
 _CONFIG_PROVIDER: ConfigProvider | None = None
@@ -215,8 +222,9 @@ class _Credentials:
     """Single-refetch credential holder (HLD §2.3 item 1).
 
     All GitHub/LLM call sites for one record share a single instance, so
-    the 401 cache-bust fires AT MOST ONCE per request — the only in-request
-    retry. `refresh_once()` invalidates + re-hydrates on first call (True);
+    the 401 cache-bust fires AT MOST ONCE per request — alongside the one
+    budgeted LLM-timeout retry, the only in-request retries.
+    `refresh_once()` invalidates + re-hydrates on first call (True);
     later calls return False and the caller treats the error as permanent.
     `ConfigError` from the re-fetch propagates to the worker boundary
     (non-retryable, complete).
@@ -428,15 +436,20 @@ def _make_review(
     allowed_hosts: frozenset[str] | None = None,
     clock: Clock | None = None,
     github_transport: Callable[..., tuple[int, bytes]] | None = None,
+    remaining_time_ms: Callable[[], int] | None = None,
 ) -> Callable[[str, int], str]:
     """Protocol `review` port: diff → prior comment → LLM (single 401
-    re-fetch) → assemble + mandatory validate gate → publish-ready content
-    (opaque string).
+    re-fetch, plus one immediate in-executor retry on `timeout` when the
+    remaining Lambda budget covers it) → assemble + mandatory validate
+    gate → publish-ready content (opaque string).
 
     `allowed_hosts` is the env-configured GLM host set (from the provider's
     `allowed_hosts` accessor); `None` keeps `review_diff`'s module default.
     `github_transport` feeds the best-effort prior-comment read; `None`
-    (older callers) omits the prior section."""
+    (older callers) omits the prior section. `remaining_time_ms` is the
+    Lambda `context.get_remaining_time_in_millis` callable threaded from
+    the entry point; `None` (older callers, unit doubles) disables the
+    timeout retry — today's queue-redelivery behavior, unchanged."""
 
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
@@ -456,8 +469,9 @@ def _make_review(
             raise
 
     def _call_llm(diff_text: str) -> Any:
-        cfg = creds.current()
-        try:
+        now = clock if clock is not None else time.time
+
+        def _invoke(cfg: Any) -> Any:
             return review_diff(
                 api_key=cfg.glm_api_key,
                 model=cfg.glm_model,
@@ -467,19 +481,64 @@ def _make_review(
                 allowed_hosts=allowed_hosts,
                 _connection_factory=llm_factory,
             )
+
+        def _timeout_retry_budgeted() -> bool:
+            """One immediate retry needs the full read budget again plus
+            publish/finalize headroom. An unknown budget (no
+            remaining-time source — older callers, unit doubles) or an
+            unreadable clock fails closed: no retry, exactly today's
+            queue-redelivery behavior."""
+            if remaining_time_ms is None:
+                return False
+            try:
+                remaining = remaining_time_ms()
+            except Exception:  # noqa: BLE001 (unreadable clock → no retry)
+                return False
+            if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+                return False
+            return remaining >= (_read_timeout_s() + LLM_TIMEOUT_RETRY_HEADROOM_S) * 1000
+
+        def _retry_after_timeout(exc: LlmError, attempt_ms: int) -> Any:
+            if not _timeout_retry_budgeted():
+                raise exc
+            logger.warning(
+                "llm_timeout_retry",
+                extra={
+                    "status": "llm_timeout_retry",
+                    "repo_full_name": repo,
+                    "pr_number": pr_number,
+                    "delivery_guid": envelope.delivery_guid,
+                    "error_class": exc.error_class,
+                    "attempt": 2,
+                    "backoff_ms": 0,
+                    "duration_ms": attempt_ms,
+                },
+            )
+            # Exactly one immediate re-invoke (no sleep): its errors —
+            # including a second timeout — propagate exactly as today
+            # (retry_queued redelivery at the boundary).
+            return _invoke(creds.current())
+
+        cfg = creds.current()
+        attempt_start = now()
+        try:
+            return _invoke(cfg)
         except LlmError as exc:
             if exc.error_class == "http_401" and creds.refresh_once():
-                fresh = creds.current()
-                return review_diff(
-                    api_key=fresh.glm_api_key,
-                    model=fresh.glm_model,
-                    endpoint=fresh.glm_endpoint,
-                    system_prompt=system_prompt,
-                    diff_text=diff_text,
-                    allowed_hosts=allowed_hosts,
-                    _connection_factory=llm_factory,
-                )
-            raise
+                cfg = creds.current()
+                try:
+                    return _invoke(cfg)
+                except LlmError as fresh_exc:
+                    if fresh_exc.error_class != "timeout":
+                        raise
+                    # The single 401 budget is spent; the refreshed
+                    # attempt's timeout may still take the one timeout
+                    # retry below — never more than one retry per class.
+                    exc = fresh_exc
+            elif exc.error_class != "timeout":
+                raise
+            attempt_ms = max(0, int((now() - attempt_start) * 1000))
+            return _retry_after_timeout(exc, attempt_ms)
 
     def _fetch_prior_comment() -> str | None:
         """Best-effort prior canonical comment body (003-T2), or None.
@@ -1015,6 +1074,7 @@ def _process_record(
     system_prompt: str,
     sqs: Any = None,
     queue_url: str = "",
+    remaining_time_ms: Callable[[], int] | None = None,
 ) -> str:
     """Run one SQS record through the pipeline.
 
@@ -1022,7 +1082,10 @@ def _process_record(
     retryable faults (queue redelivery); every other path completes.
     `sqs`/`queue_url` drive the Retry-After visibility edge and are
     optional (absent in older tests) — without them the queue default
-    applies and classification is unchanged.
+    applies and classification is unchanged. `remaining_time_ms` (Lambda
+    `context.get_remaining_time_in_millis`, threaded from `handler`)
+    gates the single in-executor LLM timeout retry; `None` (older
+    callers) disables it.
     """
     raw_body = record.get("body") if isinstance(record, dict) else None
     try:
@@ -1066,6 +1129,7 @@ def _process_record(
                 allowed_hosts=provider.allowed_hosts,
                 clock=clock,
                 github_transport=github_transport,
+                remaining_time_ms=remaining_time_ms,
             ),
             fence=_make_fence(envelope=envelope, creds=creds, diff_transport=diff_transport),
             publish=_make_publish(
@@ -1275,6 +1339,11 @@ def handler(
 
     records = event.get("Records") if isinstance(event, dict) else None
     results: list[str] = []
+    # Remaining-time source for the single in-executor LLM timeout retry
+    # (`_make_review` fails closed to no-retry without it): unit doubles
+    # pass `context=None`, which also lands here.
+    _get_remaining = getattr(context, "get_remaining_time_in_millis", None)
+    remaining_time_ms = _get_remaining if callable(_get_remaining) else None
     for record in records or []:
         results.append(
             _process_record(
@@ -1289,6 +1358,7 @@ def handler(
                 system_prompt=system_prompt,
                 sqs=sqs,
                 queue_url=queue_url,
+                remaining_time_ms=remaining_time_ms,
             )
         )
     return {"ok": True, "results": results}
