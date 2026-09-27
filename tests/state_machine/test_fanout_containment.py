@@ -48,19 +48,23 @@ collection errors on import.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 from dynamodb_stub import InMemoryTable
 
 import worker_handler
+from common.config import ConfigError
 from common.envelope import validate_envelope
 from common.fanout import FanoutDegraded
 from common.llm import LlmError
 from common.protocol import OutcomeKind, run_review
 from worker_handler import (
     _FANOUT_SPECIALTIES,
+    _RESIDUALS_FILENAME,
     _Credentials,
     _load_fanout_prompts,
+    _load_residuals_for,
     _make_review,
     _process_record,
     handler,
@@ -342,6 +346,54 @@ def test_load_fanout_prompts_reads_production_files():
     prompts = _load_fanout_prompts()
     assert set(prompts) == {"correctness", "security", "tests", "verifier", "synthesizer"}
     assert all(isinstance(text, str) and text.strip() for text in prompts.values())
+
+
+def test_load_fanout_prompts_undecodable_is_config_fault(monkeypatch):
+    """Bot R1 Fix 2: a corrupted (non-UTF-8) prompt is the same
+    "unreadable prompt" class as a missing file — ConfigError, never an
+    empty prompt and never a raw UnicodeDecodeError escape."""
+    real_read_text = Path.read_text
+
+    def boom(self, *args, **kwargs):
+        if str(self).endswith("verifier.md"):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    with pytest.raises(ConfigError):
+        _load_fanout_prompts()
+
+
+def test_residuals_missing_everywhere_yields_empty(monkeypatch):
+    """Missing-proof terminal result unchanged: no layout exists → [],
+    after probing both layouts (the loader itself is never reached)."""
+    probes = []
+    real_is_file = Path.is_file
+
+    def spy(self):
+        probes.append(str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", spy)
+    assert _load_residuals_for(REPO, PR_NUMBER) == []
+    assert len(probes) == 2
+
+
+def test_residuals_present_but_empty_is_authoritative(monkeypatch):
+    """Bot R1 Fix 1: the first layout whose file EXISTS wins — its parse
+    is authoritative even when empty, so the second layout is NOT
+    consulted (no fall-through past a successful parse)."""
+    calls = []
+    real_load = worker_handler.load_accepted_residuals
+
+    def spy(path):
+        calls.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(worker_handler, "load_accepted_residuals", spy)
+    monkeypatch.setattr(Path, "is_file", lambda self: str(self).endswith(_RESIDUALS_FILENAME))
+    assert _load_residuals_for(REPO, PR_NUMBER) == []
+    assert len(calls) == 1
 
 
 def test_is_retryable_unknown_fault_is_true():

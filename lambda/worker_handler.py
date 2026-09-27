@@ -460,8 +460,8 @@ def _load_fanout_prompts() -> dict[str, str]:
     """Production fan-out template source: the five `prompts/*.md` files.
 
     Same two-layout resolution as `_load_system_prompt` (zip first, repo
-    checkout second). A missing file is a permanent config fault
-    (complete, alert) — never an empty prompt. Tests inject
+    checkout second). A missing or undecodable file is a permanent config
+    fault (complete, alert) — never an empty prompt. Tests inject
     `fanout_prompts` instead.
     """
     here = Path(__file__).resolve().parent
@@ -471,7 +471,7 @@ def _load_fanout_prompts() -> dict[str, str]:
             try:
                 prompts[key] = candidate.read_text(encoding="utf-8")
                 break
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 continue
         else:
             raise ConfigError("fanout_prompt", "missing") from None
@@ -482,21 +482,21 @@ def _load_residuals_for(repo_full_name: str, pr_number: int) -> list[str]:
     """Accepted-residual lines for this PR (HLD D7; T010b parser).
 
     The committed `docs/accepted-residuals.md` ships in the Lambda bundle;
-    same two-layout resolution as the prompts. A missing/unreadable file
-    yields `[]` (T010b: missing → `[]`, malformed lines skipped inside the
-    parser, never fatal).
+    Same two-layout resolution as the prompts. The first layout whose
+    file EXISTS wins — its parse is AUTHORITATIVE even when empty (a
+    successful parse with zero rows means zero residuals); fall through
+    only on file-not-found. Nothing anywhere yields `[]` (T010b: missing
+    → `[]`, malformed lines skipped inside the parser, never fatal).
     """
     here = Path(__file__).resolve().parent
     for candidate in (
         here / "docs" / _RESIDUALS_FILENAME,
         here.parent / "docs" / _RESIDUALS_FILENAME,
     ):
-        result = load_accepted_residuals(candidate)
-        if result.residuals:
-            break
-    else:
-        return []
-    return residuals_for(result, repo_full_name, pr_number)
+        if not candidate.is_file():
+            continue
+        return residuals_for(load_accepted_residuals(candidate), repo_full_name, pr_number)
+    return []
 
 
 def _make_review(
