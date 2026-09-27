@@ -418,9 +418,10 @@ def test_holder_runs_fanout_and_releases(multi_agent, stubbed_fanout):
     assert table.get_item(MUTEX_PK) is None  # released
 
 
-def test_holder_legacy_path_acquires_and_releases(stubbed_fanout):
+def test_holder_legacy_path_acquires_and_releases(monkeypatch, stubbed_fanout):
     """Mutex orthogonal to the fan-out flag: flag off still leases the
     review and releases after the inline single-pass."""
+    monkeypatch.delenv("MULTI_AGENT", raising=False)  # order-independent
     stubbed_fanout(FanoutDegraded("insufficient_budget", "wave"))
     events, table = [], MutexTable()
     closure = make_closure(events, table)
