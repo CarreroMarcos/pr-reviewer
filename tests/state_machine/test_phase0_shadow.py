@@ -31,7 +31,6 @@ errors on import.
 
 import json
 
-import pytest
 from dynamodb_stub import InMemoryTable
 
 import worker_handler
@@ -267,9 +266,7 @@ def make_provider():
     from common.config import ConfigProvider
 
     ssm = FakeSSM(dict(SSM_VALUES))
-    provider = ConfigProvider(
-        ssm.get_parameters, allowed_endpoint_hosts=("llm.example.test",)
-    )
+    provider = ConfigProvider(ssm.get_parameters, allowed_endpoint_hosts=("llm.example.test",))
     return provider, ssm
 
 
@@ -361,7 +358,7 @@ def live_cfg():
     return multi_agent_config()
 
 
-# --- flag precedence ------------------------------------------------------------------------------------------
+# --- flag precedence ---------------------------------------------------------------
 
 
 def test_ma1_ignores_phase0_entirely(monkeypatch):
@@ -408,9 +405,9 @@ def test_ma1_ignores_phase0_entirely(monkeypatch):
 
 def test_ma1_without_phase0_no_shadow(monkeypatch):
     monkeypatch.setattr(
-        worker_handler, "run_wave", lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("no shadow wave expected")
-        ),
+        worker_handler,
+        "run_wave",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no shadow wave expected")),
     )
     shared: list = []
     table = InMemoryTable(log=shared)
@@ -431,17 +428,15 @@ def test_ma1_without_phase0_no_shadow(monkeypatch):
 
 def test_legacy_both_zero_event_purity(monkeypatch):
     monkeypatch.setattr(
-        worker_handler, "run_wave", lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("no wave expected on legacy path")
-        ),
+        worker_handler,
+        "run_wave",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no wave expected on legacy path")),
     )
     shared: list = []
     table = InMemoryTable(log=shared)
     s3 = FakeS3(log=shared)
     events: list = []
-    status, stub, _ = drive(
-        table=table, s3=s3, events=events, log=[], monkeypatch=monkeypatch
-    )
+    status, stub, _ = drive(table=table, s3=s3, events=events, log=[], monkeypatch=monkeypatch)
     assert status == "published"
     assert stub.calls == []
     types = {e["type"] for e in events}
@@ -450,7 +445,7 @@ def test_legacy_both_zero_event_purity(monkeypatch):
     assert events_of_type(events, "review_skipped") == []
 
 
-# --- shadow runs after publish -----------------------------------------------------------------------------------
+# --- shadow runs after publish --------------------------------------------------------
 
 
 def test_shadow_runs_after_publish_with_telemetry(monkeypatch):
@@ -540,7 +535,9 @@ def test_shadow_skip_no_budget(monkeypatch):
     """Below the gate: `review_skipped {phase0_no_budget}` EVENT, no wave
     call, archive still written, NO index row."""
     monkeypatch.setattr(
-        worker_handler, "run_wave", lambda *a, **k: (_ for _ in ()).throw(
+        worker_handler,
+        "run_wave",
+        lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("budget SKIP must not invoke the wave")
         ),
     )
@@ -568,7 +565,7 @@ def test_shadow_skip_no_budget(monkeypatch):
     assert table.get_item(f"archive:{run_id}") is None
 
 
-# --- shadow failure modes ---------------------------------------------------------------------------------------------
+# --- shadow failure modes ---------------------------------------------------------------
 
 
 def test_shadow_leg_failure_never_blocks(monkeypatch):
@@ -621,9 +618,9 @@ def test_failed_run_no_shadow(monkeypatch):
     """No publish → no shadow: refused content archives `failed` with no
     wave invocation."""
     monkeypatch.setattr(
-        worker_handler, "run_wave", lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("no shadow without publish")
-        ),
+        worker_handler,
+        "run_wave",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no shadow without publish")),
     )
     shared: list = []
     table = InMemoryTable(log=shared)
@@ -642,15 +639,15 @@ def test_failed_run_no_shadow(monkeypatch):
     assert status == "discarded_error"
 
 
-# --- helper-direct rows: budget math --------------------------------------------------------------------------------------
+# --- helper-direct rows: budget math ---------------------------------------------------------
 
 
 def test_helper_none_remaining_skips(monkeypatch):
     """Unreadable clock fails closed: False, wave never invoked."""
     monkeypatch.setattr(
-        worker_handler, "run_wave", lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("wave must not run without budget")
-        ),
+        worker_handler,
+        "run_wave",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("wave must not run without budget")),
     )
     assert (
         _run_phase0_shadow(
