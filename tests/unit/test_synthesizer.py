@@ -79,6 +79,8 @@ def sv(
     path="a.py",
     line=10,
     title="Missing bound check",
+    description="d",
+    suggested_fix="f",
 ):
     return {
         "candidate_id": cid,
@@ -86,8 +88,8 @@ def sv(
         "line_start": line,
         "line_end": line + 2,
         "title": title,
-        "description": "d",
-        "suggested_fix": "f",
+        "description": description,
+        "suggested_fix": suggested_fix,
         "severity": severity,
         "category": category,
     }
@@ -112,9 +114,7 @@ def parseable_bullets(section):
             unparsable += 1
             continue
         severity = _SEVERITY_RE.search(bullet.group(1))
-        found.append(
-            (location.group(1), int(location.group(2)), severity.group(1).upper())
-        )
+        found.append((location.group(1), int(location.group(2)), severity.group(1).upper()))
     return found, unparsable
 
 
@@ -277,7 +277,7 @@ def test_rendered_section_parses_clean():
     assert found == [("a.py", 10, "HIGH"), ("a.py", 11, "MEDIUM"), ("b.py", 3, "HIGH")]
 
 
-# --- stage: run_synthesizer --------------------------------------------------------------------------
+# --- stage: run_synthesizer --------------------------------------
 
 
 class ScriptedSynth:
