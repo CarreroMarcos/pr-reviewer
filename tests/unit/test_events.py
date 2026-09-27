@@ -92,7 +92,15 @@ BUILDERS = [
             findings=[dict(FINDING)],
         ),
         ENVELOPE_KEYS
-        | {"specialty", "findings_n", "latency_ms", "tokens_in", "tokens_out", "findings"},
+        | {
+            "specialty",
+            "findings_n",
+            "latency_ms",
+            "tokens_in",
+            "tokens_out",
+            "findings",
+            "coordinates_clamped_n",
+        },
     ),
     (
         "agent_retry",
@@ -132,6 +140,7 @@ BUILDERS = [
             "verified",
             "killed",
             "escalated",
+            "coordinates_reanchored_n",
         },
     ),
     (
@@ -352,3 +361,63 @@ def test_review_published_rejects_nonpositive_comment_id(comment_id):
     with pytest.raises(EventsError) as excinfo:
         review_published(comment_id=comment_id)
     assert excinfo.value.field == "comment_id"
+
+
+def test_coordinates_clamped_n_defaults_to_zero():
+    event = agent_completed(
+        specialty="tests",
+        findings_n=0,
+        latency_ms=1,
+        tokens_in=0,
+        tokens_out=0,
+        findings=[],
+    )
+    assert event["coordinates_clamped_n"] == 0
+
+
+def test_coordinates_clamped_n_round_trips():
+    event = agent_completed(
+        specialty="tests",
+        findings_n=1,
+        latency_ms=1,
+        tokens_in=0,
+        tokens_out=0,
+        findings=[dict(FINDING)],
+        coordinates_clamped_n=2,
+    )
+    assert event["coordinates_clamped_n"] == 2
+    assert json.loads(to_jsonl(event))["coordinates_clamped_n"] == 2
+
+
+def test_coordinates_reanchored_n_defaults_to_zero():
+    event = verification_done(
+        survived_n=0,
+        killed_n=0,
+        escalated_n=0,
+        wave_survivors=0,
+        latency_ms=1,
+        tokens_in=0,
+        tokens_out=0,
+        verified=[],
+        killed=[],
+        escalated=[],
+    )
+    assert event["coordinates_reanchored_n"] == 0
+
+
+def test_coordinates_reanchored_n_round_trips():
+    event = verification_done(
+        survived_n=1,
+        killed_n=0,
+        escalated_n=0,
+        wave_survivors=1,
+        latency_ms=1,
+        tokens_in=0,
+        tokens_out=0,
+        verified=[dict(FINDING)],
+        killed=[],
+        escalated=[],
+        coordinates_reanchored_n=3,
+    )
+    assert event["coordinates_reanchored_n"] == 3
+    assert json.loads(to_jsonl(event))["coordinates_reanchored_n"] == 3

@@ -51,7 +51,15 @@ _FIELD_SETS: dict[str, frozenset[str]] = {
     "agent_started": frozenset({"specialty"}),
     "agent_reasoning": frozenset({"specialty", "reasoning_excerpt"}),
     "agent_completed": frozenset(
-        {"specialty", "findings_n", "latency_ms", "tokens_in", "tokens_out", "findings"}
+        {
+            "specialty",
+            "findings_n",
+            "latency_ms",
+            "tokens_in",
+            "tokens_out",
+            "findings",
+            "coordinates_clamped_n",
+        }
     ),
     "agent_retry": frozenset({"specialty", "attempt", "error_code", "backoff_ms"}),
     "agent_failed": frozenset({"specialty", "error_class", "latency_ms"}),
@@ -67,6 +75,7 @@ _FIELD_SETS: dict[str, frozenset[str]] = {
             "verified",
             "killed",
             "escalated",
+            "coordinates_reanchored_n",
         }
     ),
     "verification_failed": frozenset({"error_class", "latency_ms"}),
@@ -294,10 +303,13 @@ def agent_completed(
     tokens_in: Any,
     tokens_out: Any,
     findings: Any,
+    coordinates_clamped_n: int = 0,
     run_id: Any = None,
     ts: Any = None,
 ) -> dict[str, Any]:
-    """Specialist returned parseable findings."""
+    """Specialist returned parseable findings. `coordinates_clamped_n`
+    counts coordinates `run_fanout` clamped to post-image (0 when none;
+    HLD-004 D3)."""
     return _build(
         "agent_completed",
         {
@@ -307,6 +319,7 @@ def agent_completed(
             "tokens_in": _clean_count(tokens_in, "tokens_in"),
             "tokens_out": _clean_count(tokens_out, "tokens_out"),
             "findings": _clean_json_list(findings, "findings"),
+            "coordinates_clamped_n": _clean_count(coordinates_clamped_n, "coordinates_clamped_n"),
         },
         run_id,
         ts,
@@ -373,12 +386,15 @@ def verification_done(
     verified: Any,
     killed: Any,
     escalated: Any,
+    coordinates_reanchored_n: int = 0,
     run_id: Any = None,
     ts: Any = None,
 ) -> dict[str, Any]:
     """Verifier returned. `wave_survivors` is the count of specialists that
     returned parseable findings (e.g. 2 after one 429/timeout loss) — it
-    lets replay/eval attribute recall deltas to partial waves."""
+    lets replay/eval attribute recall deltas to partial waves.
+    `coordinates_reanchored_n` counts verifier re-anchors to post-image
+    (0 when none; HLD-004 D3)."""
     return _build(
         "verification_done",
         {
@@ -392,6 +408,9 @@ def verification_done(
             "verified": _clean_json_list(verified, "verified"),
             "killed": _clean_json_list(killed, "killed"),
             "escalated": _clean_json_list(escalated, "escalated"),
+            "coordinates_reanchored_n": _clean_count(
+                coordinates_reanchored_n, "coordinates_reanchored_n"
+            ),
         },
         run_id,
         ts,
