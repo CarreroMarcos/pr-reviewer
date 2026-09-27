@@ -166,9 +166,7 @@ BUILDERS = [
     ),
     (
         "degraded_to_single_pass",
-        lambda: degraded_to_single_pass(
-            reason="all_specialists_failed", failed_stage="wave"
-        ),
+        lambda: degraded_to_single_pass(reason="all_specialists_failed", failed_stage="wave"),
         ENVELOPE_KEYS | {"reason", "failed_stage"},
     ),
     (
