@@ -62,9 +62,7 @@ def _gate1_threshold(cfg):
 
 
 def _gate2_threshold(cfg):
-    return (
-        cfg.verifier_wait_for_s + cfg.synthesizer_wait_for_s + cfg.budget_margin_s
-    ) * MS_PER_S
+    return (cfg.verifier_wait_for_s + cfg.synthesizer_wait_for_s + cfg.budget_margin_s) * MS_PER_S
 
 
 def _gate3_threshold(cfg):
