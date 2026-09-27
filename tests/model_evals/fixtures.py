@@ -832,7 +832,7 @@ _TRAP_SPECS: tuple[dict, ...] = (
             "def search_users(conn, term):",
             '    """Find users by name substring."""',
             "    cur = conn.cursor()",
-            '    safe = term.replace("\\", "\\\\").replace("%", "\\%")',
+            '    safe = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")',
             '    cur.execute("SELECT id FROM users WHERE name '
             'LIKE %s ESCAPE \'\\\\\'", ("%" + safe + "%",))',
             "    return cur.fetchall()",
@@ -972,9 +972,12 @@ TRAP_VETTING: dict[str, dict] = {
             "Resembles shared_state_no_lock: unlocked shared-dict access in concurrent code."
         ),
         "falsifier": (
-            "A single C-level dict(d) copy is atomic under the CPython "
-            "GIL; the diff contains no compound read-modify-write on "
-            "shared state."
+            "The function performs zero shared-state mutation — it builds "
+            "a fresh list from a copy. Lost-update/corruption races "
+            "require writes; there are none. CPython memory safety under "
+            "the GIL rules out torn reads, and the worst concurrent- "
+            "mutation outcome is a loud fail-stop RuntimeError, never "
+            "silent wrong data."
         ),
         "decoy": {
             "severity": "HIGH",
@@ -982,8 +985,10 @@ TRAP_VETTING: dict[str, dict] = {
             "lines": [3],
         },
         "kill_reason": (
-            "Single C-level dict(d) copy is atomic under the CPython GIL; "
-            "no compound read-modify-write exists in the diff — no failure "
+            "Read-only path: no shared-state writes exist to lose or "
+            "corrupt, and CPython memory safety rules out torn reads; the "
+            "only concurrent-mutation outcome is a loud fail-stop "
+            "exception, not the claimed silent race — no failure "
             "mechanism statable (HLD D3 falsification standard)."
         ),
         "prompts": dict(_PROMPT_SHAS),
@@ -993,9 +998,9 @@ TRAP_VETTING: dict[str, dict] = {
         "plausibility": ("String-built LIKE pattern with user input resembles concatenation SQLi."),
         "falsifier": (
             "Bound DB-API parameters separate code from data "
-            "structurally; %-wildcards cannot break out of the string "
-            "literal, and the added ESCAPE clause neutralizes wildcard "
-            "semantics — two independent bars."
+            "structurally, so user input cannot alter query structure; "
+            "the escape chain plus ESCAPE clause neutralizes both LIKE "
+            "wildcards (`%`, `_`) — two independent bars."
         ),
         "decoy": {
             "severity": "HIGH",
