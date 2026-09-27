@@ -200,6 +200,13 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   a timed-out delivery redelivers up to ~90 min later and PATCHes
   already-merged PRs harmlessly. An absent canonical at 165s usually means
   in-flight/retry, not an outage.
+- **sync-jira T-id collision (2026-09-27):** spec 001 and 004 share `T00x`
+  ids and the sync's idempotency key is the `Spec Task ID` custom field
+  matched by JQL `~` — a bare-id run for a second spec overwrites the first
+  spec's tickets in place (hit 2026-09-27: 54 001 tickets; restored by
+  re-running `SPEC=001 SCOPE=all`). Non-001 specs namespace field+labels
+  (`004-T001`); 001 keeps bare ids. 001 re-syncs must run before namespaced
+  tickets exist (token double-hit exits safely rather than corrupting).
 - **Living document (Mars, 2026-09-20):** short actionable gotchas discovered
   during work graduate into this file — one bullet, dated, attributed.
   Session notes live in the git-ignored deepwork progress file
