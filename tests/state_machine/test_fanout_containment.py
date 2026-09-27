@@ -83,6 +83,9 @@ REVIEW_BODY = (
     "## Findings\n- [HIGH] `src/main.py:12` — Missing bound. Fix: add a check.\n\n"
     "## Risk Notes\nNone.\n"
 )
+# build_comment strips surrounding whitespace: containment assertions use
+# the stripped form (the model text itself rides byte-identical).
+REVIEW_TEXT = REVIEW_BODY.strip()
 
 SSM_VALUES = {
     "/pr-reviewer/github-token": "github-token-value",  # noqa: S105 (fake fixture)
@@ -355,7 +358,7 @@ def test_fanout_success_returns_built_content(multi_agent, stubbed_fanout):
     events = []
     closure = make_closure(events)
     content = closure(SHA_B, 0)
-    assert REVIEW_BODY in content
+    assert REVIEW_TEXT in content
     assert stub.calls and len(stub.calls) == 1
     assert events_of_type(events, "degraded_to_single_pass") == []
     assert events_of_type(events, "review_started")
@@ -423,7 +426,7 @@ def test_budget_degrade_matches_stage_and_falls_back(multi_agent, stubbed_fanout
     events = []
     closure = make_closure(events)
     content = closure(SHA_B, 0)
-    assert REVIEW_BODY in content  # existing single-pass inline, returned
+    assert REVIEW_TEXT in content  # existing single-pass inline, returned
     degraded = events_of_type(events, "degraded_to_single_pass")
     assert len(degraded) == 1
     assert (degraded[0]["reason"], degraded[0]["failed_stage"]) == (
@@ -441,7 +444,7 @@ def test_stage_failure_reason_propagates_unchanged(multi_agent, stubbed_fanout):
     events = []
     closure = make_closure(events)
     content = closure(SHA_B, 0)
-    assert REVIEW_BODY in content
+    assert REVIEW_TEXT in content
     degraded = events_of_type(events, "degraded_to_single_pass")
     assert [(e["reason"], e["failed_stage"]) for e in degraded] == [
         ("invalid_response", "verifier")
@@ -481,7 +484,7 @@ def test_legacy_path_never_attempts_fanout(stubbed_fanout):
     events = []
     closure = make_closure(events)
     content = closure(SHA_B, 0)  # no MULTI_AGENT env: legacy inline
-    assert REVIEW_BODY in content
+    assert REVIEW_TEXT in content
     assert stub.calls == []
     assert events_of_type(events, "degraded_to_single_pass") == []
     assert events_of_type(events, "review_started")
@@ -545,20 +548,23 @@ def test_process_record_fallback_event_chain(multi_agent, stubbed_fanout):
     assert [e["comment_id"] for e in published] == [POST_ID]
     assert [m for m in [c["method"] for c in github.calls] if m == "POST"]
     posted = next(c for c in github.calls if c["method"] == "POST")
-    assert REVIEW_BODY in posted["body"]["body"]  # fallback content published
+    assert REVIEW_TEXT in posted["body"]["body"]  # fallback content published
     assert all(e["run_id"] == events[0]["run_id"] for e in events)
 
 
 def test_handler_boundary_contains_degrade(multi_agent, stubbed_fanout):
     """Worker-boundary proof: handler completes the record (no raise, no
     redelivery) with the fallback comment posted."""
+    from types import SimpleNamespace
+
     stubbed_fanout(FanoutDegraded("all_specialists_failed", "wave"))
     provider = make_provider()
     github = FakeGitHub()
     table = InMemoryTable()
+    context = SimpleNamespace(get_remaining_time_in_millis=lambda: 900_000)
     result = handler(
         {"Records": [{"body": json.dumps(envelope_dict()), "messageId": "m1"}]},
-        None,
+        context,
         _table=table,
         _config_provider=provider,
         _now=lambda: NOW,
@@ -570,7 +576,7 @@ def test_handler_boundary_contains_degrade(multi_agent, stubbed_fanout):
     )
     assert result == {"ok": True, "results": ["published"]}
     posted = next(c for c in github.calls if c["method"] == "POST")
-    assert REVIEW_BODY in posted["body"]["body"]
+    assert REVIEW_TEXT in posted["body"]["body"]
 
 
 def test_llm_error_still_propagates_for_retry(multi_agent, stubbed_fanout):
