@@ -498,4 +498,6 @@ def test_round_trip_capture_record_through_scorer():
         comments={(record["case_id"], record["run_index"]): record["comment"]},
     )
     assert fidelity["invented"] == 0
-    assert fidelity["dropped"] == 1  # stub renders one bullet for two survivors
+    # One bullet covering two survivors is a correct merge — matching is
+    # many-to-one (HLD gate 4 keys on "no semantic match", not exclusivity).
+    assert fidelity["dropped"] == 0

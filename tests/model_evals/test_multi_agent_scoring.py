@@ -241,6 +241,21 @@ def test_fidelity_dropped_and_invented():
     assert report["invented"] == 1
 
 
+def test_fidelity_merged_duplicates_many_to_one():
+    """Gate 22: a synthesizer correctly merging a duplicate pair into one
+    bullet must NOT fail the dropped gate — matching is any-match
+    (many-to-one), per HLD gate 4's "no semantic match" definition and
+    the location arm's inherent many-to-one nature."""
+    report = mas.fidelity_report(
+        survivors=[
+            {"case_id": "c", "run_index": 0, "finding": cand()},
+            {"case_id": "c", "run_index": 0, "finding": cand(line=12)},
+        ],
+        comments={("c", 0): "## Findings\n\n- [HIGH] `a.py:11` — Merged dupes. Fix: f.\n"},
+    )
+    assert (report["dropped"], report["invented"]) == (0, 0)
+
+
 # --- floors ----------------------------------------------------------------------------------
 
 

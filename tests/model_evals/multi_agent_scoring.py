@@ -295,25 +295,15 @@ def fidelity_report(
         by_run.setdefault((item["case_id"], item["run_index"]), []).append(item["finding"])
     for (case_id, run_index), items in sorted(by_run.items()):
         entries, _ = scoring.parse_findings(comments.get((case_id, run_index), ""))
-        used = [False] * len(entries)
         for item in items:
-            hit = None
-            for i, entry in enumerate(entries):
-                if used[i]:
-                    continue
-                if finding_matches(
-                    item, {"path": entry.path, "line": entry.line}, vectors, None, None
-                ):
-                    hit = i
-                    break
-            if hit is None:
+            matched = any(
+                finding_matches(item, {"path": entry.path, "line": entry.line}, vectors, None, None)
+                for entry in entries
+            )
+            if not matched:
                 dropped += 1
                 details.append({"case_id": case_id, "run_index": run_index, "kind": "dropped"})
-            else:
-                used[hit] = True
-        for i, entry in enumerate(entries):
-            if used[i]:
-                continue
+        for entry in entries:
             matched = any(
                 finding_matches(item, {"path": entry.path, "line": entry.line}, vectors, None, None)
                 for item in items
