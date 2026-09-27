@@ -231,8 +231,8 @@ class _BotoTable:
             raise
 
     def delete_item(self, **kwargs: Any) -> dict[str, Any]:
-        """Mutex-release passthrough (HLD-004 D9, T027): same
-        omit-if-empty names discipline and the same
+        """Mutex-release passthrough (HLD-004 D9, T027): the same
+        omit-if-empty discipline (names and values) and the same
         `ConditionalCheckFailed` translation as `update_item`, so the
         caller's exact alias maps (`_ACQUIRE_NAMES` / `_TOKEN_NAMES`
         semantics) ride through unmutated — no re-aliasing here."""
@@ -240,6 +240,8 @@ class _BotoTable:
 
         if not kwargs.get("ExpressionAttributeNames"):
             kwargs.pop("ExpressionAttributeNames", None)
+        if not kwargs.get("ExpressionAttributeValues"):
+            kwargs.pop("ExpressionAttributeValues", None)
 
         try:
             return self._table.delete_item(**kwargs)
@@ -497,6 +499,13 @@ def _contender_read_timeout_s(remaining_ms: int | float | None, cfg: Any) -> int
 
     OWN predicate, distinct from elapsed-budget gate 4 (which governs the
     holder's single-pass fallback): different math, no shared code path.
+
+    Budget assumption: the fixed reserve covers pre-call work
+    (prior-comment fetch, payload render) plus the post-release
+    pipeline (claim/fence/publish/finalize). A pathological pre-call
+    stall beyond the reserve terminates at the Lambda boundary and
+    redelivers — the same class as any timeout-at-boundary, bounded by
+    the queue retry budget.
     """
     if isinstance(remaining_ms, bool) or not isinstance(remaining_ms, (int, float)):
         return None
@@ -781,6 +790,12 @@ def _make_review(
         # Release AFTER the last lease-covered LLM call, BEFORE
         # claim/fence/publish/finalize (all run after review() returns).
         # A lost race (False) is ignored — the owner-guard converges.
+        # An exception above skips release BY DESIGN (HLD D9): a failed
+        # or missing release is the crash class — expiry takeover
+        # recovers it, degradation is bounded at one TTL, and the
+        # contender path keeps publishing single-pass reviews
+        # throughout (a redelivered copy starts a fresh invocation
+        # budget, so it is viable, not SKIP-bound).
         if lease is not None:
             mutex_mod.release(table, lease=lease)
         return content
@@ -800,12 +815,17 @@ def _make_review(
         inline and completes normally. The viability check is its OWN
         predicate: below the floor the call is SKIPPED (`transient`
         `LlmError("timeout")` for the existing re-raise/notice path and
-        queue redelivery); at/above, one single-pass with the clamped
+        queue redelivery; the class is a deliberate conflation — the
+        event vocabulary is spec-pinned with no SKIP type, and
+        `timeout` rides the retryable default with no invented
+        mapping, ADV-4, while `reason` carries the true disposition
+        for consumers); at/above, one single-pass with the clamped
         value forwarded as `read_timeout_s`. The contender holds no lease
         — nothing to release, and publication runs unprotected (owner
         guard converges). Emits only its own `concurrency_single_pass`
-        event (never `degraded_to_single_pass` — fan-out was never
-        attempted).
+        event on BOTH outcomes (never `degraded_to_single_pass` —
+        fan-out was never attempted); the event records the contention
+        disposition, not a completed pass.
         """
         clamped = _contender_read_timeout_s(_safe_remaining_ms(), ma_cfg)
         elapsed_ms = max(0, int((now() - t_acquired) * 1000)) if t_acquired is not None else 0

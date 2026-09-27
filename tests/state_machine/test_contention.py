@@ -36,8 +36,9 @@ transports mirror the `test_worker`/`test_fanout_containment` port
 shapes; the `run_fanout` stub mirrors the sequencer signature with no
 defaults on required params.
 
-RED state: `worker_handler` has no contention symbols — collection
-errors on import.
+RED state (commit 1): `worker_handler` had no contention symbols —
+collection errors on import. T027 ships the symbols in this same PR;
+the red proof is re-enacted detached at `31a1795`.
 """
 
 import json
@@ -418,9 +419,10 @@ def test_holder_runs_fanout_and_releases(multi_agent, stubbed_fanout):
     assert table.get_item(MUTEX_PK) is None  # released
 
 
-def test_holder_legacy_path_acquires_and_releases(stubbed_fanout):
+def test_holder_legacy_path_acquires_and_releases(monkeypatch, stubbed_fanout):
     """Mutex orthogonal to the fan-out flag: flag off still leases the
     review and releases after the inline single-pass."""
+    monkeypatch.delenv("MULTI_AGENT", raising=False)  # order-independent
     stubbed_fanout(FanoutDegraded("insufficient_budget", "wave"))
     events, table = [], MutexTable()
     closure = make_closure(events, table)
