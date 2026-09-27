@@ -29,6 +29,9 @@ expression parser):
 * ``head_sha = :reviewed AND generation = :gen AND claim_owner = :owner`` —
   finalize (HLD §3.3 step 6; SPR-63 owner guard: only the lease holder's
   finalize releases the lease)
+* ``attribute_not_exists(pk) OR lease_until < :steal_before`` — HLD-004
+  D9 mutex acquire/takeover (T027; missing-`lease_until` compares false)
+* ``token = :token`` — HLD-004 D9 mutex refresh/release (T027)
 
 Any other condition (or a non-``SET`` update) raises ValueError loudly: a
 builder-string change must break tests, never pass silently.
@@ -62,6 +65,11 @@ _CREATION_LEASE_CONDITION = (
 )
 _CLEAR_COMMENT_CONDITION = "head_sha = :reviewed AND generation = :gen AND comment_id = :dead"
 _FINALIZE_CONDITION = "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
+# HLD-004 D9 mutex vocabulary (T027): the mutex row lives in this same
+# state table, so the stub evaluates its two conditions exactly —
+# steal threshold on acquire, stored-token match on refresh/release.
+_MUTEX_ACQUIRE_CONDITION = "attribute_not_exists(pk) OR lease_until < :steal_before"
+_MUTEX_TOKEN_CONDITION = "#tok = :token"  # noqa: S105 (expression shape, not a credential)
 
 
 class InMemoryTable:
@@ -120,6 +128,41 @@ class InMemoryTable:
         )
         return {"Attributes": dict(self.items[pk])}
 
+    def delete_item(
+        self,
+        *,
+        Key: dict[str, Any],
+        ConditionExpression: str,
+        ExpressionAttributeNames: dict[str, str] | None = None,
+        ExpressionAttributeValues: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Conditional row removal (HLD-004 D9 mutex release): same
+        declared-but-unused rejection and `ConditionalCheckFailed`
+        semantics as `update_item`; a met condition deletes the row."""
+        pk = Key["pk"]
+        expr_text = f"{ConditionExpression}"
+        unused_names = set((ExpressionAttributeNames or {}).keys()) - set(
+            re.findall(r"#[A-Za-z0-9_]+", expr_text)
+        )
+        if unused_names:
+            raise ValueError(
+                f"ExpressionAttributeNames declares unused keys: {sorted(unused_names)}"
+            )
+        unused_values = set((ExpressionAttributeValues or {}).keys()) - set(
+            re.findall(r":[A-Za-z0-9_]+", expr_text)
+        )
+        if unused_values:
+            raise ValueError(
+                f"ExpressionAttributeValues declares unused keys: {sorted(unused_values)}"
+            )
+        self.log.append(("delete", ConditionExpression))
+        current = self.items.get(pk)
+        values = ExpressionAttributeValues or {}
+        if not _condition_holds(ConditionExpression, current, values):
+            raise ConditionalCheckFailed(f"condition not met: {ConditionExpression} (pk={pk})")
+        del self.items[pk]
+        return {}
+
 
 def _condition_holds(
     condition: str, current: dict[str, Any] | None, values: dict[str, Any]
@@ -166,6 +209,17 @@ def _condition_holds(
             and current.get("generation") == values[":gen"]
             and current.get("claim_owner") == values[":owner"]
         )
+    if condition == _MUTEX_ACQUIRE_CONDITION:
+        # HLD-004 D9 mutex acquire/takeover: missing row steals via arm 1;
+        # a present row needs arm 2 with a PRESENT lease_until (a
+        # comparison against a missing attribute is false in DynamoDB).
+        return current is None or (
+            current.get("lease_until") is not None
+            and current["lease_until"] < values[":steal_before"]
+        )
+    if condition == _MUTEX_TOKEN_CONDITION:
+        # Mutex refresh/release: row present with the stored token.
+        return current is not None and current.get("token") == values[":token"]
     raise ValueError(f"unsupported condition expression: {condition!r}")
 
 

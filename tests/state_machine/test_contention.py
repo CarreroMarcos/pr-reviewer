@@ -45,7 +45,7 @@ from types import SimpleNamespace
 
 import pytest
 from dynamodb_stub import InMemoryTable
-from test_mutex import MutexTable
+from test_mutex import ACQUIRE_UPDATE, MutexTable
 
 import worker_handler
 from common.config import MultiAgentConfig
@@ -53,12 +53,11 @@ from common.envelope import validate_envelope
 from common.fanout import FanoutDegraded, single_pass_budget_ok
 from common.llm import LlmError
 from common.mutex import MUTEX_PK
-from test_mutex import ACQUIRE_UPDATE, MutexTable
 from worker_handler import (
     CONTENDER_FIXED_OVERHEAD_S,
     CONTENDER_READ_FLOOR_S,
-    _Credentials,
     _contender_read_timeout_s,
+    _Credentials,
     _make_review,
     _process_record,
     handler,
@@ -400,8 +399,6 @@ def test_contender_predicate_distinct_from_gate4():
     """The two predicates are different functions with different math:
     at remaining=350s gate 4 passes (≥300s) while the contender check
     fails (350−60−90=200 < 240). No shared code path."""
-    from common.fanout import single_pass_budget_ok
-
     cfg = make_cfg()
     assert _contender_read_timeout_s(350_000, cfg) is None
     assert single_pass_budget_ok(350_000, cfg) is True
@@ -449,9 +446,7 @@ def test_holder_flag_on_contender_flag_on_interplay(multi_agent, stubbed_fanout)
 # --- contender viable: single-pass inline, clamped socket ---------------------------------------
 
 
-def test_contender_viable_runs_single_pass_with_clamped_timeout(
-    multi_agent, stubbed_fanout
-):
+def test_contender_viable_runs_single_pass_with_clamped_timeout(multi_agent, stubbed_fanout):
     stub = stubbed_fanout(REVIEW_BODY)
     events, table, timeouts = [], MutexTable(), []
     hold(table)
@@ -497,9 +492,7 @@ def test_contender_no_budget_skips_with_transient_raise(multi_agent, stubbed_fan
     assert timeouts == []  # no LLM call ever issued
 
 
-def test_handler_skip_raises_without_touching_visibility(
-    multi_agent, stubbed_fanout, monkeypatch
-):
+def test_handler_skip_raises_without_touching_visibility(multi_agent, stubbed_fanout, monkeypatch):
     """End-to-end SKIP: handler raises for redelivery (record NOT
     completed), nothing posted, and `change_message_visibility` never
     called — the contender does not defer and does not touch visibility."""
@@ -507,6 +500,7 @@ def test_handler_skip_raises_without_touching_visibility(
     stubbed_fanout(REVIEW_BODY)
     provider = make_provider()
     github, table, sqs = FakeGitHub([]), InMemoryTable(), FakeSQS()
+    hold(table)
     context = SimpleNamespace(get_remaining_time_in_millis=lambda: 100_000)
     record = {
         "body": json.dumps(envelope_dict()),
@@ -522,19 +516,20 @@ def test_handler_skip_raises_without_touching_visibility(
             _config_provider=provider,
             _now=lambda: NOW,
             _diff_transport=FakeDiffTransport([], meta=[(200, SHA_B)]),
-            _llm_factory=lambda host, port, *, timeout: FakeLLMConnection(
-                [], [], []
-            ),
+            _llm_factory=lambda host, port, *, timeout: FakeLLMConnection([], [], []),
             _github_transport=github,
             _sink=lambda line: None,
             _system_prompt="SYSTEM-PROMPT",
             _sqs=sqs,
         )
     assert sqs.calls == []
-    assert [c for c in github.calls if c["method"] == "POST"] == []
+    posted = [c for c in github.calls if c["method"] == "POST"]
+    # The only POST is the D2 transient failure notice (existing
+    # re-raise/notice path) — no review content is ever published.
+    assert posted and all(REVIEW_TEXT not in c["body"]["body"] for c in posted)
 
 
-# --- release ordering: last LLM < release < claim < fence < publish ---------------------------------
+# --- release ordering: last LLM < release < claim/fence/publish ------------------------------
 
 
 def test_release_ordering_after_llm_before_pipeline(multi_agent, stubbed_fanout):
@@ -564,19 +559,17 @@ def test_release_ordering_after_llm_before_pipeline(multi_agent, stubbed_fanout)
         return next(i for i, entry in enumerate(shared) if predicate(entry))
 
     llm_last = max(i for i, entry in enumerate(shared) if entry[0] == "llm")
-    release_at = index_of(lambda e: e[0] == "delete" and e[1] == "token = :token")
+    release_at = index_of(lambda e: e[0] == "delete" and e[1] == "#tok = :token")
     claim_at = index_of(
         lambda e: e[0] == "update" and "claim_until" in e[1] and "comment_id" not in e[1]
     )
-    diff_calls = [
-        i for i, e in enumerate(shared) if e[0] == "diff" and "/files" not in e[1]
-    ]
+    diff_calls = [i for i, e in enumerate(shared) if e[0] == "diff" and "/files" not in e[1]]
     fence_at = next(i for i in diff_calls if i > claim_at)
     publish_at = next(i for i, e in enumerate(shared) if e == ("github", "POST"))
     assert llm_last < release_at < claim_at < fence_at < publish_at
 
 
-# --- holder refresh: 50%-TTL scheduling + failed-refresh degrade --------------------------------------
+# --- holder refresh: 50%-TTL scheduling + failed-refresh degrade --------------------------------
 
 
 def test_no_refresh_below_half_ttl(multi_agent, stubbed_fanout):
@@ -587,11 +580,7 @@ def test_no_refresh_below_half_ttl(multi_agent, stubbed_fanout):
     closure = make_closure(events, table, clock=ScriptedClock([0, 100]))
     content = closure(SHA_B, 0)
     assert REVIEW_TEXT in content
-    refreshes = [
-        c
-        for c in table.calls
-        if c.get("UpdateExpression") == "SET lease_until = :until"
-    ]
+    refreshes = [c for c in table.calls if c.get("UpdateExpression") == "SET lease_until = :until"]
     assert refreshes == []
 
 
@@ -603,7 +592,9 @@ def test_refresh_success_extends_then_falls_back(multi_agent, stubbed_fanout):
     closure = make_closure(events, table, clock=ScriptedClock([0, 500]))
     content = closure(SHA_B, 0)
     assert REVIEW_TEXT in content
-    assert table.items[MUTEX_PK]["lease_until"] == 500 + 900
+    refreshes = [c for c in table.calls if c.get("UpdateExpression") == "SET lease_until = :until"]
+    assert [c["values"][":until"] for c in refreshes] == [500 + 900]
+    assert table.get_item(MUTEX_PK) is None  # released after the fallback
 
 
 def test_failed_refresh_stops_work_and_never_reasserts(multi_agent, stubbed_fanout):
@@ -621,9 +612,7 @@ def test_failed_refresh_stops_work_and_never_reasserts(multi_agent, stubbed_fano
             "lease_until": 500 + 900,
         }
 
-    stub = stubbed_fanout(
-        FanoutDegraded("insufficient_budget", "wave"), on_call=take_over
-    )
+    stub = stubbed_fanout(FanoutDegraded("insufficient_budget", "wave"), on_call=take_over)
     events, timeouts = [], []
     log: list = []
     provider = make_provider()
@@ -655,7 +644,7 @@ def test_failed_refresh_stops_work_and_never_reasserts(multi_agent, stubbed_fano
     assert stub.calls and len(stub.calls) == 1
 
 
-# --- publication not mutex-protected ---------------------------------------------------------------------
+# --- publication not mutex-protected ------------------------------------------------------------
 
 
 def test_contender_publishes_holding_no_lease(multi_agent, stubbed_fanout):
@@ -683,11 +672,10 @@ def test_contender_publishes_holding_no_lease(multi_agent, stubbed_fanout):
     )
     assert status == "published"
     assert next(c for c in github.calls if c["method"] == "POST")
-    mutex_ops = [
-        e
-        for e in shared
-        if (e[0] == "update" and "steal_before" in e[1])
-        or (e[0] == "update" and e[1] == "SET lease_until = :until")
-        or e[0] == "delete"
+    # Exactly one mutex op: the failed acquire attempt. No refresh, no
+    # release — the contender publishes holding no lease.
+    assert [e for e in shared if e[0] == "delete"] == []
+    assert [e for e in shared if e[0] == "update" and e[1] == "SET lease_until = :until"] == []
+    assert [e for e in shared if e[0] == "update" and "steal_before" in e[1]] == [
+        ("update", "attribute_not_exists(pk) OR lease_until < :steal_before")
     ]
-    assert mutex_ops == []
