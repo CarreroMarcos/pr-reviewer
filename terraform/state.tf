@@ -3,6 +3,12 @@
 # Table pr-reviewer-state, partition key pk, PROVISIONED 20 WCU / 20 RCU
 # base + 5/5 GSI (T032, HLD §7 Mars ruling: rebalance preserves the AWS
 # Always Free 25/25 envelope — 20 base + 5 `pr-runs-index`).
+# Zero headroom is intentional (HLD-pinned split, §7 Mars ruling): a
+# future GSI or bump must revisit the envelope, not drift past it. GSI
+# capacity throttles independently of the base table — a throttled index
+# write fails the GSI alone, and the archive path treats index writes as
+# best-effort non-fatal by design (T029: swallowed with an
+# `archive_failed` warning; the base run record is unaffected).
 # GSI pr-runs-index (pr_number N + started_ts S, INCLUDE the archive
 # row attributes) answers "latest run for PR" for the replay site.
 #

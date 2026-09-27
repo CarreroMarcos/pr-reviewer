@@ -17,7 +17,9 @@ multi-agent infrastructure surface:
   naming pin (no bare `MARGIN_S` / `DEGRADED_BUDGET_MARGIN_S`), plus a
   three-way cross-check against `common.config` defaults — checklist 7.
 
-(Alarm-shape assertions land with T034 in a later commit of this PR.)
+(Alarm-shape assertions included: the daily LLM-spend alarm threshold
+derives from the budget variable × the 5-call factor — value-agnostic
+until T042 snapshots the Mars-set number.)
 
 RED state: GSI/ESM-scaling/env-vars are absent — assertion failures.
 """
@@ -216,6 +218,27 @@ def test_env_defaults_match_config():
         DEFAULT_WAVE_WAIT_FOR_S,
     )
 
+    # The str() cross-check presumes HCL-string-safe defaults: int or str,
+    # never bool ("True" != HCL "1") or float-repr drift. Pins the premise
+    # so a future type change fails loudly here, not subtly in terraform.
+    for name, value in [
+        ("MULTI_AGENT", DEFAULT_MULTI_AGENT),
+        ("MULTI_AGENT_PHASE0", DEFAULT_MULTI_AGENT_PHASE0),
+        ("FANOUT_CONCURRENCY", DEFAULT_FANOUT_CONCURRENCY),
+        ("MUTEX_LEASE_TTL_S", DEFAULT_MUTEX_LEASE_TTL_S),
+        ("REASONING_MAX_CHARS", DEFAULT_REASONING_MAX_CHARS),
+        ("REASONING_EFFORT", DEFAULT_REASONING_EFFORT),
+        ("WAVE_WAIT_FOR_S", DEFAULT_WAVE_WAIT_FOR_S),
+        ("VERIFIER_WAIT_FOR_S", DEFAULT_VERIFIER_WAIT_FOR_S),
+        ("SYNTHESIZER_WAIT_FOR_S", DEFAULT_SYNTHESIZER_WAIT_FOR_S),
+        ("SINGLE_PASS_WAIT_FOR_S", DEFAULT_SINGLE_PASS_WAIT_FOR_S),
+        ("SOCKET_READ_TIMEOUT_S", DEFAULT_SOCKET_READ_TIMEOUT_S),
+        ("BUDGET_MARGIN_S", DEFAULT_BUDGET_MARGIN_S),
+    ]:
+        assert isinstance(value, (int, str)) and not isinstance(value, bool), (
+            f"{name} must be int/str for the str() cross-check, got {type(value).__name__}"
+        )
+
     assert EXPECTED_ENV == {
         "MULTI_AGENT": str(DEFAULT_MULTI_AGENT),
         "MULTI_AGENT_PHASE0": str(DEFAULT_MULTI_AGENT_PHASE0),
@@ -243,7 +266,11 @@ def test_spend_alarm_threshold_shape():
     alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "daily_llm_spend")
     threshold = re.search(r"^\s*threshold\s*=\s*(.+?)\s*(?:#.*)?$", alarm, re.MULTILINE)
     assert threshold is not None, "daily_llm_spend threshold not found"
-    assert threshold.group(1).strip() == "var.daily_llm_spend_budget_usd * 5", (
+    threshold_norm = " ".join(threshold.group(1).split())
+    # Whitespace-normalized (innocent refactors must not trip drift) but
+    # order-strict: `5 * var.…` or any other factor form still fails, so
+    # the ×5 factor itself stays pinned until T042 snapshots a literal.
+    assert threshold_norm == "var.daily_llm_spend_budget_usd * 5", (
         f"threshold not budget x5: {threshold.group(1)!r}"
     )
     var_block = _resource_block(VARIABLES_TF, "daily_llm_spend_budget_usd", "", kind="variable")

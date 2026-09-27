@@ -205,7 +205,11 @@ def _index_started_ts(value: int) -> str:
     not sort correctly as strings). The input stays epoch-ms INT (T028's
     meta.json contract — that artifact is unchanged); only the index row
     is ISO. Resolves the tension T029's docstring deferred to T031 —
-    deliberate conversion at this boundary, not a silent coercion."""
+    deliberate conversion at this boundary, not a silent coercion.
+    Two same-millisecond runs tie on the sort key: the projected `run_id`
+    attribute is the deterministic query tiebreaker. This function is the
+    single validation point for the index row's started_ts (the caller
+    passes the raw epoch-ms value)."""
     checked = _check_ts(value, "started_ts")
     return (
         datetime.fromtimestamp(checked / 1000, tz=UTC)
