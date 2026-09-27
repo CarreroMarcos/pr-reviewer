@@ -188,11 +188,12 @@ def wrongful_kill_report(
     """Wrongful-kill audit over multi-agent runs.
 
     Each run: `{case_id, run_index, killed: [candidate_id, ...],
-    survived: [candidate_id, ...], candidates: {candidate_id: finding}}`.
-    A killed candidate matching ANY manifest finding (location or
-    cosine arm) is wrongful. Every subtle-true case must, in EVERY run
-    it appears in, match some survived candidate (verified-or-escalated)
-    and match NO killed candidate.
+    survived: [candidate_id, ...], candidates: [{candidate_id, ...}, ...]}`
+    — the candidates LIST is the capture record shape (prompt JSON order =
+    deterministic chain order, preserved). A killed candidate matching ANY
+    manifest finding (location or cosine arm) is wrongful. Every
+    subtle-true case must, in EVERY run it appears in, match some survived
+    candidate (verified-or-escalated) and match NO killed candidate.
     """
     matches: list[dict] = []
     violations: list[dict] = []
@@ -202,7 +203,7 @@ def wrongful_kill_report(
         run_index = run["run_index"]
         manifest = manifests.get(case_id, {})
         expected = manifest.get("expected_findings", [])
-        candidates = run.get("candidates", {})
+        candidates = {c["candidate_id"]: c for c in run.get("candidates", [])}
         for kill_id in run.get("killed", []):
             killed = candidates.get(kill_id)
             if killed is None:

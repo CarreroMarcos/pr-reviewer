@@ -131,13 +131,20 @@ def test_precision_delta_means():
 
 
 def run_row(case_id="c", run_index=0, killed=(), survived=(), candidates=None):
+    """Capture-shaped run rows: `candidates` is a LIST of finding dicts
+    carrying `candidate_id` (prompt JSON order preserved) — never a
+    keyed map."""
     return {
         "case_id": case_id,
         "run_index": run_index,
         "killed": list(killed),
         "survived": list(survived),
-        "candidates": dict(candidates or {}),
+        "candidates": list(candidates or []),
     }
+
+
+def with_id(candidate_id, finding):
+    return {"candidate_id": candidate_id, **finding}
 
 
 def cand(path="a.py", line=10):
@@ -146,7 +153,7 @@ def cand(path="a.py", line=10):
 
 def test_kills_clean_when_unmatched():
     report = mas.wrongful_kill_report(
-        runs=[run_row(killed=["k1"], candidates={"k1": cand(line=500)})],
+        runs=[run_row(killed=["k1"], candidates=[with_id("k1", cand(line=500))])],
         manifests={"c": {"expected_findings": [manifest_item()]}},
         vectors={},
         subtle_ids=[],
@@ -157,7 +164,7 @@ def test_kills_clean_when_unmatched():
 
 def test_kills_location_match_counts():
     report = mas.wrongful_kill_report(
-        runs=[run_row(killed=["k1"], candidates={"k1": cand(line=11)})],
+        runs=[run_row(killed=["k1"], candidates=[with_id("k1", cand(line=11))])],
         manifests={"c": {"expected_findings": [manifest_item()]}},
         vectors={},
         subtle_ids=[],
@@ -172,7 +179,7 @@ def test_kills_cosine_match_counts():
         mas.manifest_vector_key("c", 0): vec(1, 0),
     }
     report = mas.wrongful_kill_report(
-        runs=[run_row(killed=["k1"], candidates={"k1": cand(path="zzz.py", line=999)})],
+        runs=[run_row(killed=["k1"], candidates=[with_id("k1", cand(path="zzz.py", line=999))])],
         manifests={"c": {"expected_findings": [manifest_item()]}},
         vectors=vectors,
         subtle_ids=[],
@@ -182,10 +189,10 @@ def test_kills_cosine_match_counts():
 
 def test_subtle_survival_rules():
     manifests = {"s": {"expected_findings": [manifest_item()]}}
-    good = {"v1": cand()}
+    good = [with_id("v1", cand())]
     # Killed subtle -> violation.
     bad = mas.wrongful_kill_report(
-        runs=[run_row(case_id="s", killed=["k1"], candidates={"k1": cand()})],
+        runs=[run_row(case_id="s", killed=["k1"], candidates=[with_id("k1", cand())])],
         manifests=manifests,
         vectors={},
         subtle_ids=["s"],
@@ -337,3 +344,20 @@ def test_select_effort_rule():
     assert mas.select_effort(True, 201.0, 200.0) == "needs-mars-ruling"
     assert mas.select_effort(False, 100.0, 200.0) == "needs-mars-ruling"
     assert mas.select_effort(True, None, 200.0) == "needs-mars-ruling"
+
+
+def test_error_runs_score_as_total_miss():
+    """Bot R1 Fix 5: HLD D8 defines no separate error penalty — an
+    errored run's empty comment scores 0 hits (recall miss) and 0.0
+    precision on defect cases through the standard shared scorer, so
+    gates 1-2 count the miss mechanically."""
+    import scoring
+
+    manifest = {
+        "expected_findings": [{"path": "a.py", "line": 10, "severity": "HIGH"}],
+        "changed_paths": ["a.py"],
+    }
+    metrics = scoring.score_output("c", "", manifest)
+    assert (metrics.hits, metrics.missed) == (0, 1)
+    assert metrics.recall == 0.0
+    assert metrics.precision == 0.0

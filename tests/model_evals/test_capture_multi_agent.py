@@ -337,3 +337,69 @@ def test_latency_excludes_embedding_time(monkeypatch):
     )
     assert record["latency_ms"] == 500
     assert record["error"] is None
+
+
+def test_round_trip_capture_record_through_scorer():
+    """Bot R1 Fix 6 (Risk Note): a REAL capture-shaped run record —
+    list-form candidates straight from `run_case` — flowing through the
+    scorer end-to-end. Pins the producer/consumer shape contract both
+    directions: the kill report resolves the smoke kill with no match
+    (representative manifest is SQLi, smoke candidates are not), and the
+    fidelity report sees the stub's single bullet against its two
+    same-location survivors (dropped == 1 is the stub's honest
+    under-merge, asserted as-is, not hidden)."""
+    import multi_agent_scoring as mas
+
+    legs = ScriptedLegs()
+    diff_text, manifest, meta = fixtures.CORPUS[CASE_ID]()
+    record = cma.run_case(
+        case_id=CASE_ID,
+        diff_text=diff_text,
+        manifest=manifest,
+        meta=meta,
+        cfg=smoke_cfg(),
+        templates=cma.load_templates(),
+        creds=(API_KEY, MODEL, ENDPOINT),
+        review_fn=legs,
+        embed_fn=stub_embed,
+        effort=EFFORT,
+        run_index=0,
+    )
+    assert isinstance(record["candidates"], list)
+    assert all("candidate_id" in c for c in record["candidates"])
+    # Location-only vectors here: the 3-dim stub hash vectors can collide
+    # spuriously on the cosine arm, which would make this contract test
+    # assert on stub luck rather than shape flow. Cosine matching itself
+    # is pinned with crafted vectors in the scorer unit tests; the round
+    # trip pins producer→consumer shape + location matching.
+    vectors = dict(record["embeddings"])
+    kill_report = mas.wrongful_kill_report(
+        runs=[
+            {
+                "case_id": record["case_id"],
+                "run_index": record["run_index"],
+                "killed": [k["candidate_id"] for k in record["killed"]],
+                "survived": [v["candidate_id"] for v in record["verified"]]
+                + [e["candidate_id"] for e in record["escalated"]],
+                "candidates": record["candidates"],
+            }
+        ],
+        manifests={CASE_ID: manifest},
+        vectors=vectors,
+        subtle_ids=[],
+    )
+    assert kill_report["wrongful_kills"] == 0
+    assert kill_report["subtle_violations"] == []
+    survivors = [
+        {"case_id": record["case_id"], "run_index": record["run_index"], "finding": v}
+        for v in record["verified"]
+    ] + [
+        {"case_id": record["case_id"], "run_index": record["run_index"], "finding": e}
+        for e in record["escalated"]
+    ]
+    fidelity = mas.fidelity_report(
+        survivors=survivors,
+        comments={(record["case_id"], record["run_index"]): record["comment"]},
+    )
+    assert fidelity["invented"] == 0
+    assert fidelity["dropped"] == 1  # stub renders one bullet for two survivors

@@ -40,7 +40,10 @@ Design notes (all load-bearing, all pinned by the smoke tests):
   state `FANOUT_CONCURRENCY=3` beside the number (HLD wall-time rule).
 * A failed run (`FanoutDegraded`) is RECORDED with its error and empty
   comment — never aborts the batch (a 19h unattended run must survive
-  one bad leg); the scorer treats error runs as total miss.
+  one bad leg). No separate error penalty exists in HLD D8: scored
+  through the standard functions, an empty comment contributes 0 hits
+  (recall miss) and precision 0.0 on defect cases (`scoring.score_output`
+  convention) — gates 1-2 count the miss mechanically.
 """
 
 from __future__ import annotations
