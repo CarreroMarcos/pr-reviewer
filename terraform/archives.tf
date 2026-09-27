@@ -24,6 +24,11 @@ resource "aws_s3_bucket_public_access_block" "archives" {
 resource "aws_s3_bucket_policy" "archives" {
   bucket = aws_s3_bucket.archives.id
 
+  # Pin the security ordering: public-access blocking must exist before
+  # any policy is attached — the policy references only the bucket, so
+  # the dependency graph alone does not order these two (bot r1:20).
+  depends_on = [aws_s3_bucket_public_access_block.archives]
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -46,8 +51,36 @@ resource "aws_s3_bucket_policy" "archives" {
           }
         }
       },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.archives.arn,
+          "${aws_s3_bucket.archives.arn}/*",
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
     ]
   })
+}
+
+# Explicit at-rest encryption pin (bot r1:17): AES256 is the AWS default for
+# new buckets since 2023-01 — this makes the choice visible and stable in
+# code rather than relying on the service default.
+resource "aws_s3_bucket_server_side_encryption_configuration" "archives" {
+  bucket = aws_s3_bucket.archives.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "archives" {
