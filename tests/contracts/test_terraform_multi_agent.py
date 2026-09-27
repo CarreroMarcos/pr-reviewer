@@ -180,7 +180,9 @@ def test_worker_unreserved():
 
 
 def test_twelve_env_vars_with_t005_defaults():
-    assert _worker_env_map() == EXPECTED_ENV
+    env = _worker_env_map()
+    assert env.pop("GLM_ALLOWED_HOSTS") == "api.z.ai"  # pre-existing, untouched
+    assert env == EXPECTED_ENV
 
 
 def test_withdrawn_env_names_absent():
