@@ -607,21 +607,24 @@ def _run_phase0_shadow(
     EXPECTED even on a successful leg — one specialty can never satisfy
     the ≥2-survivor rule — so it is swallowed after logging: the wave's
     own `agent_*` events are the shadow telemetry, and the (already
-    published) review never fails. Snapshot creds only (the 401-refresh
-    budget is never shared) and no table (the D9 lease is released before
-    the shadow runs — not lease-covered by construction).
+    published) review never fails. The helper is a never-raises boundary
+    past the budget gate (best-effort, mirroring the archive path): any
+    other exception is warned and swallowed the same way. Snapshot creds
+    only (the 401-refresh budget is never shared) and no table (the D9
+    lease is released before the shadow runs — not lease-covered by
+    construction).
     """
     budget_ms = (ma_cfg.wave_wait_for_s + ma_cfg.budget_margin_s) * 1000
     if remaining_ms is None or remaining_ms < budget_ms:
         return False
-    prompts = _load_fanout_prompts()
-    diff_text = render_diff_text(diff_result)
-    system_prompts = {
-        "correctness": assemble_specialist_prompt(
-            template=prompts["correctness"], diff_text=diff_text, residuals=residuals
-        )
-    }
     try:
+        prompts = _load_fanout_prompts()
+        diff_text = render_diff_text(diff_result)
+        system_prompts = {
+            "correctness": assemble_specialist_prompt(
+                template=prompts["correctness"], diff_text=diff_text, residuals=residuals
+            )
+        }
         run_wave(
             run_id=run_id,
             cfg=ma_cfg,
@@ -636,6 +639,24 @@ def _run_phase0_shadow(
             allowed_hosts=allowed_hosts,
         )
     except FanoutDegraded as exc:
+        # Distinguish the expected single-specialty degrade (the
+        # specialist ran; the ≥2-survivor rule is unmeetable by design)
+        # from a leg that never produced: presence of the correctness
+        # `agent_completed` event is the witness.
+        degraded = any(
+            isinstance(event, dict)
+            and event.get("type") == "agent_completed"
+            and event.get("specialty") == "correctness"
+            for event in events
+        )
+        logger.warning(
+            "shadow_degraded" if degraded else "shadow_failed",
+            extra={
+                "status": "shadow_degraded" if degraded else "shadow_failed",
+                "error_class": _error_class(exc),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 (never-raises boundary — see docstring)
         logger.warning(
             "shadow_failed",
             extra={"status": "shadow_failed", "error_class": _error_class(exc)},
@@ -1742,6 +1763,9 @@ def _process_record(
         prompt_sha256=delivered_prompt_sha256,
     )
     if outcome.kind in (OutcomeKind.PUBLISHED, OutcomeKind.PUBLISHED_FINALIZE_CONFLICT):
+        # PUBLISHED_FINALIZE_CONFLICT: the review published; the fence loss
+        # is delivery bookkeeping (failure_notice), not the review outcome —
+        # archive status and shadow participation are correct.
         # Phase-0 shadow (HLD §8, T036): single-pass already published
         # above with unchanged latency; the shadow specialist runs inline
         # AFTER publish (never before — it must not block, delay, or
@@ -1754,7 +1778,19 @@ def _process_record(
         ma_shadow = multi_agent_config()
         if ma_shadow.multi_agent != 1 and ma_shadow.multi_agent_phase0 == 1:
             diff_result = shadow_stash.get("diff_result")
-            if diff_result is not None:
+            if diff_result is None:
+                # Defensive telemetry only (unreachable through review(),
+                # which always stashes on the publish path): a closed
+                # HLD §6 reason set forbids a dedicated `review_skipped`
+                # reason here (`{"empty_diff", "phase0_no_budget"}`), so
+                # this warns instead of emitting a false-categorized
+                # event. The run archives as the plain single-pass
+                # publish it was.
+                logger.warning(
+                    "shadow_skipped",
+                    extra={"status": "shadow_no_diff", "error_class": "missing_diff_result"},
+                )
+            else:
                 snapshot = creds.current()
                 shadow_ran = _run_phase0_shadow(
                     diff_result=diff_result,

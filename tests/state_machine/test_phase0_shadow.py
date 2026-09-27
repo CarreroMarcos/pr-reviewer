@@ -30,6 +30,7 @@ errors on import.
 """
 
 import json
+import logging
 
 from dynamodb_stub import InMemoryTable
 
@@ -37,6 +38,8 @@ import worker_handler
 from common.diff import DiffFile, DiffResult
 from common.llm import LlmError, ReviewResult
 from worker_handler import (
+    _Credentials,
+    _make_review,
     _process_record,
     _run_phase0_shadow,
 )
@@ -448,26 +451,29 @@ def test_legacy_both_zero_event_purity(monkeypatch):
 # --- shadow runs after publish --------------------------------------------------------
 
 
-def test_shadow_runs_after_publish_with_telemetry(monkeypatch):
+def test_shadow_runs_after_publish_with_telemetry(monkeypatch, caplog):
     """Ample budget: POST carries the unchanged single-pass content;
     the shadow leg runs strictly after publish; its agent telemetry
-    lands in events; archive follows the shadow."""
+    lands in events; archive follows the shadow. The expected
+    single-specialty degrade logs `shadow_degraded` (witnessed by the
+    `agent_completed` event), never `shadow_failed`."""
     shared: list = []
     table = InMemoryTable(log=shared)
     s3 = FakeS3(log=shared)
     events: list = []
     log: list = []
     caps: dict = {}
-    status, stub, _ = drive(
-        table=table,
-        s3=s3,
-        events=events,
-        log=log,
-        monkeypatch=monkeypatch,
-        multi_agent="0",
-        phase0="1",
-        caps=caps,
-    )
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        status, stub, _ = drive(
+            table=table,
+            s3=s3,
+            events=events,
+            log=log,
+            monkeypatch=monkeypatch,
+            multi_agent="0",
+            phase0="1",
+            caps=caps,
+        )
     assert status == "published"
     assert stub.calls == []
     posted = next(c for c in caps["github"].calls if c["method"] == "POST")
@@ -479,6 +485,8 @@ def test_shadow_runs_after_publish_with_telemetry(monkeypatch):
     assert len(completed) == 1
     assert completed[0]["specialty"] == "correctness"
     assert completed[0]["findings_n"] == 1
+    assert "shadow_degraded" in caplog.messages
+    assert "shadow_failed" not in caplog.messages
 
 
 def test_shadow_archive_pipeline_and_row(monkeypatch):
@@ -565,53 +573,140 @@ def test_shadow_skip_no_budget(monkeypatch):
     assert table.get_item(f"archive:{run_id}") is None
 
 
-# --- shadow failure modes ---------------------------------------------------------------
+def test_shadow_missing_stash_no_diff(monkeypatch, caplog):
+    """Bot R1 Fix 3 (adapted — see below): shadow-eligible flags but no
+    stashed diff (the closure did not stash — older caller shape) → the
+    skip is LOUD, never silent.
 
+    Deviation from the bot's literal prescription (`review_skipped`
+    with reason `phase0_no_diff`): HLD §6 closes the skipped-reason set
+    to `{"empty_diff", "phase0_no_budget"}` (`events.py:37`) and neither
+    is truthful here, so the branch warns (`shadow_no_diff`) instead of
+    emitting a false-categorized event. The run archives as the plain
+    single-pass publish it was (2 puts + index row)."""
+    monkeypatch.setattr(
+        worker_handler,
+        "run_wave",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no diff means no wave")),
+    )
+    real_make_review = _make_review
 
-def test_shadow_leg_failure_never_blocks(monkeypatch):
-    """A failed leg still publishes, still archives, and leaves its
-    agent_failed telemetry in events."""
+    def _no_stash(**kwargs):
+        kwargs.pop("shadow_stash", None)
+        return real_make_review(**kwargs)
+
+    monkeypatch.setattr(worker_handler, "_make_review", _no_stash)
     shared: list = []
     table = InMemoryTable(log=shared)
     s3 = FakeS3(log=shared)
     events: list = []
-    status, _, _ = drive(
-        table=table,
-        s3=s3,
-        events=events,
-        log=[],
-        monkeypatch=monkeypatch,
-        multi_agent="0",
-        phase0="1",
-        shadow_behavior=LlmError("timeout"),
-    )
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        status, _, _ = drive(
+            table=table,
+            s3=s3,
+            events=events,
+            log=[],
+            monkeypatch=monkeypatch,
+            multi_agent="0",
+            phase0="1",
+        )
+    assert status == "published"
+    assert events_of_type(events, "review_skipped") == []
+    assert "shadow_skipped" in caplog.messages
+    assert "shadow_no_diff" in [r.status for r in caplog.records if r.name == "worker_handler"]
+    assert len(s3.calls) == 2
+    run_id = events[0]["run_id"]
+    row = table.get_item(f"archive:{run_id}")
+    assert row is not None and row["pipeline"] == "single_pass"
+
+
+# --- shadow failure modes ---------------------------------------------------------------
+
+
+def test_shadow_leg_failure_never_blocks(monkeypatch, caplog):
+    """A failed leg still publishes, still archives, and leaves its
+    agent_failed telemetry in events — logged `shadow_failed` (no
+    `agent_completed` witness, so not the expected single-specialty
+    degrade)."""
+    shared: list = []
+    table = InMemoryTable(log=shared)
+    s3 = FakeS3(log=shared)
+    events: list = []
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        status, _, _ = drive(
+            table=table,
+            s3=s3,
+            events=events,
+            log=[],
+            monkeypatch=monkeypatch,
+            multi_agent="0",
+            phase0="1",
+            shadow_behavior=LlmError("timeout"),
+        )
     assert status == "published"
     assert len(events_of_type(events, "agent_failed")) == 1
     assert len(s3.calls) == 2
     run_id = events[0]["run_id"]
     assert table.get_item(f"archive:{run_id}") is not None
+    assert "shadow_failed" in caplog.messages
+    assert "shadow_degraded" not in caplog.messages
 
 
-def test_shadow_never_shares_401_budget(monkeypatch):
+def test_helper_generic_exception_never_raises(caplog):
+    """Bot R1 Fix 1: past the budget gate the helper is a never-raises
+    boundary — even a non-`FanoutDegraded` fault (here a `None`
+    diff_result blowing up the renderer) warns `shadow_failed` and
+    still returns True; the published review is untouched."""
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        assert (
+            _run_phase0_shadow(
+                diff_result=None,
+                ma_cfg=live_cfg(),
+                api_key="k",
+                model="m",
+                endpoint="https://llm.example.test/v1/chat/completions",
+                allowed_hosts=frozenset({"llm.example.test"}),
+                run_id=RUN_ID,
+                events=[],
+                remaining_ms=900_000,
+                residuals=[],
+                review_fn=shadow_leg([]),
+            )
+            is True
+        )
+    assert "shadow_failed" in caplog.messages
+
+
+def test_shadow_never_shares_401_budget(monkeypatch, caplog):
     """Even a 401 leg never triggers the shared single-refresh: exactly
-    one SSM read (initial hydrate) for the whole record."""
+    one SSM read (initial hydrate) for the whole record — pinned through
+    the production call site by making any `refresh_once` call explode
+    (the helper only ever receives `creds.current()` snapshot scalars,
+    never the holder, so there is no path that could call it)."""
+
+    def _boom(self):
+        raise AssertionError("shadow must never touch the 401-refresh budget")
+
+    monkeypatch.setattr(_Credentials, "refresh_once", _boom)
     shared: list = []
     table = InMemoryTable(log=shared)
     s3 = FakeS3(log=shared)
     events: list = []
-    status, _, ssm = drive(
-        table=table,
-        s3=s3,
-        events=events,
-        log=[],
-        monkeypatch=monkeypatch,
-        multi_agent="0",
-        phase0="1",
-        shadow_behavior=LlmError("http_401"),
-    )
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        status, _, ssm = drive(
+            table=table,
+            s3=s3,
+            events=events,
+            log=[],
+            monkeypatch=monkeypatch,
+            multi_agent="0",
+            phase0="1",
+            shadow_behavior=LlmError("http_401"),
+        )
     assert status == "published"
     assert len(ssm.calls) == 1
     assert len(events_of_type(events, "agent_failed")) == 1
+    assert "shadow_failed" in caplog.messages
 
 
 def test_failed_run_no_shadow(monkeypatch):
