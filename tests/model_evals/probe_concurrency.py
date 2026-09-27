@@ -41,7 +41,10 @@ RESULTS_DIR = EVAL_DIR / "results"
 sys.path.insert(0, str(LAMBDA_DIR))
 sys.path.insert(0, str(EVAL_DIR))
 
-from common.llm import LlmError, review_diff  # noqa: E402
+# NOTE: `common.llm` is imported lazily inside the live path
+# (`_live_probe_fn`) — stub tests and offline tooling must never require
+# the provider modules at import time (mirrors the capture harness's
+# lazy boto3 pattern).
 
 REGION = "us-west-2"
 N_CALLS = 4
@@ -70,6 +73,7 @@ def _read_ssm() -> tuple[str, str, str]:
 def _live_probe_fn(api_key: str, model: str, endpoint: str, timeout_s: int):
     """Production-faithful leg caller (thinking-enabled `low`, like the
     wave legs whose contention window this probe reproduces)."""
+    from common.llm import LlmError, review_diff
 
     def _call(index: int) -> dict:
         start = time.perf_counter()
@@ -113,10 +117,26 @@ def _live_probe_fn(api_key: str, model: str, endpoint: str, timeout_s: int):
 def run_probe(probe_fn, n_calls: int = N_CALLS) -> list[dict]:
     """Fire `n_calls` concurrent legs (`probe_fn(index) -> call record`);
     return records in index order. The pool is exactly N wide so all
-    legs are simultaneously in flight."""
+    legs are simultaneously in flight. A raising leg is captured as an
+    `error` entry (mirroring the capture harness's FanoutDegraded
+    pattern) — the probe always produces evidence, never aborts
+    mid-batch. A crashed leg reports no timing (`latency_ms: 0`): the
+    exception path discarded it, and inventing a number would lie."""
     with ThreadPoolExecutor(max_workers=n_calls, thread_name_prefix="n4-probe") as pool:
         futures = [pool.submit(probe_fn, index) for index in range(n_calls)]
-        records = [future.result() for future in futures]
+        records = []
+        for index, future in enumerate(futures):
+            try:
+                records.append(future.result())
+            except Exception as exc:  # noqa: BLE001 (record, don't raise — see docstring)
+                records.append(
+                    {
+                        "index": index,
+                        "status": "error",
+                        "error_class": type(exc).__name__,
+                        "latency_ms": 0,
+                    }
+                )
     return sorted(records, key=lambda record: record["index"])
 
 
@@ -140,11 +160,23 @@ def evidence_filename(probed_at: datetime.datetime) -> str:
     return f"n4-probe-{probed_at.strftime('%Y%m%dT%H%M%S')}.json"
 
 
+def exit_code_for(summary: dict) -> int:
+    """Process exit code from a probe summary: 0 all-200, 1 tier trip
+    (429/1302 observed), 2 any error leg. Errors take precedence — an
+    inconclusive run must read as neither success nor trip."""
+    if summary.get("errors", 0) > 0:
+        return 2
+    if summary.get("tripped", False):
+        return 1
+    return 0
+
+
 def write_evidence(
     path: Path,
     *,
     probed_at: datetime.datetime,
     model: str,
+    mode: str,
     timeout_s: int,
     records: list[dict],
 ) -> Path:
@@ -152,6 +184,7 @@ def write_evidence(
     payload = {
         "meta": {
             "tool": "probe_concurrency.py (T041)",
+            "mode": mode,
             "n_calls": len(records),
             "concurrent": True,
             "model": model,
@@ -192,6 +225,7 @@ def main(
     probed_at = _now if _now is not None else datetime.datetime.now(datetime.UTC)
     records = run_probe(probe_fn)
     summary = summarize(records)
+    mode = "live" if _creds is None else "stub"
     output_path = Path(args.output_dir) / evidence_filename(probed_at)
     if output_path.exists() and not args.force:
         raise SystemExit(f"refusing to overwrite {output_path} (use --force)")
@@ -200,6 +234,7 @@ def main(
         output_path,
         probed_at=probed_at,
         model=model if _creds is None else "stub",
+        mode=mode,
         timeout_s=args.timeout_s,
         records=records,
     )
@@ -211,4 +246,4 @@ def main(
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(exit_code_for(main()))

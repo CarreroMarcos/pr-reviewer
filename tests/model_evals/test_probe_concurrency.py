@@ -46,6 +46,7 @@ def test_all_200_recorded_with_timestamped_evidence(tmp_path):
     assert payload["meta"]["n_calls"] == 4
     assert payload["meta"]["concurrent"] is True
     assert payload["meta"]["probed_at"] == "2026-09-27T12:00:00"
+    assert payload["meta"]["mode"] == "stub"
     assert [c["index"] for c in payload["calls"]] == [0, 1, 2, 3]
     for call in payload["calls"]:
         assert set(call) == {"index", "status", "error_class", "latency_ms"}
@@ -119,6 +120,49 @@ def test_four_legs_simultaneously_in_flight():
     records = probe.run_probe(_call)
     assert state["max_in_flight"] == 4
     assert sorted(r["index"] for r in records) == [0, 1, 2, 3]
+
+
+def test_exit_code_contract():
+    """0 all-200, 1 tier trip, 2 any error leg (errors take precedence —
+    inconclusive reads as neither success nor trip)."""
+    assert probe.exit_code_for({"errors": 0, "tripped": False}) == 0
+    assert probe.exit_code_for({"errors": 0, "tripped": True}) == 1
+    assert probe.exit_code_for({"errors": 1, "tripped": False}) == 2
+    assert probe.exit_code_for({"errors": 2, "tripped": True}) == 2
+    assert probe.exit_code_for(probe.summarize(probe.run_probe(ok_stub()))) == 0
+
+
+def test_raising_leg_captured_as_error_with_evidence(tmp_path):
+    """A crashing leg records an `error` entry (class + zero timing —
+    the exception path discarded it); other legs intact; evidence still
+    written; exit code 2."""
+
+    def _flaky(index):
+        if index == 2:
+            raise RuntimeError("leg exploded")
+        return {"index": index, "status": "ok", "error_class": None, "latency_ms": 1}
+
+    records = probe.run_probe(_flaky)
+    assert [r["status"] for r in records] == ["ok", "ok", "error", "ok"]
+    crashed = records[2]
+    assert crashed["error_class"] == "RuntimeError"
+    assert crashed["latency_ms"] == 0
+    summary = probe.summarize(records)
+    assert summary["errors"] == 1
+    assert probe.exit_code_for(summary) == 2
+    probed_at = datetime.datetime(2026, 9, 27, 12, 0, 0)
+    out = tmp_path / "n4-probe-20260927T120000.json"
+    probe.write_evidence(
+        out,
+        probed_at=probed_at,
+        model="stub",
+        mode="stub",
+        timeout_s=600,
+        records=records,
+    )
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["summary"]["errors"] == 1
+    assert payload["meta"]["mode"] == "stub"
 
 
 def test_live_probe_fn_classifies_rate_limit():
