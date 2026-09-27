@@ -101,6 +101,30 @@ def test_new_manifests_wellformed():
         assert len(diff_text.splitlines()) <= 60
 
 
+def test_trap_manifests_wellformed():
+    """Bot R2: the trap manifest schema is pinned, not just its empty
+    findings — exact key set matching `_trap_builder`, single-path
+    changed_paths, the shared forbidden classes, the `trap` marker True,
+    and the ≤60-line budget."""
+    for case_id in fixtures.TRAP_IDS:
+        diff_text, manifest, _meta = fixtures.CORPUS[case_id]()
+        assert set(manifest) == {
+            "id",
+            "category",
+            "expected_findings",
+            "changed_paths",
+            "forbidden",
+            "trap",
+        }
+        assert manifest["id"] == case_id
+        assert manifest["category"]
+        assert manifest["expected_findings"] == []
+        assert manifest["changed_paths"] != []
+        assert set(manifest["forbidden"]) == _FORBIDDEN_KEYS
+        assert manifest["trap"] is True
+        assert len(diff_text.splitlines()) <= 60
+
+
 # --- T038 joint total: 24 cases / 18 defects; traps add 0 ----------------------------------
 
 
