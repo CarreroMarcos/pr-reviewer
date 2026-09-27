@@ -441,13 +441,17 @@ def test_all_401_degraded_event_fields():
 
 
 def test_mixed_survivor_with_all_losses_401():
-    """Losses uniformly 401 → auth recovery even with one survivor."""
+    """One survivor + uniform-401 losses: the survivor rule governs.
+
+    HLD D1's all-401 antecedent requires EVERY specialist to fail, so the
+    reason is insufficient_wave_survivors, never a false all-failed reason.
+    """
     script = ok_script()
     script[PROMPTS["security"]] = ("raise", LlmError("http_401"))
     script[PROMPTS["tests"]] = ("raise", LlmError("http_401"))
     with pytest.raises(FanoutDegraded) as excinfo:
         invoke(ScriptedReview(script))
-    assert excinfo.value.reason == "all_specialists_failed"
+    assert excinfo.value.reason == "insufficient_wave_survivors"
 
 
 # --- wave-window timeout -----------------------------------------------------------

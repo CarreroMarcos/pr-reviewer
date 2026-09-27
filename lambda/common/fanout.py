@@ -301,11 +301,11 @@ async def _wave_async(
             losses.append(outcome.error_class or "unknown")
     if len(survivors) >= 2:
         return survivors
-    if losses and all(error_class == "http_401" for error_class in losses):
-        # Uniform auth failure (D1 Credential Thread Safety): the sync
-        # fallback owns the single-threaded creds refresh from SSM. The
-        # survivor (if any) does not contradict stale creds — it raced
-        # ahead of expiry — so refresh-on-401-evidence is the recovery.
+    if not survivors and losses and all(error_class == "http_401" for error_class in losses):
+        # Uniform auth failure across EVERY specialist — HLD D1's literal
+        # antecedent ("when all specialists fail on 401"). Recovery is the
+        # sync fallback's lazy SSM refresh; this wave never touches creds.
+        # A mixed wave with a survivor is survivor-rule territory below.
         events.append(
             degraded_to_single_pass(
                 reason="all_specialists_failed", failed_stage="wave", run_id=run_id
