@@ -75,9 +75,9 @@ def finding(title="off-by-one"):
     }
 
 
-def ok_result(findings=(finding(),), reasoning="trace", tokens=(10, 5)):
+def ok_result(findings=None, reasoning="trace", tokens=(10, 5)):
     return ReviewResult(
-        content=json.dumps({"findings": list(findings)}),
+        content=json.dumps({"findings": list(findings) if findings is not None else [finding()]}),
         prompt_tokens=tokens[0],
         completion_tokens=tokens[1],
         total_tokens=tokens[0] + tokens[1],
@@ -193,7 +193,7 @@ def record_pool(monkeypatch):
     return RecordingPool
 
 
-# --- executor construction + shutdown ---------------------------------------------------
+# --- executor construction + shutdown ----------------------------------------------
 
 
 def test_executor_max_workers_and_prefix(record_pool):
@@ -246,7 +246,7 @@ def test_fresh_asyncio_run_per_invocation():
     assert len(review.calls) == 6
 
 
-# --- event authorship: coroutines on the loop thread --------------------------------------
+# --- event authorship: coroutines on the loop thread -------------------------------
 
 
 def test_stubs_run_off_loop_and_never_receive_events():
@@ -275,7 +275,7 @@ def test_events_carry_run_id():
     assert all(e["run_id"] == run_id for e in events)
 
 
-# --- reasoning truncation at capture --------------------------------------------------------
+# --- reasoning truncation at capture -----------------------------------------------
 
 
 def test_reasoning_truncated_to_max_chars():
@@ -315,7 +315,7 @@ def test_reasoning_effort_whitespace_stripped():
     assert all(call["thinking_enabled"] is True for call in review.calls)
 
 
-# --- survivor rule ----------------------------------------------------------------------------
+# --- survivor rule -----------------------------------------------------------------
 
 
 def test_three_survivors_proceed():
@@ -326,11 +326,14 @@ def test_three_survivors_proceed():
     assert len(events_of_type(events, "agent_completed")) == 3
 
 
-def test_two_survivors_proceed_with_empty_findings_survivor():
+def test_empty_findings_still_counts_as_survivor():
+    """Parseable (even empty) output is a survivor — the rule counts
+    successful returns, not non-empty ones."""
     script = ok_script()
     script[PROMPTS["tests"]] = ("ok", [], "trace")
     survivors, _ = invoke(ScriptedReview(script))
-    assert len(survivors) == 2
+    assert len(survivors) == 3
+    assert [s for s in survivors if s.specialty == "tests"][0].findings == []
 
 
 def test_one_survivor_raises_fanout_degraded():
@@ -363,7 +366,7 @@ def test_completed_carries_tokens_and_findings_n():
     assert isinstance(event["latency_ms"], int)
 
 
-# --- 429/1302 fail-fast, no in-executor retry -----------------------------------------------------
+# --- 429/1302 fail-fast, no in-executor retry --------------------------------------
 
 
 def test_rate_limit_fails_fast_single_attempt():
@@ -386,7 +389,7 @@ def test_all_rate_limited_no_retry_then_degraded():
     assert len(review.calls) == 3
 
 
-# --- invalid content ------------------------------------------------------------------------------
+# --- invalid content ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize("content", ["not json", '{"findings": [{"oops": 1}]}'])
@@ -401,7 +404,7 @@ def test_unparseable_content_is_invalid_response_loss(content):
     assert failed[0]["error_class"] == "invalid_response"
 
 
-# --- 401 classification (fan-out side only) -----------------------------------------------------------
+# --- 401 classification (fan-out side only) ----------------------------------------
 
 
 def test_single_401_is_agent_failed():
@@ -447,7 +450,7 @@ def test_mixed_survivor_with_all_losses_401():
     assert excinfo.value.reason == "all_specialists_failed"
 
 
-# --- wave-window timeout -------------------------------------------------------------------------------
+# --- wave-window timeout -----------------------------------------------------------
 
 
 def test_window_expiry_loses_specialist_without_retry():
@@ -462,7 +465,7 @@ def test_window_expiry_loses_specialist_without_retry():
     assert failed[0]["error_class"] == "timeout"
 
 
-# --- immutable cfg snapshot ---------------------------------------------------------------------------------
+# --- immutable cfg snapshot --------------------------------------------------------
 
 
 def test_cfg_is_frozen():
@@ -472,15 +475,14 @@ def test_cfg_is_frozen():
 
 def test_wave_uses_snapshot_not_env(monkeypatch):
     monkeypatch.setenv("WAVE_WAIT_FOR_S", "9999")
-    script = ok_script()
-    script[PROMPTS["tests"]] = ("sleep", 5)
+    script = {prompt: ("sleep", 5) for prompt in PROMPTS.values()}
     review = ScriptedReview(script)
     with pytest.raises(FanoutDegraded):
         invoke(review, cfg=make_cfg(wave_wait_for_s=1))
     assert len(review.calls) == 3
 
 
-# --- read_timeout_s resolved once per wave ----------------------------------------------------------------------
+# --- read_timeout_s resolved once per wave -----------------------------------------
 
 
 def test_read_timeout_resolved_once_per_wave(monkeypatch):
