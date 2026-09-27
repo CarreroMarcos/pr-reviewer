@@ -8,6 +8,7 @@ T045's live run must reproduce.
 """
 
 import json
+import time
 
 import capture_multi_agent as cma
 import fixtures
@@ -266,3 +267,73 @@ def test_extract_candidates_roundtrip():
 def test_finding_text_helpers():
     assert cma.finding_text(wave_finding()) == "Smoke flaw. d"
     assert cma.manifest_text({"hint": "sql-injection-via-concat"}) == "sql-injection-via-concat"
+
+
+def test_resume_partial_preserves_pinned_runs(tmp_path):
+    """Bot R1 Fix 1: a partial resume (run 0 checkpointed, run 1 new)
+    preserves the pinned run-0 record byte-identically — the checkpoint
+    never outlives its data."""
+    output = tmp_path / "pinned_multi_agent.json"
+    checkpoint = tmp_path / "resume.json"
+    args = ["--cases", CASE_ID, "--output", str(output), "--checkpoint", str(checkpoint)]
+    cma.main(
+        [*args, "--runs", "1"],
+        _review_fn=ScriptedLegs(),
+        _embed_fn=stub_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    first = json.loads(output.read_text(encoding="utf-8"))
+    assert len(first["cases"][CASE_ID]["runs"]) == 1
+    pinned_run_id = first["cases"][CASE_ID]["runs"][0]["run_id"]
+    cma.main(
+        [*args, "--runs", "2", "--resume"],
+        _review_fn=ScriptedLegs(),
+        _embed_fn=stub_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    merged = json.loads(output.read_text(encoding="utf-8"))
+    runs = merged["cases"][CASE_ID]["runs"]
+    assert [r["run_index"] for r in runs] == [0, 1]
+    assert runs[0]["run_id"] == pinned_run_id  # earlier record preserved, not re-run
+    assert runs[1]["run_id"] != pinned_run_id
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["completed"] == [
+        [CASE_ID, 0],
+        [CASE_ID, 1],
+    ]
+
+
+def test_build_diff_result_rename_uses_new_name():
+    """Bot R1 Fix 3: a rename header without a +++ line falls back to
+    the header's second token — the NEW name."""
+    text = "diff --git a/old.py b/new.py\nindex 1..2 100644\nBinary files differ\n"
+    result = cma.build_diff_result(case_id="r", diff_text=text)
+    assert [f.filename for f in result.files] == ["new.py"]
+
+
+def test_latency_excludes_embedding_time(monkeypatch):
+    """Bot R1 Fix 4: per-run `latency_ms` stops at pipeline return —
+    a 250ms embedding sleep cannot enter it (scripted clock makes the
+    500ms pipeline window exact)."""
+    ticks = [100.0, 100.5]
+    monkeypatch.setattr(time, "perf_counter", lambda: ticks.pop(0) if len(ticks) > 1 else ticks[-1])
+
+    def slow_embed(texts):
+        time.sleep(0.25)
+        return stub_embed(texts)
+
+    diff_text, manifest, meta = fixtures.CORPUS[CASE_ID]()
+    record = cma.run_case(
+        case_id=CASE_ID,
+        diff_text=diff_text,
+        manifest=manifest,
+        meta=meta,
+        cfg=smoke_cfg(),
+        templates=cma.load_templates(),
+        creds=(API_KEY, MODEL, ENDPOINT),
+        review_fn=ScriptedLegs(),
+        embed_fn=slow_embed,
+        effort=EFFORT,
+        run_index=0,
+    )
+    assert record["latency_ms"] == 500
+    assert record["error"] is None

@@ -141,6 +141,11 @@ def build_diff_result(
                 filename = line[len("+++ b/") :]
                 break
         if filename is None:
+            # No +++ line (binary/truncated headers): fall back to the
+            # header's second token. For rename headers (`a/old b/new`)
+            # this is the NEW name — the correct attribution. A missing
+            # or unparseable header falls back to the case id (honest
+            # placeholder: filename unknown, never guessed from content).
             header = chunk.split("\n", 1)[0].split()
             raw = header[1] if len(header) > 1 else case_id
             filename = raw[2:] if raw.startswith("b/") else raw
@@ -318,16 +323,22 @@ def run_case(
     killed_ids = sorted(k["candidate_id"] for k in killed)
     vectors: dict[str, list[float]] = {}
     if candidate_texts or killed_ids:
-        texts = [finding_text(by_id[cid]) for cid in candidate_texts]
-        texts += [finding_text(by_id[cid]) for cid in killed_ids if cid in by_id]
+        # Explicit (key, text) pairing BEFORE embedding: unknown killed
+        # ids are dropped here (malformed verdict contributes no vector —
+        # the scorer skips them identically), so positional zip can never
+        # pair a killed id with the wrong vector.
+        requests = [
+            (candidate_key(case_id, run_index, cid), finding_text(by_id[cid]))
+            for cid in candidate_texts
+        ]
+        requests += [
+            (killed_key(case_id, run_index, cid), finding_text(by_id[cid]))
+            for cid in killed_ids
+            if cid in by_id
+        ]
+        texts = [text for _, text in requests]
         got = embed_fn(texts)
-        # strict=False by design: killed ids absent from the candidate map
-        # (malformed verdict) contribute no vector rather than failing alignment.
-        for cid, vec in zip(candidate_texts, got[: len(candidate_texts)], strict=False):
-            vectors[candidate_key(case_id, run_index, cid)] = vec
-        for cid, vec in zip(killed_ids, got[len(candidate_texts) :], strict=False):
-            if cid in by_id:
-                vectors[killed_key(case_id, run_index, cid)] = vec
+        vectors = dict(zip([key for key, _ in requests], got, strict=True))
     record = {
         "case_id": case_id,
         "run_index": run_index,
@@ -351,10 +362,14 @@ def run_case(
 
 def wall_claim(wall_s: float, fanout_concurrency: int, n_runs: int) -> str:
     """Wall-clock claim WITH the assumed parallelism stated beside it
-    (HLD wall-time rule — a bare duration is not a claim)."""
+    (HLD wall-time rule — a bare duration is not a claim). Per-run
+    `latency_ms` stops at pipeline return and EXCLUDES Bedrock embedding
+    time — the p95(low)-vs-p95(default) effort comparison measures
+    pipeline latency, never embedding latency."""
     return (
         f"{wall_s:.1f}s wall for {n_runs} case-runs "
-        f"(FANOUT_CONCURRENCY={fanout_concurrency}, cases sequential)"
+        f"(FANOUT_CONCURRENCY={fanout_concurrency}, cases sequential; "
+        f"per-run latency_ms excludes embedding time)"
     )
 
 
@@ -369,17 +384,27 @@ def execute(
     review_fn,
     embed_fn,
     completed: set[tuple[str, int]] | None = None,
+    prior_runs: dict[str, list[dict]] | None = None,
 ) -> tuple[dict, dict]:
     """Run the selected cases x runs (skipping `completed` pairs);
     return (cases_out, stats). Cases run SEQUENTIALLY (checkpoint
-    friendly — wall math assumes in-wave parallelism only)."""
+    friendly — wall math assumes in-wave parallelism only). Previously
+    pinned runs for skipped indexes are SEEDED from `prior_runs`, so a
+    partial resume preserves earlier records — the checkpoint claiming
+    "completed" must never outlive the data it claims."""
     done = set(completed) if completed else set()
+    prior_runs = prior_runs or {}
     cases_out: dict[str, dict] = {}
     stats = {"runs_completed": 0, "runs_skipped": 0}
     for case_id in case_ids:
         diff_text, manifest, meta = fixtures.CORPUS[case_id]()
         manifest_vectors = embed_manifest_findings(manifest, case_id, embed_fn)
-        runs = []
+        runs = [
+            record
+            for record in prior_runs.get(case_id, [])
+            if (case_id, record["run_index"]) in done
+        ]
+        runs.sort(key=lambda record: record["run_index"])
         for run_index in range(runs_per_case):
             if (case_id, run_index) in done:
                 stats["runs_skipped"] += 1
@@ -496,6 +521,7 @@ def main(
         review_fn=review_fn,
         embed_fn=embed_fn,
         completed=completed,
+        prior_runs={cid: rec.get("runs", []) for cid, rec in prior.get("cases", {}).items()},
     )
     wall_s = time.perf_counter() - start
     merged = dict(prior.get("cases", {}))
@@ -524,8 +550,8 @@ def main(
         json.dumps(
             {
                 "completed": sorted(
-                    [list(pair) for pair in completed]
-                    + [[cid, r["run_index"]] for cid, rec in cases_out.items() for r in rec["runs"]]
+                    {tuple(pair) for pair in completed}
+                    | {(cid, r["run_index"]) for cid, rec in cases_out.items() for r in rec["runs"]}
                 )
             },
             indent=2,
