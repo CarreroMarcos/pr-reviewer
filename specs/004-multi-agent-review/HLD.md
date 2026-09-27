@@ -4,6 +4,7 @@
 adversarial pass, and Mars operational rulings (Decisions 1–4) incorporated 2026-09-26.
 Implementer-readiness amendments (blockers B1–B8, majors M1–M10, pinned contracts) folded in
 2026-09-26 from the orchestrator review + topology simulation; unedited text preserved verbatim.
+To-the-dot self-audit polish (12 advisories, 0 conflicts — Oracle audit in PR #94) folded in 2026-09-26.
 **Author:** Marcos + Vesper (hardened by Antigravity AI Engineering Directorate).
 
 ## 1. Context
@@ -55,11 +56,14 @@ exits immediately on timeout/degradation without hanging the Lambda process. (Bo
 2026-09-26: `shutdown(wait=False, cancel_futures=True)` only drains queued, not-yet-started work — a
 thread already blocked in a socket read is unaffected and would still be joined at true interpreter
 exit. That is acceptable here because the Lambda container freezes rather than exits after the handler
-returns, and `SOCKET_READ_TIMEOUT_S=240 < wait_for 300` bounds the abandoned thread's life. Never raise
-the wait_for caps above the socket timeout.)
+returns, and `SOCKET_READ_TIMEOUT_S=240 < wait_for 300` bounds the abandoned thread's life. Keep
+`SOCKET_READ_TIMEOUT_S` at or below `WAVE_WAIT_FOR_S` (300): the socket must time out inside the wave
+window so a lost specialist is absorbed by the ≥2-survivor rule; executor threads that outlive a
+shorter window (verifier/synth caps) are bounded by the socket timeout and reaped by the shutdown
+pattern above.)
 The sync `review()` closure calls `asyncio.run(_fanout(...))` fresh per invocation — never a cached loop.
-No fire-and-forget tasks: specialist coroutines run under an `asyncio.wait(ALL_COMPLETED)` or `FIRST_COMPLETED`
-loop, every task awaited inside the loop.
+No fire-and-forget tasks: specialist coroutines run under an `asyncio.wait(ALL_COMPLETED)` loop with
+the `WAVE_WAIT_FOR_S` timeout, every task awaited inside the loop (no short-circuit on early survivors).
 **Event emission point (settled):** the specialist *coroutine* — running on the single event-loop thread — emits
 `agent_started` before dispatching to the executor and `agent_reasoning`/`agent_completed` as the executor call
 returns; the sync worker function itself never touches the events list, which preserves the no-cross-thread-race
@@ -105,7 +109,9 @@ failure mechanism plus exact diff lines; if the claimed failure is impossible un
 runtime's guarantees (e.g. a single C-level `dict(d)` copy is atomic under the CPython GIL and can
 neither raise nor tear), it is killed. Verifier output MUST re-anchor `file_path`/`line_start`/
 `line_end` to the post-image file; `run_fanout` clamps-and-flags out-of-range specialist coordinates
-and never echoes them silently.
+and never echoes them silently. The clamp flag surfaces as `coordinates_clamped_n` on the originating
+specialty's `agent_completed` event (0 when none); verifier re-anchors are likewise counted on
+`verification_done` — flags never travel inside finding JSON.
 
 **Synthesizer contract (pinned 2026-09-26; title guard amended 2026-09-26):** two survivors are
 duplicates iff same `file_path` AND $|\Delta\text{line\_start}| \le 2$ AND same `category` AND
@@ -137,7 +143,7 @@ invented = bullets with no survivor; both gated at 0 (D8 gate 4).
   2. Test omissions or test fixture design. Reserved strictly for Tests.
   3. Linter complaints, formatting, variable naming style, comments, or docstrings.
   4. Bugs in unchanged, pre-existing code outside the diff hunk.
-  5. Accepted residuals previously reviewed and recorded in PR metadata.
+  5. Accepted residuals previously reviewed and recorded in `docs/accepted-residuals.md`.
 
 #### 2. Security Specialist
 - **Scope:** Identifies exploitable vulnerabilities and trust boundary violations introduced or altered in the diff:
@@ -198,6 +204,8 @@ shrinks per-agent prompt waste.
 **Prerequisite status (2026-09-26):** residuals infrastructure is entirely NEW — only a prose
 proposal exists (`docs/ideas.md:27`); no parsing, storage, or prompt-injection code exists today.
 It must land as its own prerequisite task, or specialists receive `residuals = []` indefinitely.
+(Mars ruling 2026-09-26: committed-file source — `docs/accepted-residuals.md` curated by the
+operator; no state-record change.)
 
 **D8 — Eval gate (operationalized and hardened 2026-09-26).**
 End-to-end A/B: the scorer grades the final comment's `## Findings`
@@ -245,7 +253,11 @@ Five hard gates, paired case-by-case vs the single-pass pin:
 **Effort-selection rule (pinned 2026-09-26, gate 5 — the rule D6/Q7/§8 point to):** ship
 `reasoning_effort: low` iff all five gates above pass with `low` AND the measured p95 latency under
 `low` is ≤ the default-effort p95; otherwise the ship config is a Mars ruling from the Phase 0 data —
-never a silent infrastructure default.
+never a silent infrastructure default. Configurations under test (pinned 2026-09-26, self-audit):
+config A = every agent at default effort; config B = specialists at `reasoning_effort: low` with
+verifier/synthesizer at their confirmed-higher setting (D6). Per-stage and end-to-end p95 are
+compared A-vs-B; "passes with low"/"p95 under low" mean config B. The verifier/synthesizer-higher
+exploration beyond the confirmed setting runs only if budget allows and does not feed the rule.
 
 **Offline Embedding Rule (Constitution II):** External ML libraries (`torch`, `sentence-transformers`,
 `numpy`, `scipy`) are strictly banned by `pyproject.toml`. Pytest in CI must run 100% offline without network.
@@ -342,7 +354,9 @@ is a comment about a dropped reservation, not a setting.)
    changes hands (the contender holds no lease, so the holder cannot see its call). 4 sits AT the
    measured tier edge (N=5 → 429/1302; N=4 was never explicitly measured). **Phase 0 MUST measure N=4
    explicitly before Phase 1**; if N=4 trips, the contention path queues behind the lease (bounded by
-   `SINGLE_PASS_WAIT_FOR_S`) instead of running inline, restoring a hard ceiling of 3.
+   `SINGLE_PASS_WAIT_FOR_S`) instead of running inline, restoring a hard ceiling of 3. If the lease
+   is still held when the bound expires, the contender runs single-pass inline (the ceiling breach
+   is already accepted by tripping) — the message is never dropped on a wait timeout.
    **Scope pin (2026-09-26):** the mutex serializes the LLM phase only — publication is NOT
    mutex-protected. A contender's single-pass can reach publish while the holder sits between its
    last LLM call and its publish; that race belongs to the existing claim → live-head fence →
@@ -402,6 +416,8 @@ SQS → worker (existing: validate → hydrate → establish → acquire mutex l
   → worker_handler: emit review_started {pr, sha, diff_stats}
   → empty diff? → emit review_skipped {reason: "empty_diff"} → existing empty-diff handling
   → NEW: run_fanout(diff_result, residuals, cfg, context) -> str   # raises FanoutDegraded(reason, failed_stage)
+  │     # context = the Lambda context (remaining-time source for the elapsed-budget gates,
+  │     # threaded as in the single-pass path)
   │     ├─ cumulative budget gate: remaining ≥ wave + verifier + synth + margin
   │     ├─ Custom ThreadPoolExecutor (max_workers=3) over specialist coroutines:
   │     │     specialist("correctness") → findings[] + reasoning_excerpt   (coroutine emits
@@ -451,7 +467,10 @@ after the last lease-covered LLM call, before claim/publish/finalize — bot rev
    violated by the format itself): a stage nonce appears EXACTLY TWICE in the model-visible prompt —
    the opening and closing tag of its own block — and is never reused across stages or prompts; any
    OTHER occurrence of the nonce (in a finding field, in the diff echo, in reasoning text) is a
-   boundary-break signal. The diff itself is passed VERBATIM inside
+   boundary-break signal. Scope (pinned 2026-09-26, self-audit): one fresh nonce per model-visible
+   prompt string. Specialist prompts carry no nonce. Verifier/synthesizer prompts carry their
+   boundary nonce(s), each appearing exactly twice within that prompt string (own open/close tags).
+   Cross-string reuse never occurs. The diff itself is passed VERBATIM inside
    fenced blocks — never escaped or mutated (a correctness tool must not review altered text; the
    original `replace("<<<", "<\\<<")` escaping was withdrawn 2026-09-26 for exactly that reason).
    The prompt-injection trap case passes iff the trap finding is killed without the nonce appearing in
@@ -505,8 +524,8 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
 | `verification_failed` | verifier raised/timed out | error_class, latency_ms |
 | `review_synthesized` | synthesizer returns | findings_merged_n, dropped_as_duplicate_n, latency_ms, tokens_in/out, findings[] (merged JSON) |
 | `synthesizer_failed` | synthesizer raised/timed out | error_class, latency_ms |
-| `degraded_to_single_pass` | fan-out abandoned for single-pass | reason, failed_stage |
-| `concurrency_single_pass` | mutex held; contender executes single-pass inline (no deferral) | reason: "mutex_held", elapsed_ms |
+| `degraded_to_single_pass` | fan-out abandoned for single-pass | reason (stage name or cause, e.g. all_specialists_failed), failed_stage ∈ {wave, verifier, synthesizer} |
+| `concurrency_single_pass` | mutex held; contender executes single-pass inline (no deferral) | reason ∈ {"mutex_held", "mutex_held_no_budget"}, elapsed_ms |
 | `degraded_no_budget` | no budget left even for fallback (terminal) | reason, elapsed_ms |
 | `review_published` | canonical comment PATCHed | comment_id |
 
@@ -536,9 +555,11 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
   REVIEW outcome (the single-pass publish that precedes the shadow), `pipeline` is the discriminator,
   and shadow telemetry lives in events. `review_skipped {reason: "phase0_no_budget"}` is an EVENT,
   never a row class — it writes no index row.
-- Single-pass fallback emits `review_started`, `degraded_to_single_pass`, `checkpoint {published,
-  finalized}`, `review_published` — never `agent_*`/`verification_*` — so every archived run renders on
-  the replay site.
+- Single-pass fallback runs emit `review_started`, `degraded_to_single_pass`, the worker's usual
+  stage checkpoints (`established` → `finalized` as each stage is reached), `review_published` —
+  the fallback closure itself emits only `review_started`/`degraded_to_single_pass` and returns
+  content; it never emits `agent_*`/`verification_*` — so every archived run renders on the replay
+  site.
 
 ### Candidate Finding JSON Schema (Specialists Output)
 ```json
@@ -651,7 +672,7 @@ never silently forwarded into the synthesizer prompt.
         ├── Path: `/api/runs/{pr}/latest` (Index Query)
         │         └── Headers: `Authorization: Bearer <token>` (REQUIRED)
         │         └── Queries: DynamoDB GSI `pr-runs-index`
-        │         └── Returns: `{"run_id", "sha", "status", "archive_s3_key"}`
+        │         └── Returns: `{"run_id", "sha", "status", "pipeline", "archive_s3_key"}`
         │
         └── Path: `/runs/{pr}/{sha}/{run_id}/{file}`
                   └── Headers: `Authorization: Bearer <token>` (REQUIRED)
@@ -749,7 +770,7 @@ beyond `review_started` / `checkpoint` / `review_published`.
    - Add permission statement `lambda:InvokeFunction` with condition `lambda:InvokedViaFunctionUrl = true`.
    - Viewer IAM role: `s3:GetObject` on `runs/*` and `static/*`; `dynamodb:Query` on GSI ARN;
      `ssm:GetParameter` on token ARN plus `kms:Decrypt` on the parameter's KMS key ARN (§7).
-7. **Environment Variables:**
+7. **Environment Variables (12):**
    - `MULTI_AGENT` (0/1), `MULTI_AGENT_PHASE0` (0/1), `FANOUT_CONCURRENCY` (default 3),
    - `MUTEX_LEASE_TTL_S` (default 900 — see the lease TTL pin under §Concurrency Resolution),
    - `REASONING_MAX_CHARS` (default 4000), `REASONING_EFFORT` (default `low` — PROVISIONAL until the
@@ -762,6 +783,11 @@ beyond `review_started` / `checkpoint` / `review_published`.
 8. **Alarm Recalibration:** Recalibrate daily LLM-spend alarm in the same PR.
 
 ## 9. GLM API Constraints & `llm.py` Modifications
+
+Boundary classification (pinned 2026-09-26, self-audit): both new error classes below ("length",
+"rate_limit") are retryable transients at the worker boundary (the existing `is_retryable()` default
+for unknown classes) with no D2 notice row; SQS redelivery bounds them. Mars may reclassify at the
+Phase-0 review.
 
 ### Required Changes to `lambda/common/llm.py`
 1. **Configurable Read Timeout (rewritten 2026-09-26, gate 5 — supersedes the stale
