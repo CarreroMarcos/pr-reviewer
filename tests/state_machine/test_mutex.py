@@ -61,7 +61,7 @@ GUID_B = "bbbbbbbb-2222-4222-8222-222222222222"
 ACQUIRE_UPDATE = "SET owner = :owner, token = :token, lease_until = :until"
 ACQUIRE_CONDITION = "attribute_not_exists(pk) OR lease_until < :steal_before"
 REFRESH_UPDATE = "SET lease_until = :until"
-TOKEN_CONDITION = "token = :token"
+TOKEN_CONDITION = "token = :token"  # noqa: S105 (expression shape, not a credential)
 
 
 class MutexTable:
@@ -101,8 +101,7 @@ class MutexTable:
         if (UpdateExpression, ConditionExpression) == (ACQUIRE_UPDATE, ACQUIRE_CONDITION):
             steal_before = values[":steal_before"]
             held = current is not None and (
-                current.get("lease_until") is not None
-                and current["lease_until"] >= steal_before
+                current.get("lease_until") is not None and current["lease_until"] >= steal_before
             )
             if held:
                 raise ConditionalCheckFailed(f"mutex held: {pk}")
@@ -140,7 +139,7 @@ class MutexTable:
         return {}
 
 
-def seed(table, *, owner=GUID_A, token="tok-seed", lease_until):
+def seed(table, *, owner=GUID_A, token="tok-seed", lease_until):  # noqa: S107 (fixture default)
     table.items[MUTEX_PK] = {
         "pk": MUTEX_PK,
         "owner": owner,
@@ -182,9 +181,9 @@ def test_acquire_default_ttl_is_the_constant():
 
 def test_acquire_token_override_rides_verbatim():
     table = MutexTable()
-    lease = acquire(table, owner=GUID_A, now=T, token="fixed-token")
-    assert lease.token == "fixed-token"
-    assert table.items[MUTEX_PK]["token"] == "fixed-token"
+    lease = acquire(table, owner=GUID_A, now=T, token="fixed-token")  # noqa: S106 (fixture)
+    assert lease.token == "fixed-token"  # noqa: S105 (fixture comparison)
+    assert table.items[MUTEX_PK]["token"] == "fixed-token"  # noqa: S105 (fixture comparison)
 
 
 def test_acquire_small_ttl_seam():
@@ -202,8 +201,8 @@ def test_acquire_held_lease_returns_none_and_preserves_row():
 
 def test_acquire_expired_takeover_rewrites_same_shape_with_fresh_token():
     table = MutexTable()
-    seed(table, owner=GUID_A, token="tok-old", lease_until=T - 31)
-    lease = acquire(table, owner=GUID_B, now=T, token="tok-new")
+    seed(table, owner=GUID_A, token="tok-old", lease_until=T - 31)  # noqa: S106 (fixture)
+    lease = acquire(table, owner=GUID_B, now=T, token="tok-new")  # noqa: S106 (fixture)
     assert (lease.owner, lease.token, lease.lease_until) == (GUID_B, "tok-new", T + 900)
     assert set(table.items[MUTEX_PK]) == {"pk", "owner", "lease_until", "token"}
 
@@ -236,17 +235,21 @@ def test_acquire_steal_threshold_is_thirty_seconds_in_the_past():
 
 def test_refresh_extends_lease_on_token_match():
     table = MutexTable()
-    lease = acquire(table, owner=GUID_A, now=T, token="tok-a")
+    lease = acquire(table, owner=GUID_A, now=T, token="tok-a")  # noqa: S106 (fixture)
     renewed = refresh(table, lease=lease, now=T + 200)
-    assert renewed == Lease(owner=GUID_A, token="tok-a", lease_until=T + 200 + 900)
+    assert (renewed.owner, renewed.token, renewed.lease_until) == (
+        GUID_A,
+        "tok-a",
+        T + 200 + 900,
+    )
     assert table.items[MUTEX_PK]["lease_until"] == T + 200 + 900
-    assert table.items[MUTEX_PK]["token"] == "tok-a"
+    assert table.items[MUTEX_PK]["token"] == "tok-a"  # noqa: S105 (fixture comparison)
 
 
 def test_refresh_token_mismatch_returns_none_and_preserves_row():
     table = MutexTable()
-    before = seed(table, owner=GUID_A, token="tok-a", lease_until=T + 900)
-    lost = Lease(owner=GUID_A, token="tok-other", lease_until=T + 900)
+    before = seed(table, owner=GUID_A, token="tok-a", lease_until=T + 900)  # noqa: S106 (fixture)
+    lost = Lease(owner=GUID_A, token="tok-other", lease_until=T + 900)  # noqa: S106 (fixture)
     assert refresh(table, lease=lost, now=T + 200) is None
     assert table.items[MUTEX_PK] == before
 
@@ -286,15 +289,15 @@ def test_release_removes_row_and_frees_acquire():
 
 def test_release_wrong_token_fails_and_preserves_row():
     table = MutexTable()
-    before = seed(table, owner=GUID_A, token="tok-a", lease_until=T + 900)
-    impostor = Lease(owner=GUID_B, token="tok-b", lease_until=T + 900)
+    before = seed(table, owner=GUID_A, token="tok-a", lease_until=T + 900)  # noqa: S106 (fixture)
+    impostor = Lease(owner=GUID_B, token="tok-b", lease_until=T + 900)  # noqa: S106 (fixture)
     assert release(table, lease=impostor) is False
     assert table.items[MUTEX_PK] == before
 
 
 def test_release_missing_row_fails():
     table = MutexTable()
-    ghost = Lease(owner=GUID_A, token="tok-ghost", lease_until=T + 900)
+    ghost = Lease(owner=GUID_A, token="tok-ghost", lease_until=T + 900)  # noqa: S106 (fixture)
     assert release(table, lease=ghost) is False
 
 
