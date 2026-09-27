@@ -22,8 +22,8 @@ from common.findings import (
     FindingsError,
     clamp_to_post_image,
     make_candidate_id,
-    parse_candidate_id,
     parse_candidate_findings,
+    parse_candidate_id,
 )
 
 REQUIRED_KEYS = (
