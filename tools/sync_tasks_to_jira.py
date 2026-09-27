@@ -22,7 +22,10 @@ TASK_RE = re.compile(r"^- \[[ xX]\] (T\d+[a-z]?)(?: \[P\])?(?: \[US(\d+)\])? (.+
 
 def tid_num(tid: str) -> int:
     """Numeric part of a T-id; tolerates letter suffixes (T010a -> 10)."""
-    return int(re.match(r"\d+", tid[1:]).group())
+    m = re.match(r"\d+", tid[1:])
+    if not m:
+        sys.exit(f"unparsable T-id {tid!r}: expected T<digits>[letter suffix]")
+    return int(m.group())
 
 
 def env(name: str) -> str:
