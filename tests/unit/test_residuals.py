@@ -7,8 +7,6 @@ caller can turn into events (never raised, never silently dropped).
 `docs/accepted-residuals.md` does not exist yet, so fixtures below
 define the representative shape and missing-file → empty is live
 specified behavior.
-
-RED state: `common.residuals` does not exist — collection errors.
 """
 
 import pytest
