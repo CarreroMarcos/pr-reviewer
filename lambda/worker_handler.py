@@ -81,23 +81,33 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
-from common.config import ConfigError, ConfigProvider
+from common.config import ConfigError, ConfigProvider, multi_agent_config
 from common.diff import DiffError, fetch_diff, fetch_pr_head_sha
 from common.envelope import Envelope, EnvelopeError, validate_envelope
+from common.events import (
+    checkpoint,
+    degraded_no_budget,
+    degraded_to_single_pass,
+    review_published,
+    review_started,
+)
 from common.failure_notice import (
     NoticeDisposition,
     NoticeTrigger,
     notice_phase,
     publish_failure_notice,
 )
+from common.fanout import FanoutDegraded, run_fanout, single_pass_budget_ok
 from common.llm import LlmError, _read_timeout_s, review_diff
 from common.logs import build_event, emit, prompt_sha256
 from common.marker import build_marker
@@ -109,6 +119,7 @@ from common.reconcile import (
     reconcile,
     validate_page,
 )
+from common.residuals import load_accepted_residuals, residuals_for
 from common.state import build_clear_comment_expressions, expression_names, review_pk
 from common.validate import PROMPT_VERSION
 
@@ -425,6 +436,69 @@ def _github_write(
     return _parse_comment_id(raw)
 
 
+# Multi-agent fan-out wiring (HLD-004 §5, T023). Fixed specialty order —
+# the wave, candidate IDs, and prompt composition all depend on it.
+_FANOUT_SPECIALTIES = ("correctness", "security", "tests")
+
+# `FanoutDegraded.failed_stage` values the closure degrades (Gate-13
+# contract 1): the sequencer's budget gates plus its stage legs. Anything
+# else re-raises loud — never mislabeled into an event (ADV-4).
+_FANOUT_KNOWN_STAGES = frozenset({"wave", "verifier", "synthesizer"})
+
+_FANOUT_PROMPT_FILES = {
+    "correctness": "specialist_correctness.md",
+    "security": "specialist_security.md",
+    "tests": "specialist_tests.md",
+    "verifier": "verifier.md",
+    "synthesizer": "synthesizer.md",
+}
+
+_RESIDUALS_FILENAME = "accepted-residuals.md"
+
+
+def _load_fanout_prompts() -> dict[str, str]:
+    """Production fan-out template source: the five `prompts/*.md` files.
+
+    Same two-layout resolution as `_load_system_prompt` (zip first, repo
+    checkout second). A missing or undecodable file is a permanent config
+    fault (complete, alert) — never an empty prompt. Tests inject
+    `fanout_prompts` instead.
+    """
+    here = Path(__file__).resolve().parent
+    prompts: dict[str, str] = {}
+    for key, filename in _FANOUT_PROMPT_FILES.items():
+        for candidate in (here / "prompts" / filename, here.parent / "prompts" / filename):
+            try:
+                prompts[key] = candidate.read_text(encoding="utf-8")
+                break
+            except (OSError, UnicodeDecodeError):
+                continue
+        else:
+            raise ConfigError("fanout_prompt", "missing") from None
+    return prompts
+
+
+def _load_residuals_for(repo_full_name: str, pr_number: int) -> list[str]:
+    """Accepted-residual lines for this PR (HLD D7; T010b parser).
+
+    The committed `docs/accepted-residuals.md` ships in the Lambda bundle;
+    Same two-layout resolution as the prompts. The first layout whose
+    file EXISTS wins — its parse is AUTHORITATIVE even when empty (a
+    successful parse with zero rows means zero residuals); fall through
+    only on file-not-found. Nothing anywhere yields `[]` (T010b: missing
+    → `[]`, malformed lines skipped inside the parser, never fatal).
+    """
+    here = Path(__file__).resolve().parent
+    for candidate in (
+        here / "docs" / _RESIDUALS_FILENAME,
+        here.parent / "docs" / _RESIDUALS_FILENAME,
+    ):
+        if not candidate.is_file():
+            continue
+        return residuals_for(load_accepted_residuals(candidate), repo_full_name, pr_number)
+    return []
+
+
 def _make_review(
     *,
     envelope: Envelope,
@@ -437,6 +511,9 @@ def _make_review(
     clock: Clock | None = None,
     github_transport: Callable[..., tuple[int, bytes]] | None = None,
     remaining_time_ms: Callable[[], int] | None = None,
+    events: list[dict[str, Any]] | None = None,
+    run_id: str | None = None,
+    fanout_prompts: Mapping[str, str] | None = None,
 ) -> Callable[[str, int], str]:
     """Protocol `review` port: diff → prior comment → LLM (single 401
     re-fetch, plus one immediate in-executor retry on `timeout` when the
@@ -449,7 +526,16 @@ def _make_review(
     (older callers) omits the prior section. `remaining_time_ms` is the
     Lambda `context.get_remaining_time_in_millis` callable threaded from
     the entry point; `None` (older callers, unit doubles) disables the
-    timeout retry — today's queue-redelivery behavior, unchanged."""
+    timeout retry — today's queue-redelivery behavior, unchanged.
+
+    Multi-agent (HLD-004 §5, T023): when `MULTI_AGENT=1`, the closure
+    attempts `run_fanout` first and degrades to the existing single-pass
+    inline path on `FanoutDegraded`. `events` is the caller-owned
+    multi-agent event list (a fresh list per invocation when `None` —
+    dropped on the floor unless the caller keeps it); `run_id` is the
+    run's uuid4-hex id (generated per invocation when `None`);
+    `fanout_prompts` carries the five production templates (tests inject
+    sentinels; production loads `prompts/*.md` from disk)."""
 
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
@@ -584,7 +670,32 @@ def _make_review(
         return min(matches, key=lambda c: c["id"])["body"]
 
     def review(head_sha: str, generation: int) -> str:
+        # One run, one event stream: closure-owned stages (review_started,
+        # checkpoints, degraded_*) and the sequencer's stage-owned events
+        # share the caller's list (fresh per invocation when unprovided).
+        # Invocation proves establishment — run_review calls review() only
+        # after _establish succeeds.
+        rid = run_id or uuid.uuid4().hex
+        evts = events if events is not None else []
+        now = clock if clock is not None else time.time
+        evts.append(checkpoint(stage="established", run_id=rid))
         diff_result = _fetch_diff()
+        evts.append(
+            review_started(
+                pr=pr_number,
+                sha=head_sha,
+                diff_stats={
+                    "files": len(diff_result.files),
+                    "additions": diff_result.total_additions,
+                    "deletions": diff_result.total_deletions,
+                },
+                run_id=rid,
+            )
+        )
+        evts.append(checkpoint(stage="diff_fetched", run_id=rid))
+        ma_cfg = multi_agent_config()
+        if ma_cfg.multi_agent == 1:
+            return _fanout_content(diff_result, head_sha, generation, ma_cfg, rid, evts, now)
         prior_comment = _fetch_prior_comment()
         payload = render_review_payload(
             title=diff_result.title,
@@ -603,6 +714,121 @@ def _make_review(
             now=(clock if clock is not None else time.time)(),
         )
         return comment.content
+
+    def _fanout_content(
+        diff_result: Any,
+        head_sha: str,
+        generation: int,
+        ma_cfg: Any,
+        rid: str,
+        evts: list[dict[str, Any]],
+        now: Clock,
+    ) -> str:
+        """Fan-out attempt with single-pass fallback (HLD §5 wiring pin).
+
+        `run_fanout` runs the full pipeline and returns the synthesizer
+        comment body (wrapped below by the EXISTING assemble + validate
+        gate, unchanged). Its `FanoutDegraded` is caught HERE ONLY: the
+        terminal `degraded_to_single_pass` event is emitted (the sequencer
+        emits none of its own), the failure reason/stage propagate
+        unchanged onto the event, then the D9 pre-fallback budget gate
+        decides — pass: the existing single-pass inline path runs and its
+        content returns; fail: `degraded_no_budget` is emitted and the
+        `FanoutDegraded` re-raises (terminal for this attempt — the queue
+        owns the retry with a fresh budget on redelivery).
+
+        An unknown `failed_stage` re-raises immediately: it is never
+        mislabeled into an event and no fallback is attempted (ADV-4).
+        """
+        t0 = now()
+        cfg_snapshot = creds.current()
+        prompts = fanout_prompts if fanout_prompts is not None else _load_fanout_prompts()
+        context = (
+            SimpleNamespace(get_remaining_time_in_millis=remaining_time_ms)
+            if remaining_time_ms is not None
+            else None
+        )
+        try:
+            fanout_body = run_fanout(
+                diff_result,
+                _load_residuals_for(repo, pr_number),
+                ma_cfg,
+                context,
+                run_id=rid,
+                api_key=cfg_snapshot.glm_api_key,
+                model=cfg_snapshot.glm_model,
+                endpoint=cfg_snapshot.glm_endpoint,
+                events=evts,
+                specialist_templates={
+                    specialty: prompts[specialty] for specialty in _FANOUT_SPECIALTIES
+                },
+                verifier_template=prompts["verifier"],
+                synth_template=prompts["synthesizer"],
+                # Post-image lengths have no pipeline source (the /files
+                # entries carry counts, not totals): the clamp passes
+                # everything through and the verifier re-anchors per HLD
+                # :535-537. The mapping itself is always real — never None.
+                file_lengths={},
+                allowed_hosts=allowed_hosts,
+            )
+        except FanoutDegraded as exc:
+            if exc.failed_stage not in _FANOUT_KNOWN_STAGES:
+                raise
+            evts.append(
+                degraded_to_single_pass(
+                    reason=exc.reason, failed_stage=exc.failed_stage, run_id=rid
+                )
+            )
+            remaining = _safe_remaining_ms()
+            if remaining is None or not single_pass_budget_ok(remaining, ma_cfg):
+                elapsed_ms = max(0, int((now() - t0) * 1000))
+                evts.append(
+                    degraded_no_budget(
+                        reason="insufficient_budget", elapsed_ms=elapsed_ms, run_id=rid
+                    )
+                )
+                raise
+            prior_comment = _fetch_prior_comment()
+            payload = render_review_payload(
+                title=diff_result.title,
+                body=diff_result.body,
+                diff_text=render_diff_text(diff_result),
+                prior_comment=prior_comment,
+            )
+            result = _call_llm(payload)
+            usage["tokens"] = result.total_tokens
+            comment = build_comment(
+                repo_full_name=repo,
+                pr_number=pr_number,
+                review_content=result.content,
+                truncated=diff_result.truncated,
+                review_number=generation + 1,
+                now=(clock if clock is not None else time.time)(),
+            )
+            return comment.content
+        comment = build_comment(
+            repo_full_name=repo,
+            pr_number=pr_number,
+            review_content=fanout_body,
+            truncated=diff_result.truncated,
+            review_number=generation + 1,
+            now=(clock if clock is not None else time.time)(),
+        )
+        return comment.content
+
+    def _safe_remaining_ms() -> int | None:
+        """Fail-closed remaining-time read (mirrors the `_call_llm`
+        timeout-retry guard): missing/unreadable/non-numeric clocks yield
+        `None`, and the pre-fallback gate treats `None` as exhausted."""
+        if remaining_time_ms is None:
+            return None
+        try:
+            remaining = remaining_time_ms()
+        except Exception:  # noqa: BLE001 (unreadable clock → no fallback)
+            return None
+        if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+            return None
+        return int(remaining)
 
     return review
 
@@ -1096,6 +1322,7 @@ def _process_record(
     sqs: Any = None,
     queue_url: str = "",
     remaining_time_ms: Callable[[], int] | None = None,
+    events: list[dict[str, Any]] | None = None,
 ) -> str:
     """Run one SQS record through the pipeline.
 
@@ -1131,9 +1358,38 @@ def _process_record(
     # PROMPT_VERSION keeps describing the code (validate.py).
     delivered_prompt_sha256 = prompt_sha256(system_prompt)
     creds = None
+    # One run, one event stream (HLD-004 §6, T023): the closure and the
+    # stage wrappers below share this per-record list. The caller may keep
+    # it (tests, and the T029 archive writer later); otherwise it drops.
+    record_events = events if events is not None else []
+    record_run_id = uuid.uuid4().hex
     try:
         creds = _Credentials(provider)
         pk = review_pk(envelope.repo_full_name, envelope.pr_number)
+        inner_fence = _make_fence(envelope=envelope, creds=creds, diff_transport=diff_transport)
+        inner_publish = _make_publish(
+            envelope=envelope,
+            creds=creds,
+            table=table,
+            pk=pk,
+            owner=envelope.delivery_guid,
+            clock=clock,
+            github_transport=github_transport,
+        )
+
+        def _evented_fence() -> str:
+            # run_review calls fence() strictly after the claim phase, so
+            # entry here marks `claimed` reached (discard paths never call).
+            result = inner_fence()
+            record_events.append(checkpoint(stage="claimed", run_id=record_run_id))
+            return result
+
+        def _evented_publish(content: Any) -> int:
+            comment_id = inner_publish(content)
+            record_events.append(checkpoint(stage="published", run_id=record_run_id))
+            record_events.append(review_published(comment_id=comment_id, run_id=record_run_id))
+            return comment_id
+
         outcome = run_review(
             pk=pk,
             incoming_sha=envelope.head_sha,
@@ -1151,18 +1407,16 @@ def _process_record(
                 clock=clock,
                 github_transport=github_transport,
                 remaining_time_ms=remaining_time_ms,
+                events=record_events,
+                run_id=record_run_id,
             ),
-            fence=_make_fence(envelope=envelope, creds=creds, diff_transport=diff_transport),
-            publish=_make_publish(
-                envelope=envelope,
-                creds=creds,
-                table=table,
-                pk=pk,
-                owner=envelope.delivery_guid,
-                clock=clock,
-                github_transport=github_transport,
-            ),
+            fence=_evented_fence,
+            publish=_evented_publish,
         )
+        if outcome.kind == OutcomeKind.PUBLISHED:
+            # Finalize wrote the record: `finalized` reached. The conflict
+            # variant never completes finalize, so it stays unmarked.
+            record_events.append(checkpoint(stage="finalized", run_id=record_run_id))
     except (DiffError, LlmError, GitHubError, ConfigError, AssembleError, ReconcileError) as exc:
         error_class = _error_class(exc)
         duration_ms = max(0, int((clock() - started) * 1000))
