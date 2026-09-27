@@ -1103,8 +1103,11 @@ def render_findings_section(merged: list[dict[str, Any]]) -> str:
     One `- [SEVERITY] \\`path:line\\` — title. Description. Fix: …`
     bullet per merged item, backticked location (the scorer REQUIRES
     backticked `path:LINE` — unbackticked locations parse as
-    unparsable), escalated items at ORIGINAL severity with the
-    `[Requires Verification]` marker. Empty input renders the
+    unparsable), the `[Requires Verification]` marker on any escalated
+    item: an UNMERGED escalated item renders at its ORIGINAL severity;
+    a merged group renders at group-max severity (the merge rule wins
+    for the bullet) and keeps the marker (the flag never drops).
+    Empty input renders the
     single-pass sentinel sentence (the scorer skips it: zero findings,
     zero unparsable).
     """

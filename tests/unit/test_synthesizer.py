@@ -254,6 +254,19 @@ def test_escalated_bullet_original_severity_with_marker():
     assert section.startswith("## Findings\n\n- [MEDIUM] `a.py:10` — [Requires Verification] ")
 
 
+def test_mixed_group_renders_group_max_severity_with_marker():
+    """Merge rule vs escalation-render rule interaction: a verified HIGH
+    twin of an escalated MEDIUM merges to ONE bullet at group-max
+    severity ("merge keeps highest severity") that still carries the
+    marker (the escalated flag never drops). The ORIGINAL-severity rule
+    governs UNMERGED escalated items (pinned above)."""
+    high = sv(cid="c:0", severity="HIGH", title="Race in cache flush")
+    med = sv(cid="s:0", severity="MEDIUM", title="Race in cache flush")
+    section = render_findings_section(dedupe_findings([high], [med]))
+    assert "- [HIGH] `a.py:10` — [Requires Verification] " in section
+    assert section.count("\n- ") == 1
+
+
 def test_multiline_fields_collapse_to_single_line():
     item = sv(title="First\nsecond", description="a\nb", suggested_fix="x\ny")
     section = render_findings_section(dedupe_findings([item], []))
