@@ -1,6 +1,6 @@
-"""Multi-agent fan-out stage (HLD-004 §5, D1, D9).
+"""Multi-agent fan-out stage (HLD-004 §5, D1, D3, D9).
 
-Two sections, kept separable:
+Three sections, kept separable:
 
 1. Elapsed-budget gates (D9 Cumulative Downstream Protection): pure
    predicates over Lambda remaining time that decide proceed vs
@@ -9,12 +9,16 @@ Two sections, kept separable:
    per-invocation `ThreadPoolExecutor` (runtime-fix pattern verbatim),
    fresh `asyncio.run` per call, events emitted ONLY from the coroutines
    on the loop thread, ≥2-survivor rule with `FanoutDegraded` fallback.
+3. Verifier stage (D3): one falsification leg over the same pool/loop
+   machinery, closed-schema validation of the model verdict, policy
+   routing (HIGH never killed; kills need cited reasons), post-image
+   re-anchor counting onto `verification_done`.
 
-Verifier/synthesizer orchestration (`run_fanout`) lands in later
-tickets and will call both sections at each stage boundary.
+Sequencer assembly (`run_fanout`) lands in a later ticket and will call
+these sections at each stage boundary.
 
-Pure stdlib, no I/O, no logging. Event emission here is the wave's own
-stage events (T015's duty); downstream stages emit theirs.
+Pure stdlib, no I/O, no logging. Event emission here is each stage's
+own events; downstream stages emit theirs.
 """
 
 from __future__ import annotations
@@ -36,6 +40,8 @@ from common.events import (
     agent_reasoning,
     agent_started,
     degraded_to_single_pass,
+    verification_done,
+    verification_failed,
 )
 from common.findings import FindingsError, parse_candidate_findings
 from common.llm import LlmError, ReviewResult
@@ -369,6 +375,425 @@ def run_wave(
                 system_prompts=system_prompts,
                 diff_text=diff_text,
                 specialties=specialties,
+                events=events,
+                read_timeout_s=read_timeout_s,
+                effort=effort,
+                allowed_hosts=allowed_hosts,
+            )
+        )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+# Verifier stage (HLD-004 D3). reroute marker: fixed system provenance
+# for kills the policy refuses (HIGH, or reasonless) — the downstream
+# synthesizer renders it beside [Requires Verification].
+_POLICY_REROUTE_NOTE = "rerouted by policy: kill lacked evidence citation"
+
+_VERIFIED_FIELDS = frozenset(
+    {
+        "candidate_id",
+        "file_path",
+        "line_start",
+        "line_end",
+        "title",
+        "description",
+        "suggested_fix",
+        "severity",
+        "category",
+        "verification_note",
+    }
+)
+_KILLED_FIELDS = frozenset({"candidate_id", "kill_reason"})
+_ESCALATED_FIELDS = frozenset(
+    {
+        "candidate_id",
+        "file_path",
+        "line_start",
+        "line_end",
+        "title",
+        "description",
+        "suggested_fix",
+        "severity",
+        "category",
+        "escalation_reason",
+    }
+)
+_VERDICT_KEYS = frozenset({"verified", "killed", "escalated"})
+
+
+class _VerifierFailure(Exception):
+    """One verifier leg failed with a known class: the collector emits
+    `verification_failed` and raises `FanoutDegraded`. Internal
+    control flow only — never crosses the stage boundary."""
+
+    def __init__(self, error_class: str, latency_ms: int) -> None:
+        self.error_class = error_class
+        self.latency_ms = latency_ms
+        super().__init__(f"verifier leg failed: {error_class}")
+
+
+class _InvalidOutput(Exception):
+    """Model verdict violated the closed §6 schema or the echo contract.
+    Raised during validation; converted to `_VerifierFailure` with the
+    uniform `invalid_response` class at the single conversion point."""
+
+    pass
+
+
+def _require_str(item: dict[str, Any], key: str) -> str:
+    value = item.get(key)
+    if not isinstance(value, str):
+        raise _InvalidOutput(f"bad {key}")
+    return value
+
+
+def _require_line(item: dict[str, Any], key: str) -> int:
+    # Integer coordinates, bools excluded. NO minimum: the §6 verifier
+    # item schema shows no minimum (unlike the candidate schema) —
+    # re-anchoring and the downstream clamp own ranges, not this gate.
+    value = item.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise _InvalidOutput(f"bad {key}")
+    return value
+
+
+def _check_verified_item(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict) or set(item) != _VERIFIED_FIELDS:
+        raise _InvalidOutput("bad verified item")
+    # Severity/category ride through as strings (Gate-6(c): no
+    # category-vs-specialty runtime check v1) — enums stay prompt
+    # contract, exactly as the §6 verifier schema (plain strings).
+    return {
+        "candidate_id": _require_str(item, "candidate_id"),
+        "file_path": _require_str(item, "file_path"),
+        "line_start": _require_line(item, "line_start"),
+        "line_end": _require_line(item, "line_end"),
+        "title": _require_str(item, "title"),
+        "description": _require_str(item, "description"),
+        "suggested_fix": _require_str(item, "suggested_fix"),
+        "severity": _require_str(item, "severity"),
+        "category": _require_str(item, "category"),
+        "verification_note": _require_str(item, "verification_note"),
+    }
+
+
+def _check_killed_item(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict) or set(item) != _KILLED_FIELDS:
+        raise _InvalidOutput("bad killed item")
+    return {
+        "candidate_id": _require_str(item, "candidate_id"),
+        "kill_reason": _require_str(item, "kill_reason"),
+    }
+
+
+def _check_escalated_item(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict) or set(item) != _ESCALATED_FIELDS:
+        raise _InvalidOutput("bad escalated item")
+    return {
+        "candidate_id": _require_str(item, "candidate_id"),
+        "file_path": _require_str(item, "file_path"),
+        "line_start": _require_line(item, "line_start"),
+        "line_end": _require_line(item, "line_end"),
+        "title": _require_str(item, "title"),
+        "description": _require_str(item, "description"),
+        "suggested_fix": _require_str(item, "suggested_fix"),
+        "severity": _require_str(item, "severity"),
+        "category": _require_str(item, "category"),
+        "escalation_reason": _require_str(item, "escalation_reason"),
+    }
+
+
+def _validate_verifier_output(
+    payload: Any, known_ids: frozenset[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Closed-schema + echo validation (§6 Verifier Output pin).
+
+    Top level is exactly {verified, killed, escalated} arrays; every
+    item carries exactly its array's properties (unknown fields fail,
+    never forward); every `candidate_id` is echoed exactly once across
+    all three arrays — unknown, duplicated, or omitted IDs fail.
+    Raises `_InvalidOutput` on any violation.
+    """
+    if not isinstance(payload, dict) or set(payload) != _VERDICT_KEYS:
+        raise _InvalidOutput("bad verdict shape")
+    checkers = {
+        "verified": _check_verified_item,
+        "killed": _check_killed_item,
+        "escalated": _check_escalated_item,
+    }
+    validated: dict[str, list[dict[str, Any]]] = {}
+    for key in ("verified", "killed", "escalated"):
+        items = payload[key]
+        if not isinstance(items, list):
+            raise _InvalidOutput(f"bad {key}")
+        validated[key] = [checkers[key](item) for item in items]
+    seen: dict[str, str] = {}
+    for key in ("verified", "killed", "escalated"):
+        for item in validated[key]:
+            cid = item["candidate_id"]
+            if cid in seen or cid not in known_ids:
+                raise _InvalidOutput("bad candidate_id echo")
+            seen[cid] = key
+    if set(seen) != set(known_ids):
+        # MUST-echo violation (HLD §6): an assigned ID with no verdict
+        # is malformed output — never a silent drop.
+        raise _InvalidOutput("incomplete candidate_id echo")
+    return validated
+
+
+def _route_verdict(
+    validated: dict[str, list[dict[str, Any]]],
+    by_id: Mapping[str, dict[str, Any]],
+) -> tuple[dict[str, list[dict[str, Any]]], int]:
+    """Apply the D3 kill policy + count re-anchors.
+
+    HIGH-severity kills reroute to escalated (never killed, no
+    exceptions); MEDIUM/LOW kills stand ONLY with a non-empty
+    kill_reason (the evidence-citation substance is prompt contract) —
+    reasonless kills reroute to escalated, never fail. Rerouted items
+    are rebuilt from the trusted candidate coordinates (killed items
+    carry none) with the model's reason preserved, or the fixed policy
+    marker when there is none. Returns (verdict, reanchored_n) where
+    reanchored_n counts verified/escalated items whose coordinates
+    differ from the assigned candidate's.
+    """
+    verdict = {
+        "verified": list(validated["verified"]),
+        "killed": [],
+        "escalated": list(validated["escalated"]),
+    }
+    for item in validated["killed"]:
+        cid = item["candidate_id"]
+        candidate = by_id[cid]
+        reason = item["kill_reason"]
+        if candidate.get("severity") == "HIGH" or not reason:
+            verdict["escalated"].append(
+                {
+                    "candidate_id": cid,
+                    "file_path": candidate["file_path"],
+                    "line_start": candidate["line_start"],
+                    "line_end": candidate["line_end"],
+                    "title": candidate["title"],
+                    "description": candidate["description"],
+                    "suggested_fix": candidate["suggested_fix"],
+                    "severity": candidate["severity"],
+                    "category": candidate["category"],
+                    "escalation_reason": reason or _POLICY_REROUTE_NOTE,
+                }
+            )
+        else:
+            verdict["killed"].append({"candidate_id": cid, "kill_reason": reason})
+    reanchored_n = 0
+    for item in verdict["verified"] + verdict["escalated"]:
+        candidate = by_id[item["candidate_id"]]
+        if (
+            item["file_path"],
+            item["line_start"],
+            item["line_end"],
+        ) != (
+            candidate["file_path"],
+            candidate["line_start"],
+            candidate["line_end"],
+        ):
+            reanchored_n += 1
+    return verdict, reanchored_n
+
+
+async def _verifier_coro(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    pool: ThreadPoolExecutor,
+    fn: Callable[..., ReviewResult],
+    run_id: str,
+    cfg: MultiAgentConfig,
+    api_key: str,
+    model: str,
+    endpoint: str,
+    verifier_prompt: str,
+    diff_text: str,
+    read_timeout_s: int,
+    effort: str,
+    allowed_hosts: frozenset[str] | None,
+) -> tuple[dict[str, Any], int, int]:
+    """One falsification leg — same authorship discipline as the wave:
+    the sync provider call dispatches to the pool while this coroutine,
+    on the loop thread, awaits it. Returns (parsed payload, tokens_in,
+    tokens_out). Raises `_VerifierFailure` for typed provider faults
+    and malformed model output; cancellation (window expiry) propagates
+    for the collector to record."""
+    start = time.monotonic()
+    try:
+        result = await loop.run_in_executor(
+            pool,
+            functools.partial(
+                fn,
+                api_key=api_key,
+                model=model,
+                endpoint=endpoint,
+                system_prompt=verifier_prompt,
+                diff_text=diff_text,
+                thinking_enabled=True,
+                reasoning_effort=effort,
+                read_timeout_s=read_timeout_s,
+                allowed_hosts=allowed_hosts,
+            ),
+        )
+    except asyncio.CancelledError:
+        raise
+    except LlmError as exc:
+        # Single attempt, NO retry (a 429/1302 here fails fast to the
+        # fallback path, same as the wave).
+        raise _VerifierFailure(exc.error_class, _latency_ms(start)) from None
+    except Exception as exc:
+        raise _VerifierFailure("unknown", _latency_ms(start)) from exc
+    try:
+        payload = json.loads(result.content)
+    except ValueError as exc:
+        raise _VerifierFailure("invalid_response", _latency_ms(start)) from exc
+    return payload, result.prompt_tokens, result.completion_tokens
+
+
+async def _verify_async(
+    *,
+    run_id: str,
+    cfg: MultiAgentConfig,
+    pool: ThreadPoolExecutor,
+    fn: Callable[..., ReviewResult],
+    api_key: str,
+    model: str,
+    endpoint: str,
+    verifier_prompt: str,
+    candidates: list[dict[str, Any]],
+    diff_text: str,
+    wave_survivors: int,
+    events: list[dict[str, Any]],
+    read_timeout_s: int,
+    effort: str,
+    allowed_hosts: frozenset[str] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    start = time.monotonic()
+    by_id = {candidate["candidate_id"]: candidate for candidate in candidates}
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(
+        _verifier_coro(
+            loop=loop,
+            pool=pool,
+            fn=fn,
+            run_id=run_id,
+            cfg=cfg,
+            api_key=api_key,
+            model=model,
+            endpoint=endpoint,
+            verifier_prompt=verifier_prompt,
+            diff_text=diff_text,
+            read_timeout_s=read_timeout_s,
+            effort=effort,
+            allowed_hosts=allowed_hosts,
+        )
+    )
+    _, pending = await asyncio.wait(
+        {task}, timeout=cfg.verifier_wait_for_s, return_when=asyncio.ALL_COMPLETED
+    )
+    if pending:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        latency_ms = _latency_ms(start)
+        events.append(
+            verification_failed(error_class="timeout", latency_ms=latency_ms, run_id=run_id)
+        )
+        raise FanoutDegraded("timeout", "verifier")
+    try:
+        payload, tokens_in, tokens_out = task.result()
+    except _VerifierFailure as exc:
+        events.append(
+            verification_failed(
+                error_class=exc.error_class, latency_ms=exc.latency_ms, run_id=run_id
+            )
+        )
+        raise FanoutDegraded(exc.error_class, "verifier") from None
+    try:
+        validated = _validate_verifier_output(payload, frozenset(by_id))
+    except _InvalidOutput:
+        latency_ms = _latency_ms(start)
+        events.append(
+            verification_failed(
+                error_class="invalid_response", latency_ms=latency_ms, run_id=run_id
+            )
+        )
+        raise FanoutDegraded("invalid_response", "verifier") from None
+    verdict, reanchored_n = _route_verdict(validated, by_id)
+    events.append(
+        verification_done(
+            survived_n=len(verdict["verified"]),
+            killed_n=len(verdict["killed"]),
+            escalated_n=len(verdict["escalated"]),
+            wave_survivors=wave_survivors,
+            latency_ms=_latency_ms(start),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            verified=verdict["verified"],
+            killed=verdict["killed"],
+            escalated=verdict["escalated"],
+            coordinates_reanchored_n=reanchored_n,
+            run_id=run_id,
+        )
+    )
+    return verdict
+
+
+def run_verifier(
+    *,
+    run_id: str,
+    cfg: MultiAgentConfig,
+    api_key: str,
+    model: str,
+    endpoint: str,
+    verifier_prompt: str,
+    candidates: list[dict[str, Any]],
+    diff_text: str,
+    wave_survivors: int,
+    events: list[dict[str, Any]],
+    review_fn: Callable[..., ReviewResult] | None = None,
+    allowed_hosts: frozenset[str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Run the falsification stage: one verifier leg over an explicit
+    per-invocation pool (max_workers=1), fresh `asyncio.run` per call,
+    closed-schema validation of the model verdict, D3 policy routing.
+
+    `candidates` carry assigned `candidate_id`s (run_fanout's
+    post-wave assignment — never model-generated); every ID must be
+    echoed exactly once. `wave_survivors` is wave data carried onto the
+    `verification_done` event. The socket budget is the
+    `_read_timeout_s()` resolution, resolved ONCE here and passed
+    explicitly (HLD §9 item 1).
+
+    Returns {"verified", "killed", "escalated"}; any leg or validation
+    failure emits `verification_failed` and raises `FanoutDegraded`
+    for the review closure to catch.
+    """
+    fn = review_fn if review_fn is not None else llm.review_diff
+    read_timeout_s = llm._read_timeout_s()
+    # ADV-9 (first wiring PR): env-sourced effort rides stripped.
+    effort = cfg.reasoning_effort.strip()
+    pool = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix=f"fanout-{run_id[:8]}",
+    )
+    try:
+        return asyncio.run(
+            _verify_async(
+                run_id=run_id,
+                cfg=cfg,
+                pool=pool,
+                fn=fn,
+                api_key=api_key,
+                model=model,
+                endpoint=endpoint,
+                verifier_prompt=verifier_prompt,
+                candidates=candidates,
+                diff_text=diff_text,
+                wave_survivors=wave_survivors,
                 events=events,
                 read_timeout_s=read_timeout_s,
                 effort=effort,

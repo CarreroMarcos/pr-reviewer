@@ -184,21 +184,17 @@ def failed_events(events, type_name):
     return [e for e in events if e["type"] == type_name]
 
 
-# --- policy: HIGH never killed ---------------------------------------------------------------------------
+# --- policy: HIGH never killed -----------------------------------------------------
 
 
 def test_verified_item_passes_through():
+    escalated = verified_item("tests:0")
+    del escalated["verification_note"]
+    escalated["escalation_reason"] = "cannot reproduce offline"
     payload = {
         "verified": [verified_item("correctness:0")],
-        "killed": [
-            {"candidate_id": "security:0", "kill_reason": "no test covers it"}
-        ],
-        "escalated": [
-            {
-                **verified_item("tests:0"),
-                "escalation_reason": "cannot reproduce offline",
-            }
-        ],
+        "killed": [{"candidate_id": "security:0", "kill_reason": "no test covers it"}],
+        "escalated": [escalated],
     }
     outcome, events = result_of(ScriptedVerifierCall(("ok", payload)))
     assert len(outcome["verified"]) == 1
@@ -241,14 +237,12 @@ def test_high_kill_without_reason_escalates_with_marker():
         "killed": [{"candidate_id": "correctness:0", "kill_reason": ""}],
         "escalated": [],
     }
-    outcome, _ = result_of(
-        ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]]
-    )
+    outcome, _ = result_of(ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]])
     assert outcome["killed"] == []
     assert outcome["escalated"][0]["escalation_reason"] == REROUTE_MARKER
 
 
-# --- policy: MEDIUM/LOW kills need cited reasons --------------------------------------------------------------
+# --- policy: MEDIUM/LOW kills need cited reasons -----------------------------------
 
 
 @pytest.mark.parametrize("cid", ["security:0", "tests:0"])
@@ -262,9 +256,7 @@ def test_medium_low_kill_with_reason_stays_killed(cid):
         ScriptedVerifierCall(("ok", payload)),
         candidates=[c for c in CANDIDATES if c["candidate_id"] == cid],
     )
-    assert outcome["killed"] == [
-        {"candidate_id": cid, "kill_reason": "no failing input exists"}
-    ]
+    assert outcome["killed"] == [{"candidate_id": cid, "kill_reason": "no failing input exists"}]
     assert outcome["escalated"] == []
     assert failed_events(events, "verification_done")[0]["killed_n"] == 1
 
@@ -272,7 +264,11 @@ def test_medium_low_kill_with_reason_stays_killed(cid):
 @pytest.mark.parametrize("cid", ["security:0", "tests:0"])
 def test_medium_low_kill_without_reason_escalates(cid):
     """The trap: a kill WITHOUT an evidence-citing reason must NOT stand."""
-    payload = {"verified": [], "killed": [{"candidate_id": cid, "kill_reason": ""}], "escalated": []}
+    payload = {
+        "verified": [],
+        "killed": [{"candidate_id": cid, "kill_reason": ""}],
+        "escalated": [],
+    }
     outcome, _ = result_of(
         ScriptedVerifierCall(("ok", payload)),
         candidates=[c for c in CANDIDATES if c["candidate_id"] == cid],
@@ -282,7 +278,7 @@ def test_medium_low_kill_without_reason_escalates(cid):
     assert outcome["escalated"][0]["escalation_reason"] == REROUTE_MARKER
 
 
-# --- re-anchoring count ----------------------------------------------------------------------------------------------
+# --- re-anchoring count ------------------------------------------------------------
 
 
 def test_reanchored_coordinates_counted():
@@ -303,9 +299,7 @@ def test_rerouted_items_not_counted_as_reanchored():
         "killed": [{"candidate_id": "correctness:0", "kill_reason": "doubt"}],
         "escalated": [],
     }
-    _, events = result_of(
-        ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]]
-    )
+    _, events = result_of(ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]])
     done = failed_events(events, "verification_done")[0]
     assert done["coordinates_reanchored_n"] == 0
     assert done["verified"] == []
@@ -315,13 +309,11 @@ def test_rerouted_items_not_counted_as_reanchored():
 def test_path_change_counts_as_reanchored():
     moved = verified_item("correctness:0", file_path="b.py")
     payload = {"verified": [moved], "killed": [], "escalated": []}
-    _, events = result_of(
-        ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]]
-    )
+    _, events = result_of(ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]])
     assert failed_events(events, "verification_done")[0]["coordinates_reanchored_n"] == 1
 
 
-# --- closed schema: never forwarded ---------------------------------------------------------------------------------------
+# --- closed schema: never forwarded ------------------------------------------------
 
 
 def test_top_level_extra_key_fails():
@@ -356,9 +348,7 @@ def test_killed_item_extra_field_fails():
         "escalated": [],
     }
     with pytest.raises(FanoutDegraded):
-        result_of(
-            ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[1]]
-        )
+        result_of(ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[1]])
 
 
 def test_non_list_arrays_fail():
@@ -387,12 +377,26 @@ def test_failure_emits_verification_failed_event():
 
 
 @pytest.mark.parametrize("field", ["line_start", "line_end"])
-@pytest.mark.parametrize("value", [0, -1, True, "10", 2.5, None])
-def test_bad_line_values_fail(field, value):
+@pytest.mark.parametrize("value", [True, "10", 2.5, None])
+def test_non_integer_line_values_fail(field, value):
     item = verified_item("correctness:0", **{field: value})
     payload = {"verified": [item], "killed": [], "escalated": []}
     with pytest.raises(FanoutDegraded):
         result_of(ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]])
+
+
+@pytest.mark.parametrize("field", ["line_start", "line_end"])
+@pytest.mark.parametrize("value", [0, -1])
+def test_no_minimum_on_verifier_lines(field, value):
+    """Schema-literal boundary (deliberate, not missed): the §6 verifier
+    item schema shows plain integers with NO minimum — unlike the
+    candidate schema's explicit minimum: 1. Re-anchoring is approximate
+    by nature and the downstream clamp owns ranges; enforcing a minimum
+    here would be invented validation. Ints (excluding bools) pass."""
+    item = verified_item("correctness:0", **{field: value})
+    payload = {"verified": [item], "killed": [], "escalated": []}
+    outcome, _ = result_of(ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]])
+    assert outcome["verified"][0][field] == value
 
 
 def test_non_string_field_fails():
@@ -407,14 +411,12 @@ def test_unusual_string_enums_pass_through():
     well-typed strings ride through untouched."""
     item = verified_item("correctness:0", severity="CRITICAL", category="style")
     payload = {"verified": [item], "killed": [], "escalated": []}
-    outcome, _ = result_of(
-        ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]]
-    )
+    outcome, _ = result_of(ScriptedVerifierCall(("ok", payload)), candidates=[CANDIDATES[0]])
     assert outcome["verified"][0]["severity"] == "CRITICAL"
     assert outcome["verified"][0]["category"] == "style"
 
 
-# --- candidate_id echo discipline ----------------------------------------------------------------------------------------------
+# --- candidate_id echo discipline --------------------------------------------------
 
 
 def test_unknown_candidate_id_fails():
@@ -451,7 +453,7 @@ def test_omitted_candidate_id_fails():
     assert excinfo.value.failed_stage == "verifier"
 
 
-# --- execution shape: one leg, no retry ----------------------------------------------------------------------------------------------
+# --- execution shape: one leg, no retry --------------------------------------------
 
 
 def test_single_llm_call_per_invocation():
@@ -520,8 +522,6 @@ def test_fresh_asyncio_run_per_invocation():
 
 
 def test_executor_prefix_workers_and_shutdown(monkeypatch):
-    import concurrent.futures
-
     seen = []
 
     class RecordingPool(concurrent.futures.ThreadPoolExecutor):
@@ -538,9 +538,7 @@ def test_executor_prefix_workers_and_shutdown(monkeypatch):
     monkeypatch.setattr(fanout_mod, "ThreadPoolExecutor", RecordingPool)
     run_id = uuid.uuid4().hex
     payload = {"verified": [], "killed": [], "escalated": []}
-    result_of(
-        ScriptedVerifierCall(("ok", payload)), cfg=make_cfg(), run_id=run_id, candidates=[]
-    )
+    result_of(ScriptedVerifierCall(("ok", payload)), cfg=make_cfg(), run_id=run_id, candidates=[])
     assert len(seen) == 1
     assert seen[0].init_kwargs["max_workers"] == 1
     assert seen[0].init_kwargs["thread_name_prefix"] == f"fanout-{run_id[:8]}"
