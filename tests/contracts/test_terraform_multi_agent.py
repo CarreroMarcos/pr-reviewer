@@ -21,7 +21,9 @@ multi-agent infrastructure surface:
 derives from the budget variable × the 5-call factor — value-agnostic
 until T042 snapshots the Mars-set number.)
 
-RED state: GSI/ESM-scaling/env-vars are absent — assertion failures.
+Commit-ladder note: these assertions failed red against the pre-GSI
+terraform (T031's creator commit, re-proven in a detached worktree); at
+this head they pin the final green surface.
 """
 
 import re
