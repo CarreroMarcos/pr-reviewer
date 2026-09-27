@@ -4,8 +4,6 @@ Fenced blocks + inline backtick spans stash to indexed `\x00CODE_SPAN_N\x00`
 placeholders and come back byte-identical; prose neutralizes exactly four
 constructs (`![img](url)`, `[link](url)`, `<http...>`); generics, JSX, and
 other angle-bracket text survive untouched.
-
-RED state: `common.sanitize` does not exist — collection errors.
 """
 
 import pytest
