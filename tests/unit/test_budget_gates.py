@@ -6,8 +6,6 @@ wave+verifier+synth+margin; pre-verifier covers verifier+synth+margin
 single-pass+margin. Thresholds are computed FROM the config constants so
 config changes re-pin the arithmetic; the 900s/810s/780s envelope
 numbers are the only literals (D9/task-text pins).
-
-RED state: `common.fanout` does not exist — collection errors.
 """
 
 import pytest
@@ -82,6 +80,13 @@ def test_pre_wave_passes_at_threshold(cfg):
 
 def test_pre_wave_degrades_below_threshold(cfg):
     assert wave_budget_ok(_gate1_threshold(cfg) - 1, cfg) is False
+
+
+def test_negative_remaining_degrades_every_gate(cfg):
+    assert wave_budget_ok(-1, cfg) is False
+    assert verifier_budget_ok(-1, cfg) is False
+    assert synthesizer_budget_ok(-1, cfg) is False
+    assert single_pass_budget_ok(-1, cfg) is False
 
 
 def test_pre_wave_passes_above_threshold(cfg):
