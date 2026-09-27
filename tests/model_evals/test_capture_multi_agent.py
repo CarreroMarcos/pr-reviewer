@@ -269,6 +269,102 @@ def test_finding_text_helpers():
     assert cma.manifest_text({"hint": "sql-injection-via-concat"}) == "sql-injection-via-concat"
 
 
+def test_fully_resumed_case_skips_manifest_embedding(tmp_path):
+    """Bot R2 Fix 1: a fully checkpoint-completed case performs ZERO
+    embed calls on resume and keeps its pinned manifest vectors
+    byte-identically (no Bedrock re-invoke, no fresh-vector swap)."""
+    output = tmp_path / "pinned_multi_agent.json"
+    checkpoint = tmp_path / "resume.json"
+    args = ["--cases", CASE_ID, "--output", str(output), "--checkpoint", str(checkpoint)]
+    cma.main(
+        [*args, "--runs", "1"],
+        _review_fn=ScriptedLegs(),
+        _embed_fn=stub_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    pinned_vectors = json.loads(output.read_text(encoding="utf-8"))["cases"][CASE_ID][
+        "manifest_embeddings"
+    ]
+    calls: list = []
+
+    def _counting_embed(texts):
+        calls.append(list(texts))
+        return stub_embed(texts)
+
+    cma.main(
+        [*args, "--runs", "1", "--resume"],
+        _review_fn=ScriptedLegs(),
+        _embed_fn=_counting_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    assert calls == []
+    reread = json.loads(output.read_text(encoding="utf-8"))
+    assert reread["cases"][CASE_ID]["manifest_embeddings"] == pinned_vectors
+    assert len(reread["cases"][CASE_ID]["runs"]) == 1
+
+
+def test_meta_invocations_append_per_invocation(tmp_path):
+    """Bot R2 Fix 2: scalar meta fields describe the writing invocation;
+    the append-only `invocations` log preserves earlier ones, so a
+    second invocation with a different effort cannot misattribute the
+    first invocation's cases."""
+    output = tmp_path / "pinned_multi_agent.json"
+    checkpoint = tmp_path / "resume.json"
+    cma.main(
+        [
+            "--cases",
+            CASE_ID,
+            "--output",
+            str(output),
+            "--checkpoint",
+            str(checkpoint),
+            "--effort",
+            "low",
+            "--force",
+        ],
+        _review_fn=ScriptedLegs(),
+        _embed_fn=stub_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    cma.main(
+        [
+            "--cases",
+            CASE_ID,
+            "--output",
+            str(output),
+            "--checkpoint",
+            str(checkpoint),
+            "--effort",
+            "default",
+            "--resume",
+        ],
+        _review_fn=ScriptedLegs(),
+        _embed_fn=stub_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    meta = json.loads(output.read_text(encoding="utf-8"))["meta"]
+    assert [inv["effort"] for inv in meta["invocations"]] == ["low", "default"]
+    assert meta["effort"] == "default"
+
+
+def test_stale_checkpoint_warns_before_fresh_start(tmp_path, capsys):
+    """Bot R2 Risk Note: `--resume` with a checkpoint but no pin file
+    starts fresh (safe) but says so explicitly, naming both paths."""
+    output = tmp_path / "pinned_multi_agent.json"
+    checkpoint = tmp_path / "resume.json"
+    checkpoint.write_text(json.dumps({"completed": [[CASE_ID, 0]]}) + "\n", encoding="utf-8")
+    cma.main(
+        ["--cases", CASE_ID, "--output", str(output), "--checkpoint", str(checkpoint), "--resume"],
+        _review_fn=ScriptedLegs(),
+        _embed_fn=stub_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    assert output.exists()
+    captured = capsys.readouterr()
+    assert str(checkpoint) in captured.err
+    assert str(output) in captured.err
+
+
 def test_resume_partial_preserves_pinned_runs(tmp_path):
     """Bot R1 Fix 1: a partial resume (run 0 checkpointed, run 1 new)
     preserves the pinned run-0 record byte-identically — the checkpoint

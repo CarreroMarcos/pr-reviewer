@@ -388,20 +388,29 @@ def execute(
     embed_fn,
     completed: set[tuple[str, int]] | None = None,
     prior_runs: dict[str, list[dict]] | None = None,
+    prior_manifest_embeddings: dict[str, dict] | None = None,
 ) -> tuple[dict, dict]:
     """Run the selected cases x runs (skipping `completed` pairs);
     return (cases_out, stats). Cases run SEQUENTIALLY (checkpoint
     friendly — wall math assumes in-wave parallelism only). Previously
     pinned runs for skipped indexes are SEEDED from `prior_runs`, so a
     partial resume preserves earlier records — the checkpoint claiming
-    "completed" must never outlive the data it claims."""
+    "completed" must never outlive the data it claims. A fully resumed
+    case (nothing left to run) reuses its pinned manifest vectors
+    verbatim — resume never re-invokes Bedrock for data it already has,
+    and fresh non-deterministic vectors never replace pinned ones."""
     done = set(completed) if completed else set()
     prior_runs = prior_runs or {}
+    prior_manifest_embeddings = prior_manifest_embeddings or {}
     cases_out: dict[str, dict] = {}
     stats = {"runs_completed": 0, "runs_skipped": 0}
     for case_id in case_ids:
         diff_text, manifest, meta = fixtures.CORPUS[case_id]()
-        manifest_vectors = embed_manifest_findings(manifest, case_id, embed_fn)
+        needed = [i for i in range(runs_per_case) if (case_id, i) not in done]
+        if not needed and prior_manifest_embeddings.get(case_id):
+            manifest_vectors = prior_manifest_embeddings[case_id]
+        else:
+            manifest_vectors = embed_manifest_findings(manifest, case_id, embed_fn)
         runs = [
             record
             for record in prior_runs.get(case_id, [])
@@ -505,6 +514,16 @@ def main(
                     "completed", []
                 )
             }
+    if args.resume and not output_path.exists() and checkpoint_path.exists():
+        # Stale checkpoint, missing pin: the completed pairs name data
+        # that no longer exists. Fresh start is safe (pairs re-run),
+        # but say so explicitly — silent restart would hide the loss.
+        print(
+            f"warning: checkpoint {checkpoint_path} exists but pin file "
+            f"{output_path} is missing — starting fresh; completed pairs "
+            f"will be re-run",
+            file=sys.stderr,
+        )
     templates = load_templates()
     cfg = dataclasses.replace(multi_agent_config(), reasoning_effort=args.effort)
     if _creds is not None:
@@ -525,6 +544,9 @@ def main(
         embed_fn=embed_fn,
         completed=completed,
         prior_runs={cid: rec.get("runs", []) for cid, rec in prior.get("cases", {}).items()},
+        prior_manifest_embeddings={
+            cid: rec.get("manifest_embeddings", {}) for cid, rec in prior.get("cases", {}).items()
+        },
     )
     wall_s = time.perf_counter() - start
     merged = dict(prior.get("cases", {}))
@@ -533,6 +555,19 @@ def main(
             continue  # fully resumed: keep the pinned runs
         merged[cid] = rec
     model_label = model if _creds is None else "stub"
+    # Meta honesty across invocations: the scalar fields describe THIS
+    # write (effort/cases/wall of the current run), while "invocations"
+    # appends one record per main() call so a multi-invocation pin never
+    # misattributes earlier cases to the latest effort/wall numbers.
+    invocation = {
+        "effort": args.effort,
+        "cases": case_ids,
+        "runs_per_case": args.runs,
+        "runs_completed": stats["runs_completed"],
+        "wall_s": round(wall_s, 1),
+        "model": model_label,
+        "captured_at": datetime.datetime.now(datetime.UTC).isoformat(),
+    }
     pinned = {
         "meta": {
             "effort": args.effort,
@@ -545,6 +580,7 @@ def main(
             "wall_s": round(wall_s, 1),
             "wall_clock_note": wall_claim(wall_s, cfg.fanout_concurrency, stats["runs_completed"]),
             "captured_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            "invocations": list(prior.get("meta", {}).get("invocations", [])) + [invocation],
         },
         "cases": merged,
     }
