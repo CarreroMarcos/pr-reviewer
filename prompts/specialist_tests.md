@@ -48,6 +48,9 @@ Never include secrets, credentials, tokens, or key material in any field.
 
 {{ACCEPTED_RESIDUALS}}
 
+An empty section above means there are no accepted residuals — flag
+normally.
+
 ## Coordinates are post-image (HLD-004 §6)
 
 `line_start` / `line_end` are 1-based line numbers in the file AS IT
@@ -60,9 +63,10 @@ accuracy.
 
 Emit exactly one JSON object:
 
-```json
+Shape illustration only — your output must be the raw JSON object
+itself, with no markdown fences and no surrounding text:
+
 {"findings": [{"file_path": "...", "line_start": 1, "line_end": 1, "title": "...", "description": "...", "suggested_fix": "...", "severity": "HIGH", "category": "tests"}]}
-```
 
 Each item carries exactly these 8 fields — no more, no fewer:
 
