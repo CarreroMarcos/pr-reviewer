@@ -517,10 +517,10 @@ Every event: `{v: 1, run_id, ts, type, ...}`.
 | `checkpoint` | pipeline stage reached | stage ∈ {established, diff_fetched, claimed, published, finalized} |
 | `agent_started` | specialist coroutine begins | specialty |
 | `agent_reasoning` | reasoning excerpt available (coroutine emits as executor returns) | specialty, reasoning_excerpt (raw reasoning truncated at `REASONING_MAX_CHARS`) |
-| `agent_completed` | specialist returns | specialty, findings_n, latency_ms, tokens_in/out, findings[] (JSON) |
+| `agent_completed` | specialist returns | specialty, findings_n, latency_ms, tokens_in/out, findings[] (JSON), coordinates_clamped_n (int — coordinates clamped to post-image by run_fanout, 0 when none; D3) |
 | `agent_retry` | fast-failing retryable error retried | specialty, attempt, error_code, backoff_ms |
 | `agent_failed` | specialist raised/timed out | specialty, error_class, latency_ms |
-| `verification_done` | verifier returns | survived_n, killed_n, escalated_n, wave_survivors (int — specialists returning parseable findings, e.g. 2 after one 429/timeout loss; lets replay/eval attribute recall deltas to partial waves — bot review #4), latency_ms, tokens_in/out, verified[]/killed[]/escalated[] (JSON) |
+| `verification_done` | verifier returns | survived_n, killed_n, escalated_n, wave_survivors (int — specialists returning parseable findings, e.g. 2 after one 429/timeout loss; lets replay/eval attribute recall deltas to partial waves — bot review #4), latency_ms, tokens_in/out, verified[]/killed[]/escalated[] (JSON), coordinates_reanchored_n (int — coordinates re-anchored to post-image by the verifier, 0 when none; D3) |
 | `verification_failed` | verifier raised/timed out | error_class, latency_ms |
 | `review_synthesized` | synthesizer returns | findings_merged_n, dropped_as_duplicate_n, latency_ms, tokens_in/out, findings[] (merged JSON) |
 | `synthesizer_failed` | synthesizer raised/timed out | error_class, latency_ms |
