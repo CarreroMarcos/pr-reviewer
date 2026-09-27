@@ -18,6 +18,7 @@ Secrets never appear in `repr()` or error text (Constitution III).
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -164,3 +165,76 @@ class ConfigProvider:
         host = (parts.hostname or "").lower()
         if not host or host not in self._allowed_hosts:
             raise ConfigError("glm_endpoint", "bad_host")
+
+
+# Multi-agent knobs (HLD-004 §8 checklist item 7 — the 12 env vars below
+# are exactly that list; `MARGIN_S` and `DEGRADED_BUDGET_MARGIN_S` are
+# withdrawn, `BUDGET_MARGIN_S` is the single margin).
+#
+# Plain environment variables with documented defaults, resolved at CALL
+# time on every `multi_agent_config()` read — never import time, never
+# cached in module or `ConfigProvider` state — so tests monkeypatch env
+# cleanly and `reset_config_cache` (which drops only the SSM provider)
+# can never freeze these. Env-var wiring into the worker belongs to
+# later tickets; this module defines names, defaults, and parsing only.
+DEFAULT_MULTI_AGENT = 0
+DEFAULT_MULTI_AGENT_PHASE0 = 0
+DEFAULT_FANOUT_CONCURRENCY = 3
+DEFAULT_MUTEX_LEASE_TTL_S = 900
+DEFAULT_REASONING_MAX_CHARS = 4000
+# PROVISIONAL until the Phase-0 exit ruling: D6/D8 pick the ship config
+# from measured p95 — this infrastructure default must not pre-decide it.
+DEFAULT_REASONING_EFFORT = "low"
+DEFAULT_WAVE_WAIT_FOR_S = 300
+DEFAULT_VERIFIER_WAIT_FOR_S = 240
+DEFAULT_SYNTHESIZER_WAIT_FOR_S = 180
+DEFAULT_SINGLE_PASS_WAIT_FOR_S = 240
+DEFAULT_SOCKET_READ_TIMEOUT_S = 240
+DEFAULT_BUDGET_MARGIN_S = 60
+
+
+@dataclass(frozen=True)
+class MultiAgentConfig:
+    """Resolved multi-agent knobs — one `multi_agent_config()` snapshot
+    per read (call-time env resolution, no cache)."""
+
+    multi_agent: int
+    multi_agent_phase0: int
+    fanout_concurrency: int
+    mutex_lease_ttl_s: int
+    reasoning_max_chars: int
+    reasoning_effort: str
+    wave_wait_for_s: int
+    verifier_wait_for_s: int
+    synthesizer_wait_for_s: int
+    single_pass_wait_for_s: int
+    socket_read_timeout_s: int
+    budget_margin_s: int
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse an int knob; missing/unparseable/empty → the documented
+    default (same fail-to-default discipline as `llm._read_timeout_s`).
+    Range enforcement belongs to the consuming stage, not the parser."""
+    try:
+        return int(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+
+
+def multi_agent_config() -> MultiAgentConfig:
+    """Read the 12 HLD-004 §8 item-7 knobs from the environment."""
+    return MultiAgentConfig(
+        multi_agent=_env_int("MULTI_AGENT", DEFAULT_MULTI_AGENT),
+        multi_agent_phase0=_env_int("MULTI_AGENT_PHASE0", DEFAULT_MULTI_AGENT_PHASE0),
+        fanout_concurrency=_env_int("FANOUT_CONCURRENCY", DEFAULT_FANOUT_CONCURRENCY),
+        mutex_lease_ttl_s=_env_int("MUTEX_LEASE_TTL_S", DEFAULT_MUTEX_LEASE_TTL_S),
+        reasoning_max_chars=_env_int("REASONING_MAX_CHARS", DEFAULT_REASONING_MAX_CHARS),
+        reasoning_effort=os.environ.get("REASONING_EFFORT", "") or DEFAULT_REASONING_EFFORT,
+        wave_wait_for_s=_env_int("WAVE_WAIT_FOR_S", DEFAULT_WAVE_WAIT_FOR_S),
+        verifier_wait_for_s=_env_int("VERIFIER_WAIT_FOR_S", DEFAULT_VERIFIER_WAIT_FOR_S),
+        synthesizer_wait_for_s=_env_int("SYNTHESIZER_WAIT_FOR_S", DEFAULT_SYNTHESIZER_WAIT_FOR_S),
+        single_pass_wait_for_s=_env_int("SINGLE_PASS_WAIT_FOR_S", DEFAULT_SINGLE_PASS_WAIT_FOR_S),
+        socket_read_timeout_s=_env_int("SOCKET_READ_TIMEOUT_S", DEFAULT_SOCKET_READ_TIMEOUT_S),
+        budget_margin_s=_env_int("BUDGET_MARGIN_S", DEFAULT_BUDGET_MARGIN_S),
+    )
