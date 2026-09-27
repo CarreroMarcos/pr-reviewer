@@ -43,6 +43,7 @@ import time
 
 import pytest
 
+from common import mutex as mutex_mod
 from common.mutex import (
     MUTEX_LEASE_TTL_S,
     MUTEX_PK,
@@ -58,10 +59,49 @@ T = 1_750_000_000
 GUID_A = "aaaaaaaa-1111-4111-8111-111111111111"
 GUID_B = "bbbbbbbb-2222-4222-8222-222222222222"
 
-ACQUIRE_UPDATE = "SET owner = :owner, token = :token, lease_until = :until"
+ACQUIRE_UPDATE = "SET #owner = :owner, #tok = :token, lease_until = :until"
 ACQUIRE_CONDITION = "attribute_not_exists(pk) OR lease_until < :steal_before"
 REFRESH_UPDATE = "SET lease_until = :until"
-TOKEN_CONDITION = "token = :token"  # noqa: S105 (expression shape, not a credential)
+TOKEN_CONDITION = "#tok = :token"  # noqa: S105 (expression shape, not a credential)
+ALIASES = {"#owner": "owner", "#tok": "token"}
+
+# Reserved-word tripwire sample (AWS list essentials — full list is ~570
+# words; this pins the expression-relevant subset INCLUDING the two known
+# offenders, so any regression to bare owner/token fails closed here).
+RESERVED_ESSENTIALS = frozenset(
+    {
+        "OWNER",
+        "TOKEN",
+        "STATUS",
+        "NAME",
+        "VALUE",
+        "VALUES",
+        "PATH",
+        "DATA",
+        "KEY",
+        "ITEM",
+        "TABLE",
+        "ATTRIBUTE",
+        "ATTRIBUTES",
+        "CONDITION",
+        "EXPRESSION",
+        "ACTION",
+        "USER",
+        "ROLE",
+        "SIZE",
+        "COUNT",
+        "ALL",
+        "ANY",
+        "BETWEEN",
+    }
+)
+_EXPR_KEYWORDS = frozenset({"SET", "REMOVE", "OR", "AND", "NOT", "attribute_not_exists"})
+_EXPR_CONSTANTS = (
+    "_ACQUIRE_UPDATE",
+    "_ACQUIRE_CONDITION",
+    "_REFRESH_UPDATE",
+    "_TOKEN_CONDITION",
+)
 
 
 class MutexTable:
@@ -98,6 +138,7 @@ class MutexTable:
         pk = Key["pk"]
         current = self.items.get(pk)
         values = ExpressionAttributeValues or {}
+        _check_alias_map(UpdateExpression, ConditionExpression, ExpressionAttributeNames)
         if (UpdateExpression, ConditionExpression) == (ACQUIRE_UPDATE, ACQUIRE_CONDITION):
             steal_before = values[":steal_before"]
             # DynamoDB-faithful OR: a missing row steals via arm 1; a
@@ -138,12 +179,29 @@ class MutexTable:
         pk = Key["pk"]
         current = self.items.get(pk)
         values = ExpressionAttributeValues or {}
+        _check_alias_map("", ConditionExpression, ExpressionAttributeNames)
         if ConditionExpression != TOKEN_CONDITION:
             raise ValueError(f"unsupported mutex expression: {ConditionExpression!r}")
         if current is None or current.get("token") != values[":token"]:
             raise ConditionalCheckFailed(f"lease lost: {pk}")
         del self.items[pk]
         return {}
+
+
+def _check_alias_map(update_expression, condition_expression, names):
+    """Reserved-word recurrence guard (Gate-15 demand): every `#alias`
+    referenced by the expressions must arrive with a non-None
+    `ExpressionAttributeNames` map carrying the correct mapping —
+    unaliased reserved words fail the scan test below, and a dropped map
+    fails here."""
+    used = set(re.findall(r"#[A-Za-z0-9_]+", f"{update_expression} {condition_expression}"))
+    if not used:
+        return
+    if not isinstance(names, dict):
+        raise ValueError(f"missing ExpressionAttributeNames for aliases: {sorted(used)}")
+    for alias in used:
+        if names.get(alias) != ALIASES.get(alias):
+            raise ValueError(f"bad alias mapping for {alias}: {names!r}")
 
 
 def seed(table, *, owner=GUID_A, token="tok-seed", lease_until):  # noqa: S107 (fixture default)
@@ -162,6 +220,25 @@ def seed(table, *, owner=GUID_A, token="tok-seed", lease_until):  # noqa: S107 (
 def test_mutex_pk_and_ttl():
     assert MUTEX_PK == "mutex:pr-reviewer-worker"
     assert MUTEX_LEASE_TTL_S == 900
+
+
+def _bare_identifiers(expression):
+    expression = re.sub(r":[A-Za-z0-9_]+", " ", expression)  # placeholders
+    expression = re.sub(r"#[A-Za-z0-9_]+", " ", expression)  # aliases
+    words = re.findall(r"[A-Za-z_]+", expression)
+    return {word for word in words if word not in _EXPR_KEYWORDS}
+
+
+def test_no_bare_reserved_words_in_expressions():
+    """Recurrence guard (Gate-15 demand): `owner`/`token` are DynamoDB
+    reserved words — they must ride aliased in every expression string,
+    so no bare reserved word may appear. The tripwire covers the AWS
+    essentials list including both known offenders."""
+    assert {"OWNER", "TOKEN"} <= RESERVED_ESSENTIALS
+    expressions = [getattr(mutex_mod, name) for name in _EXPR_CONSTANTS]
+    bare = set().union(*(_bare_identifiers(expression) for expression in expressions))
+    assert bare == {"pk", "lease_until"}
+    assert bare.isdisjoint(RESERVED_ESSENTIALS)
 
 
 # --- acquire -------------------------------------------------------------------------------
@@ -282,6 +359,20 @@ def test_refresh_after_release_returns_none():
     assert refresh(table, lease=lease, now=T + 10) is None
 
 
+def test_refresh_after_takeover_returns_none_and_preserves_takeover():
+    """Load-bearing T026/T027 interleaving (gate anchor): A holds, the
+    clock advances past `lease_until + 30`, B takes over with a fresh
+    token — A's refresh then reports lost (None) and B's row is
+    untouched."""
+    table = MutexTable()
+    lease_a = acquire(table, owner=GUID_A, now=T, token="tok-a")  # noqa: S106 (fixture)
+    lease_b = acquire(table, owner=GUID_B, now=T + 931, token="tok-b")  # noqa: S106 (fixture)
+    assert lease_b is not None and lease_b.owner == GUID_B
+    assert refresh(table, lease=lease_a, now=T + 931) is None
+    assert table.items[MUTEX_PK]["owner"] == GUID_B
+    assert table.items[MUTEX_PK]["token"] == "tok-b"  # noqa: S105 (fixture comparison)
+
+
 def test_failed_refresh_verdict_is_sticky_none():
     """Primitive half of the failed-refresh contract: a lost lease keeps
     reporting lost (idempotent None). The consumer half — stop issuing
@@ -369,4 +460,24 @@ def test_release_invalid_inputs_raise_typed_errors(lease, field):
     table = MutexTable()
     with pytest.raises(MutexError) as exc_info:
         release(table, lease=lease)
+    assert exc_info.value.field == field
+
+
+@pytest.mark.parametrize(
+    ("lease", "field"),
+    [
+        (Lease(owner=GUID_A, token="", lease_until=T + 900), "token"),
+        (Lease(owner=GUID_A, token=None, lease_until=T + 900), "token"),
+        (None, "lease"),
+        ("not-a-lease", "lease"),
+    ],
+)
+def test_refresh_invalid_inputs_raise_typed_errors(lease, field):
+    """Gate-15 Fix 2 (accumulation-rule escalation): refresh shares the
+    guard — `None`/non-Lease raises `bad_lease`, malformed token raises
+    `bad_token`, instead of a raw AttributeError or a silent
+    conditional miss collapsing into `None`."""
+    table = MutexTable()
+    with pytest.raises(MutexError) as exc_info:
+        refresh(table, lease=lease, now=T)
     assert exc_info.value.field == field

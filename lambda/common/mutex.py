@@ -39,15 +39,18 @@ row is gone, the next acquire proceeds via `attribute_not_exists(pk)`,
 and the re-acquire-after-release test pins it. The gate owns this
 reading.
 
-Table port mirrors `common.protocol`: `update_item` /
+Table port is the boto3 Table passthrough shape: `update_item` /
 `delete_item` with `Key` / `UpdateExpression` / `ConditionExpression` /
 `ExpressionAttributeNames` / `ExpressionAttributeValues`, raising
 `common.protocol.ConditionalCheckFailed` on unmet conditions
-(production threads a boto3 table behind the `_BotoTable` wrapper).
-Attribute names ride bare (none of pk/owner/lease_until/token is a
-DynamoDB reserved word — same posture as `common.state`'s claim
-attributes); `ExpressionAttributeNames=None` is passed explicitly per
-the protocol call shape.
+(`common.protocol`'s executor documents the `update_item` half; the
+concrete boto3-backed wrapper is a T026/T027 deliverable).
+Attribute references colliding with DynamoDB reserved words (`owner`,
+`token` — official list, case-insensitive) ride aliased (`#owner`,
+`#tok`) with a real `ExpressionAttributeNames` map on every call
+(precedent: `common.state` aliases `status`→`#st`, and deliberately
+named the claim attribute `claim_owner` to dodge this class entirely).
+Stored attribute names are unchanged — aliasing is expression-only.
 
 Pure stdlib, no I/O, no boto3 import.
 """
@@ -92,10 +95,15 @@ class Lease:
     lease_until: int
 
 
-_ACQUIRE_UPDATE = "SET owner = :owner, token = :token, lease_until = :until"
+_ACQUIRE_UPDATE = "SET #owner = :owner, #tok = :token, lease_until = :until"
 _ACQUIRE_CONDITION = "attribute_not_exists(pk) OR lease_until < :steal_before"
 _REFRESH_UPDATE = "SET lease_until = :until"
-_TOKEN_CONDITION = "token = :token"  # noqa: S105 (expression shape, not a credential)
+_TOKEN_CONDITION = "#tok = :token"  # noqa: S105 (expression shape, not a credential)
+# Per-call minimal maps: DynamoDB rejects declared-but-unused names, so
+# each call carries exactly the aliases its own expressions reference
+# (acquire uses both; refresh/release use #tok only).
+_ACQUIRE_NAMES = {"#owner": "owner", "#tok": "token"}
+_TOKEN_NAMES = {"#tok": "token"}
 
 
 def _check_owner(owner: Any) -> str:
@@ -160,7 +168,7 @@ def acquire(
             Key={"pk": MUTEX_PK},
             UpdateExpression=_ACQUIRE_UPDATE,
             ConditionExpression=_ACQUIRE_CONDITION,
-            ExpressionAttributeNames=None,
+            ExpressionAttributeNames=dict(_ACQUIRE_NAMES),
             ExpressionAttributeValues={
                 ":owner": holder,
                 ":token": fencing,
@@ -183,6 +191,9 @@ def refresh(
     degraded path, and never re-assert (T026/T027 own that discipline —
     this verdict never retries).
     """
+    if not isinstance(lease, Lease):
+        raise MutexError("lease", "bad_lease")
+    token = _require_token(lease.token)
     instant = _check_now(now)
     window = _check_ttl(ttl_s)
     lease_until = instant + window
@@ -191,12 +202,12 @@ def refresh(
             Key={"pk": MUTEX_PK},
             UpdateExpression=_REFRESH_UPDATE,
             ConditionExpression=_TOKEN_CONDITION,
-            ExpressionAttributeNames=None,
-            ExpressionAttributeValues={":token": lease.token, ":until": lease_until},
+            ExpressionAttributeNames=dict(_TOKEN_NAMES),
+            ExpressionAttributeValues={":token": token, ":until": lease_until},
         )
     except ConditionalCheckFailed:
         return None
-    return Lease(owner=lease.owner, token=lease.token, lease_until=lease_until)
+    return Lease(owner=lease.owner, token=token, lease_until=lease_until)
 
 
 def release(table: Any, *, lease: Lease) -> bool:
@@ -214,7 +225,7 @@ def release(table: Any, *, lease: Lease) -> bool:
         table.delete_item(
             Key={"pk": MUTEX_PK},
             ConditionExpression=_TOKEN_CONDITION,
-            ExpressionAttributeNames=None,
+            ExpressionAttributeNames=dict(_TOKEN_NAMES),
             ExpressionAttributeValues={":token": token},
         )
     except ConditionalCheckFailed:
