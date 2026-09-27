@@ -138,4 +138,11 @@ resource "aws_lambda_event_source_mapping" "work" {
   event_source_arn = aws_sqs_queue.work.arn
   function_name    = aws_lambda_function.worker.arn
   batch_size       = 1
+
+  # T032 (HLD §8 checklist 3): cap concurrent worker executions at 2 —
+  # the D9 application-level mutex serializes fan-out, this bounds the
+  # account-wide concurrency beside it. Worker stays unreserved.
+  scaling_config {
+    maximum_concurrency = 2
+  }
 }
