@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "tool": "probe_concurrency.py (T041)",
+    "mode": "live",
+    "n_calls": 4,
+    "concurrent": true,
+    "model": "glm-5.3-flash",
+    "socket_timeout_s": 600,
+    "effort": "low",
+    "thinking_enabled": true,
+    "probed_at": "2026-09-27T22:59:24.322299+00:00",
+    "hld": "D9 concurrency ceiling + \u00a78 exit criteria (N=4 clause)"
+  },
+  "calls": [
+    {
+      "index": 0,
+      "status": "ok",
+      "error_class": null,
+      "latency_ms": 14238
+    },
+    {
+      "index": 1,
+      "status": "ok",
+      "error_class": null,
+      "latency_ms": 10072
+    },
+    {
+      "index": 2,
+      "status": "ok",
+      "error_class": null,
+      "latency_ms": 9872
+    },
+    {
+      "index": 3,
+      "status": "ok",
+      "error_class": null,
+      "latency_ms": 7146
+    }
+  ],
+  "summary": {
+    "n_calls": 4,
+    "ok": 4,
+    "throttled": 0,
+    "errors": 0,
+    "all_200": true,
+    "tripped": false
+  }
+}
