@@ -23,7 +23,7 @@ import json
 import re
 from typing import Any
 
-from common.events import EVENT_VERSION, to_jsonl
+from common.events import EVENT_VERSION, EventsError, to_jsonl
 
 ARCHIVE_VERSION = 1
 
@@ -116,7 +116,7 @@ def build_meta(
 ) -> dict[str, Any]:
     """Assemble a validated `meta.json` object (HLD §6 fixed shape)."""
     check_status(pipeline, status)
-    return {
+    meta = {
         "v": EVENT_VERSION,
         "run_id": _check_run_id(run_id),
         "pr": _check_pr(pr),
@@ -127,6 +127,12 @@ def build_meta(
         "finished_ts": _check_ts(finished_ts, "finished_ts"),
         "archive_version": ARCHIVE_VERSION,
     }
+    if meta["finished_ts"] < meta["started_ts"]:
+        # Monotonicity is a shape invariant: an archive that claims to
+        # finish before it started is malformed however it got there
+        # (bot r1:88).
+        raise ArchiveError("finished_ts", "bad_ts_order")
+    return meta
 
 
 def render_meta(meta: dict[str, Any]) -> str:
@@ -139,7 +145,15 @@ def render_events_jsonl(events: list[dict[str, Any]]) -> str:
     """Render `events.jsonl`: consumer order (ascending `ts`, stable),
     every line re-validated through `to_jsonl` at this render boundary —
     a malformed event fails the archive, never serializes half a run."""
-    ordered = sorted(events, key=lambda event: event.get("ts", 0))
+    for event in events:
+        ts = event.get("ts") if isinstance(event, dict) else None
+        if not isinstance(ts, int) or isinstance(ts, bool):
+            # Fail typed BEFORE sorting: a missing/string `ts` would
+            # otherwise silently reorder (default 0) or blow up as a
+            # confusing TypeError inside the sort key (bot r1:126). Same
+            # class+code the events validator uses for a bad ts.
+            raise EventsError("ts", "bad_ts")
+    ordered = sorted(events, key=lambda event: event["ts"])
     return "\n".join(to_jsonl(event) for event in ordered)
 
 
@@ -171,14 +185,17 @@ def should_write_index_row(events: list[dict[str, Any]]) -> bool:
 
 def findings_count(events: list[dict[str, Any]]) -> int:
     """Published-findings count for the index row: the synthesizer's
-    merged total (0 when the stage never ran)."""
-    total = 0
+    merged total (0 when the stage never ran). Takes the max across
+    `review_synthesized` events rather than a sum — `findings_merged_n`
+    is the run's final merged total, so multiple synthesized events
+    (not producible today) must not double-count (bot r1:159)."""
+    count = 0
     for event in events:
         if isinstance(event, dict) and event.get("type") == "review_synthesized":
-            count = event.get("findings_merged_n")
-            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
-                total += count
-    return total
+            value = event.get("findings_merged_n")
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                count = max(count, value)
+    return count
 
 
 def build_index_item(

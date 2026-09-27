@@ -1735,27 +1735,49 @@ def _archive_run(
                 archive_written_at=finished_ts_ms,
                 findings_n=archive_mod.findings_count(events),
             )
-            table.update_item(
-                Key={"pk": item["pk"]},
-                UpdateExpression=(
-                    "SET pr_number = :pr, started_ts = :started, sha = :sha,"
-                    " #st = :status, pipeline = :pipeline,"
-                    " archive_s3_key = :key, archive_written_at = :written,"
-                    " findings_n = :findings"
-                ),
-                ConditionExpression="attribute_not_exists(pk)",
-                ExpressionAttributeNames={"#st": "status"},
-                ExpressionAttributeValues={
-                    ":pr": item["pr_number"],
-                    ":started": item["started_ts"],
-                    ":sha": item["sha"],
-                    ":status": item["status"],
-                    ":pipeline": item["pipeline"],
-                    ":key": item["archive_s3_key"],
-                    ":written": item["archive_written_at"],
-                    ":findings": item["findings_n"],
-                },
-            )
+            try:
+                table.update_item(
+                    Key={"pk": item["pk"]},
+                    UpdateExpression=(
+                        "SET pr_number = :pr, started_ts = :started, sha = :sha,"
+                        " #st = :status, pipeline = :pipeline,"
+                        " archive_s3_key = :key, archive_written_at = :written,"
+                        " findings_n = :findings"
+                    ),
+                    ConditionExpression="attribute_not_exists(pk)",
+                    ExpressionAttributeNames={"#st": "status"},
+                    ExpressionAttributeValues={
+                        ":pr": item["pr_number"],
+                        ":started": item["started_ts"],
+                        ":sha": item["sha"],
+                        ":status": item["status"],
+                        ":pipeline": item["pipeline"],
+                        ":key": item["archive_s3_key"],
+                        ":written": item["archive_written_at"],
+                        ":findings": item["findings_n"],
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                # SQS is at-least-once: a redelivered run re-archives and
+                # hits the write-once index condition. First archive wins;
+                # a duplicate gets its OWN signal, never the generic
+                # archive_failed that reads as a real fault (bot r1:1740).
+                from common.protocol import ConditionalCheckFailed
+
+                response = getattr(exc, "response", None)
+                code = response.get("Error", {}).get("Code") if isinstance(response, dict) else None
+                if code == "ConditionalCheckFailedException" or isinstance(
+                    exc, ConditionalCheckFailed
+                ):
+                    logger.warning(
+                        "archive_duplicate",
+                        extra={
+                            "status": "archive_duplicate",
+                            "error_class": "index_row_exists",
+                        },
+                    )
+                else:
+                    raise
     except Exception as exc:
         logger.warning(
             "archive_failed",
