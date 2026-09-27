@@ -49,8 +49,8 @@ from common.archive import (  # noqa: E402
     should_write_index_row,
 )
 from common.config import ConfigProvider  # noqa: E402
-from common.diff import HttpResponse  # noqa: E402
 from common.events import (  # noqa: E402
+    EventsError,
     agent_completed,
     agent_started,
     checkpoint,
@@ -109,10 +109,12 @@ def meta_kwargs(**overrides):
 
 
 def started_event(ts):
-    return review_started(pr=PR_NUMBER, sha=SHA_B, diff_stats=dict(DIFF_STATS), run_id=RUN_ID, ts=ts)
+    return review_started(
+        pr=PR_NUMBER, sha=SHA_B, diff_stats=dict(DIFF_STATS), run_id=RUN_ID, ts=ts
+    )
 
 
-# --- meta.json shape -----------------------------------------------------------------------------------
+# --- meta.json shape ---------------------------------------------------------------
 
 
 def test_meta_shape_and_literals():
@@ -158,7 +160,7 @@ def test_meta_rejects_bad_scalars():
             build_meta(**meta_kwargs(**{field: value}))
 
 
-# --- status mapping per pipeline -----------------------------------------------------------------------------
+# --- status mapping per pipeline ---------------------------------------------------------
 
 
 def test_status_mapping_allowed():
@@ -181,7 +183,7 @@ def test_status_mapping_allowed():
         check_status("no_such_pipeline", "published")
 
 
-# --- pipeline resolution + index-row decision ----------------------------------------------------------------------
+# --- pipeline resolution + index-row decision ------------------------------------------------
 
 
 def test_resolve_pipeline():
@@ -217,7 +219,7 @@ def test_review_skipped_never_a_row():
     assert should_write_index_row([started_event(1)]) is True
 
 
-# --- events.jsonl ordering ----------------------------------------------------------------------------------------------
+# --- events.jsonl ordering ------------------------------------------------------------
 
 
 def test_render_orders_by_ts_and_validates():
@@ -238,11 +240,11 @@ def test_render_orders_by_ts_and_validates():
 
 
 def test_render_rejects_malformed_event():
-    with pytest.raises(Exception):
+    with pytest.raises(EventsError):
         render_events_jsonl([{"type": "review_started", "bogus": True}])
 
 
-# --- S3 keys -----------------------------------------------------------------------------------------------------------------
+# --- S3 keys ---------------------------------------------------------------------------------
 
 
 def test_s3_key_shape_and_validation():
@@ -260,7 +262,7 @@ def test_s3_key_shape_and_validation():
             s3_key(*bad)
 
 
-# --- worker wiring fakes --------------------------------------------------------------------------------------------------------
+# --- worker wiring fakes ----------------------------------------------------------------------
 
 
 def envelope_dict(*, sha=SHA_B, guid=GUID_1):
@@ -329,11 +331,6 @@ class FakeDiffTransport:
         return FakeHttpResponse(200, json.dumps({"head": {"sha": sha}}).encode())
 
 
-class FakeLLMSocket:
-    def settimeout(self, seconds):
-        pass
-
-
 class FakeLLMResponse:
     def __init__(self, status, body):
         self.status = status
@@ -343,9 +340,15 @@ class FakeLLMResponse:
         return self._body
 
 
+class FakeLLMSocket:
+    def settimeout(self, seconds):
+        pass
+
+
 class FakeLLMConnection:
     def __init__(self, script):
         self._script = list(script)
+        self.sock = FakeLLMSocket()
 
     def connect(self):
         pass
@@ -401,8 +404,6 @@ class FakeS3:
 
 
 def make_provider():
-    from common.config import ConfigProvider
-
     return ConfigProvider(
         FakeSSM(dict(SSM_VALUES)).get_parameters,
         allowed_endpoint_hosts=("llm.example.test",),
@@ -477,7 +478,7 @@ def drive_record(
     return status
 
 
-# --- worker wiring: S3 puts after finalize ---------------------------------------------------------------------------------------
+# --- worker wiring: S3 puts after finalize -----------------------------------------------------
 
 
 def test_published_run_archives_two_puts_and_index_row(monkeypatch):

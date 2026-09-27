@@ -90,6 +90,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from common import archive as archive_mod
 from common import mutex as mutex_mod
 from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
 from common.config import ConfigError, ConfigProvider, multi_agent_config
@@ -1480,6 +1481,8 @@ def _process_record(
     queue_url: str = "",
     remaining_time_ms: Callable[[], int] | None = None,
     events: list[dict[str, Any]] | None = None,
+    s3: Any = None,
+    archive_bucket: str = "",
 ) -> str:
     """Run one SQS record through the pipeline.
 
@@ -1622,6 +1625,19 @@ def _process_record(
             failure_notice_published=notice,
             prompt_sha256=delivered_prompt_sha256,
         )
+        _archive_run(
+            s3=s3,
+            bucket=archive_bucket,
+            table=table,
+            envelope=envelope,
+            head_sha=envelope.head_sha,
+            status="failed",
+            pipeline=archive_mod.resolve_pipeline(record_events),
+            events=record_events,
+            run_id=record_run_id,
+            started_ts_ms=int(started * 1000),
+            clock=clock,
+        )
         return "discarded_error"
     duration_ms = max(0, int((clock() - started) * 1000))
     status = _OUTCOME_STATUS[outcome.kind]
@@ -1637,7 +1653,114 @@ def _process_record(
         failure_notice_published="false",
         prompt_sha256=delivered_prompt_sha256,
     )
+    if outcome.kind in (OutcomeKind.PUBLISHED, OutcomeKind.PUBLISHED_FINALIZE_CONFLICT):
+        # Archive AFTER finalize (and after any shadow call — none exists
+        # yet, T035/T036; this post-run_review point stays past it by
+        # construction). Discard outcomes archive nothing: no review ran.
+        degraded = any(
+            isinstance(event, dict) and event.get("type") == "degraded_to_single_pass"
+            for event in record_events
+        )
+        _archive_run(
+            s3=s3,
+            bucket=archive_bucket,
+            table=table,
+            envelope=envelope,
+            head_sha=outcome.head_sha or envelope.head_sha,
+            status="degraded_single_pass" if degraded else "published",
+            pipeline=archive_mod.resolve_pipeline(record_events),
+            events=record_events,
+            run_id=record_run_id,
+            started_ts_ms=int(started * 1000),
+            clock=clock,
+        )
     return status
+
+
+def _archive_run(
+    *,
+    s3: Any,
+    bucket: str,
+    table: Any,
+    envelope: Envelope,
+    head_sha: str,
+    status: str,
+    pipeline: str,
+    events: list[dict[str, Any]],
+    run_id: str,
+    started_ts_ms: int,
+    clock: Clock,
+) -> None:
+    """Best-effort run archive (HLD-004 §6, T029): S3 puts of
+    `events.jsonl` + `meta.json`, then the DDB index row — AFTER finalize,
+    never inside the review callback. NEVER raises: an archive failure
+    must not fail (or redeliver) an already-published review, so every
+    fault is a structured warning. No bucket (or no client) means the
+    feature is off — return silently (missing) or warn (misconfigured).
+    """
+    if not bucket:
+        return
+    if s3 is None:
+        logger.warning(
+            "archive_skipped",
+            extra={"status": "archive_no_client", "error_class": "missing_s3_client"},
+        )
+        return
+    try:
+        finished_ts_ms = int(clock() * 1000)
+        meta = archive_mod.build_meta(
+            run_id=run_id,
+            pr=envelope.pr_number,
+            sha=head_sha,
+            pipeline=pipeline,
+            status=status,
+            started_ts=started_ts_ms,
+            finished_ts=finished_ts_ms,
+        )
+        events_body = archive_mod.render_events_jsonl(events)
+        meta_body = archive_mod.render_meta(meta)
+        events_key = archive_mod.s3_key(envelope.pr_number, head_sha, run_id, "events.jsonl")
+        meta_key = archive_mod.s3_key(envelope.pr_number, head_sha, run_id, "meta.json")
+        s3.put_object(Bucket=bucket, Key=events_key, Body=events_body.encode("utf-8"))
+        s3.put_object(Bucket=bucket, Key=meta_key, Body=meta_body.encode("utf-8"))
+        if archive_mod.should_write_index_row(events):
+            item = archive_mod.build_index_item(
+                run_id=run_id,
+                pr=envelope.pr_number,
+                sha=head_sha,
+                pipeline=pipeline,
+                status=status,
+                started_ts=started_ts_ms,
+                archive_s3_key=events_key,
+                archive_written_at=finished_ts_ms,
+                findings_n=archive_mod.findings_count(events),
+            )
+            table.update_item(
+                Key={"pk": item["pk"]},
+                UpdateExpression=(
+                    "SET pr_number = :pr, started_ts = :started, sha = :sha,"
+                    " #st = :status, pipeline = :pipeline,"
+                    " archive_s3_key = :key, archive_written_at = :written,"
+                    " findings_n = :findings"
+                ),
+                ConditionExpression="attribute_not_exists(pk)",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={
+                    ":pr": item["pr_number"],
+                    ":started": item["started_ts"],
+                    ":sha": item["sha"],
+                    ":status": item["status"],
+                    ":pipeline": item["pipeline"],
+                    ":key": item["archive_s3_key"],
+                    ":written": item["archive_written_at"],
+                    ":findings": item["findings_n"],
+                },
+            )
+    except Exception as exc:
+        logger.warning(
+            "archive_failed",
+            extra={"status": "archive_failed", "error_class": _error_class(exc)},
+        )
 
 
 def _env_allowed_hosts() -> tuple[str, ...]:
@@ -1703,12 +1826,14 @@ def handler(
     _system_prompt: str | None = None,
     _allowed_hosts: tuple[str, ...] | None = None,
     _sqs: Any = None,
+    _s3: Any = None,
 ) -> dict[str, Any]:
     """SQS event → per-record pipeline; retryable faults raise (the batch
     fails and the queue redelivers), every other record completes. `_sqs`
     drives the Retry-After visibility edge; production builds a client
     lazily, tests inject a double (or omit it — the queue default then
-    applies)."""
+    applies). `_s3` + the `ARCHIVE_BUCKET` env drive the T029 run archive
+    (absent bucket = feature off; absent client with a bucket = warn)."""
     clock = _now if _now is not None else time.time
     sink: Sink = _sink if _sink is not None else sys.stdout.write
 
@@ -1769,6 +1894,15 @@ def handler(
                 _SQS_CLIENT = None
         sqs = _SQS_CLIENT
     queue_url = os.environ.get("WORK_QUEUE_URL", "")
+    archive_bucket = os.environ.get("ARCHIVE_BUCKET", "")
+    s3 = _s3
+    if s3 is None and archive_bucket:
+        try:
+            import boto3  # deferred: import-time must not require credentials
+
+            s3 = boto3.client("s3")
+        except Exception:
+            s3 = None
 
     records = event.get("Records") if isinstance(event, dict) else None
     results: list[str] = []
@@ -1792,6 +1926,8 @@ def handler(
                 sqs=sqs,
                 queue_url=queue_url,
                 remaining_time_ms=remaining_time_ms,
+                s3=s3,
+                archive_bucket=archive_bucket,
             )
         )
     return {"ok": True, "results": results}
