@@ -203,6 +203,8 @@ def test_envelope_invariants(type_name, thunk, _keys):
     assert "-" not in event["run_id"]
     assert isinstance(event["ts"], int) and not isinstance(event["ts"], bool)
     assert event["ts"] >= 0
+    # epoch-MILLISECONDS, not seconds: a seconds regression must fail the suite
+    assert event["ts"] > 10**12
     assert event["type"] == type_name
 
 

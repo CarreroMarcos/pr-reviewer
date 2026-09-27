@@ -16,7 +16,7 @@ not here.
 `_FIELD_SETS` is the single source of truth for the per-type field sets:
 constructors assert their payload against it via `_build`, and `to_jsonl`
 re-validates any dict against it at the render boundary — so a hand-built
-or post-construction-mutated dict can never serialize as an event.
+or structurally-mutated dict can never serialize as an event.
 
 Pure stdlib, no I/O, no boto3 import.
 """
