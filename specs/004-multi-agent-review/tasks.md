@@ -121,6 +121,12 @@
 - [ ] T058 [P] `docs/DECISIONS.md` append-only entries for landed rulings (Q8 mutex, Q9 retention, Q10 capacity, Q11 redrive — as implemented) — verify: doc review (AGENTS.md doc authority)
 - [ ] T059 Spec-conformance sweep: HLD ↔ implementation drift check (flags, env names, event types, contracts), AGENTS.md updates if loop-affecting facts changed — verify: full suite + contract tests + `uv run --frozen ruff check . && uv run --frozen ruff format --check .` green on `main`
 
+### Gate-owed hardening (Phase-1 addendum, added at Mars's direction 2026-09-27)
+
+- [ ] T060 Source real post-image `file_lengths` for the fan-out clamp (Gate-14 Finding 2 forward): the pipeline currently passes `file_lengths={}` (clamp passes everything through uncounted; verifier re-anchoring is the only guard, HLD :535-537); compute post-image totals from the diff envelope hunks (or an explicitly-determined alternative — disclose), thread the real mapping through the T023 closure into `run_fanout`, pin by test that a non-empty mapping reaches the clamp on the fan-out path — verify: `pytest tests/state_machine/test_fanout_containment.py tests/unit/test_fanout_sequencer.py` PASSES with the threading row (HLD :111-114)
+- [ ] T061 Harden the fan-out clock + synth fill (Gate-13 advisories): `_remaining_ms` fails closed on non-finite floats (`int()` currently lets NaN/Inf escape as ValueError/OverflowError, bypassing the single-pass fallback — Lambda-unreachable today, one-line guard); parametrized clock rows for non-finite + non-numeric shapes; budget-degrade path asserts the sequencer emits `events == []`; correct the synthesizer docstring — the second `_fill_prompt` pass CAN re-scan payload-embedded slot markers (prompt duplication only; verdict/event truth rides params, never the prompt) — verify: `pytest tests/unit/test_fanout_sequencer.py` PASSES (Gate-13 Findings 1-2)
+- [ ] T062 Route the terminal-row `FanoutDegraded` through failure-lifecycle observability (Gate-14 Finding 1): the pre-fallback budget-gate failure emits `degraded_no_budget` then re-raises raw — `_process_record` never logs `retry_queued` nor records a D2 disposition for it; catch `FanoutDegraded` at the record boundary via `is_retryable` → notice/log → re-raise UNCHANGED (redelivery semantics preserved; D2 notice idempotency per redelivery follows the existing notice path) — verify: `pytest tests/state_machine/test_fanout_containment.py` PASSES with the terminal-row observability rows
+
 ---
 
 ## Dependencies & Execution Order
