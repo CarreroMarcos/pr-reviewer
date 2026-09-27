@@ -13,6 +13,10 @@ Three sections, kept separable:
    machinery, closed-schema validation of the model verdict, policy
    routing (HIGH never killed; kills need cited reasons), post-image
    re-anchor counting onto `verification_done`.
+4. Synthesizer stage (D3, §5 item 3): deterministic four-condition
+   duplicate merge over verifier survivors (STOPWORDS title similarity,
+   highest severity wins, adjacent ordering), exact `## Findings`
+   rendering, one comment leg over the same pool/loop machinery.
 
 Sequencer assembly (`run_fanout`) lands in a later ticket and will call
 these sections at each stage boundary.
@@ -26,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import re
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +45,8 @@ from common.events import (
     agent_reasoning,
     agent_started,
     degraded_to_single_pass,
+    review_synthesized,
+    synthesizer_failed,
     verification_done,
     verification_failed,
 )
@@ -797,6 +804,550 @@ def run_verifier(
                 read_timeout_s=read_timeout_s,
                 effort=effort,
                 allowed_hosts=allowed_hosts,
+            )
+        )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+# Synthesizer stage (HLD-004 D3, §5 item 3). Pre-registered title-guard
+# contract: duplicate titles match at token Jaccard ≥ 0.6 over
+# lowercased tokens with stopwords removed. STOPWORDS is the frozen
+# infrastructure set below — conventional English grammar words
+# (multi-char only, so single-letter variable names keep their signal),
+# deliberately WITHOUT code-signaling words (null, missing, leak,
+# injection, unused, race, check, error, fail, ...). Threshold AND set
+# are tunable only by Phase-0 data (D8 effort-selection pre-registration
+# discipline); the ANTONym-pair caveat (with/without, before/after…
+# strip symmetrically per conventional lists) is accepted residual
+# noise inside the conjunctive four-condition rule, likewise tunable.
+STOPWORDS = frozenset(
+    {
+        "about",
+        "above",
+        "across",
+        "after",
+        "again",
+        "against",
+        "all",
+        "almost",
+        "along",
+        "already",
+        "also",
+        "always",
+        "among",
+        "another",
+        "any",
+        "anyone",
+        "anything",
+        "around",
+        "because",
+        "before",
+        "behind",
+        "below",
+        "between",
+        "beyond",
+        "both",
+        "cannot",
+        "could",
+        "despite",
+        "does",
+        "doing",
+        "done",
+        "down",
+        "during",
+        "each",
+        "either",
+        "enough",
+        "even",
+        "every",
+        "everyone",
+        "everything",
+        "further",
+        "having",
+        "however",
+        "into",
+        "itself",
+        "moreover",
+        "mostly",
+        "neither",
+        "never",
+        "nevertheless",
+        "next",
+        "nobody",
+        "none",
+        "nor",
+        "not",
+        "nothing",
+        "now",
+        "nowhere",
+        "often",
+        "otherwise",
+        "over",
+        "rather",
+        "same",
+        "several",
+        "should",
+        "since",
+        "some",
+        "someone",
+        "something",
+        "still",
+        "such",
+        "than",
+        "therefore",
+        "though",
+        "through",
+        "toward",
+        "towards",
+        "under",
+        "unless",
+        "until",
+        "upon",
+        "versus",
+        "whether",
+        "while",
+        "within",
+        "without",
+        "would",
+        "an",
+        "and",
+        "are",
+        "was",
+        "were",
+        "been",
+        "being",
+        "will",
+        "shall",
+        "must",
+        "might",
+        "may",
+        "very",
+        "much",
+        "many",
+        "most",
+        "more",
+        "less",
+        "least",
+        "only",
+        "just",
+        "ever",
+        "quite",
+        "maybe",
+        "perhaps",
+        "indeed",
+        "instead",
+        "likewise",
+        "anyway",
+        "besides",
+        "furthermore",
+        "hence",
+        "thus",
+        "accordingly",
+        "meanwhile",
+        "the",
+        "with",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "then",
+        "there",
+        "here",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "what",
+        "how",
+        "why",
+        "them",
+        "they",
+        "their",
+        "theirs",
+        "your",
+        "yours",
+        "our",
+        "ours",
+        "its",
+        "up",
+        "out",
+        "off",
+        "on",
+        "in",
+        "at",
+        "to",
+        "of",
+        "for",
+        "by",
+        "as",
+        "is",
+        "be",
+        "am",
+        "or",
+        "so",
+        "too",
+        "can",
+    }
+)
+
+TITLE_SIMILARITY_THRESHOLD = 0.6
+_LINE_PROXIMITY = 2
+
+_SEVERITY_RANK = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_SLOT_RE = re.compile(r"\{\{FINDINGS_SECTION\}\}|\{\{ACCEPTED_RESIDUALS\}\}")
+
+
+def _title_tokens(title: str) -> frozenset[str]:
+    return frozenset(token for token in _TOKEN_RE.findall(title.lower()) if token not in STOPWORDS)
+
+
+def _title_jaccard(first: str, second: str) -> float:
+    left, right = _title_tokens(first), _title_tokens(second)
+    union = left | right
+    if not union:
+        # No positive evidence either way: similarity 0 (never merge on
+        # vacuous titles — the guard fails closed toward keeping).
+        return 0.0
+    return len(left & right) / len(union)
+
+
+def _norm_path(path: str) -> str:
+    cleaned = path.strip()
+    while cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return cleaned
+
+
+def _duplicates(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """D3 four-condition duplicate predicate: same file AND proximate
+    lines AND same category AND similar titles. All four, no shortcuts."""
+    return (
+        _norm_path(first["file_path"]) == _norm_path(second["file_path"])
+        and abs(first["line_start"] - second["line_start"]) <= _LINE_PROXIMITY
+        and first["category"] == second["category"]
+        and _title_jaccard(first["title"], second["title"]) >= TITLE_SIMILARITY_THRESHOLD
+    )
+
+
+def _severity_rank(severity: Any) -> int:
+    # Unknown strings (verifier passthrough, Gate-6(c)) rank 0: they
+    # never outrank a known severity; ties keep the anchor.
+    return _SEVERITY_RANK.get(severity, 0) if isinstance(severity, str) else 0
+
+
+def dedupe_findings(
+    verified: list[dict[str, Any]], escalated: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Deterministic duplicate merge over verifier survivors (HLD D3).
+
+    Survivors pool in location-major order (path, start, end, category,
+    title — fully deterministic regardless of model output order, and
+    non-duplicate same-location pairs land ADJACENT as pinned). Each
+    item greedily joins the first anchor group it duplicates (anchor
+    linkage — no transitive chaining across distant items). Merged
+    groups keep the anchor's fields with severity upgraded to the group
+    maximum; any-escalated groups stay escalated (the flag never drops
+    silently). Merged items carry the kept anchor's fields plus an
+    `escalated` bool — nothing else is added or removed.
+    """
+    flagged = [(dict(item), False) for item in verified]
+    flagged += [(dict(item), True) for item in escalated]
+    flagged.sort(
+        key=lambda pair: (
+            _norm_path(pair[0]["file_path"]),
+            pair[0]["line_start"],
+            pair[0]["line_end"],
+            pair[0]["category"],
+            pair[0]["title"],
+        )
+    )
+    groups: list[list[dict[str, Any]]] = []
+    group_escalated: list[bool] = []
+    for item, is_escalated in flagged:
+        anchor = None
+        for index, group in enumerate(groups):
+            if _duplicates(group[0], item):
+                anchor = index
+                break
+        if anchor is None:
+            groups.append([item])
+            group_escalated.append(is_escalated)
+            continue
+        group = groups[anchor]
+        if _severity_rank(item["severity"]) > _severity_rank(group[0]["severity"]):
+            group[0]["severity"] = item["severity"]
+        group_escalated[anchor] = group_escalated[anchor] or is_escalated
+    merged = []
+    for group, is_escalated in zip(groups, group_escalated, strict=True):
+        entry = group[0]
+        entry["escalated"] = is_escalated
+        merged.append(entry)
+    return merged
+
+
+def _one_line(text: Any) -> str:
+    # Single-line bullets: the scorer counts wrapped continuations as
+    # unparsable, so collapse all whitespace runs (titles, descriptions
+    # and fixes are model-controlled free text).
+    return re.sub(r"\s+", " ", str(text)).strip()
+
+
+def render_findings_section(merged: list[dict[str, Any]]) -> str:
+    """Render the exact `## Findings` section (HLD D3, §5 item 3).
+
+    One `- [SEVERITY] \\`path:line\\` — title. Description. Fix: …`
+    bullet per merged item, backticked location (the scorer REQUIRES
+    backticked `path:LINE` — unbackticked locations parse as
+    unparsable), the `[Requires Verification]` marker on any escalated
+    item: an UNMERGED escalated item renders at its ORIGINAL severity;
+    a merged group renders at group-max severity (the merge rule wins
+    for the bullet) and keeps the marker (the flag never drops).
+    Empty input renders the
+    single-pass sentinel sentence (the scorer skips it: zero findings,
+    zero unparsable).
+    """
+    if not merged:
+        return "## Findings\n\nNo significant issues found.\n"
+    lines = ["## Findings", ""]
+    for item in merged:
+        marker = "[Requires Verification] " if item.get("escalated") else ""
+        lines.append(
+            f"- [{item['severity']}] `{item['file_path']}:{item['line_start']}`"
+            f" — {marker}{_one_line(item['title'])}. {_one_line(item['description'])}"
+            f" Fix: {_one_line(item['suggested_fix'])}."
+        )
+    return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class SynthResult:
+    """Synthesizer outcome: the model-rendered canonical comment, the
+    deterministic merged findings JSON (event + eval truth), and the
+    duplicate-drop count (`survivors − bullets`)."""
+
+    comment: str
+    merged: list[dict[str, Any]]
+    dropped_as_duplicate_n: int
+
+
+class _SynthFailure(Exception):
+    """One synthesizer leg failed with a known class: the collector
+    emits `synthesizer_failed` and raises `FanoutDegraded`. Internal
+    control flow only — never crosses the stage boundary."""
+
+    def __init__(self, error_class: str, latency_ms: int) -> None:
+        self.error_class = error_class
+        self.latency_ms = latency_ms
+        super().__init__(f"synthesizer leg failed: {error_class}")
+
+
+def _render_residuals(residuals: list[str]) -> str:
+    # Gate-6(d): empty residuals substitute as the empty string.
+    return "\n".join(f"- {residual}" for residual in residuals)
+
+
+def _fill_prompt(template: str, section: str, residuals: str) -> str:
+    # Single-pass slot substitution (Gate-6(a) payload-literal safety):
+    # replacements never re-scan each other, so finding/residual text
+    # containing slot-looking markers cannot hijack the template.
+    def replace(match: re.Match[str]) -> str:
+        if "FINDINGS_SECTION" in match.group(0):
+            return section
+        return residuals
+
+    return _SLOT_RE.sub(replace, template)
+
+
+async def _synth_coro(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    pool: ThreadPoolExecutor,
+    fn: Callable[..., ReviewResult],
+    prompt: str,
+    read_timeout_s: int,
+    effort: str,
+    api_key: str,
+    model: str,
+    endpoint: str,
+    allowed_hosts: frozenset[str] | None,
+) -> tuple[str, int, int]:
+    """One comment-render leg — same authorship discipline as the wave:
+    the sync provider call dispatches to the pool while this coroutine,
+    on the loop thread, awaits it. Returns (comment, tokens_in,
+    tokens_out). Raises `_SynthFailure`; cancellation propagates for
+    the collector to record."""
+    start = time.monotonic()
+    try:
+        result = await loop.run_in_executor(
+            pool,
+            functools.partial(
+                fn,
+                api_key=api_key,
+                model=model,
+                endpoint=endpoint,
+                system_prompt=prompt,
+                # The synthesizer has no diff access (§5 flow feeds it
+                # findings + residuals only) — empty user content is the
+                # faithful argument; review_diff requires diff_text.
+                diff_text="",
+                thinking_enabled=True,
+                reasoning_effort=effort,
+                read_timeout_s=read_timeout_s,
+                allowed_hosts=allowed_hosts,
+            ),
+        )
+    except asyncio.CancelledError:
+        raise
+    except LlmError as exc:
+        raise _SynthFailure(exc.error_class, _latency_ms(start)) from None
+    except Exception as exc:
+        raise _SynthFailure("unknown", _latency_ms(start)) from exc
+    return result.content, result.prompt_tokens, result.completion_tokens
+
+
+async def _synth_async(
+    *,
+    run_id: str,
+    cfg: MultiAgentConfig,
+    pool: ThreadPoolExecutor,
+    fn: Callable[..., ReviewResult],
+    prompt: str,
+    merged: list[dict[str, Any]],
+    dropped_as_duplicate_n: int,
+    read_timeout_s: int,
+    effort: str,
+    api_key: str,
+    model: str,
+    endpoint: str,
+    allowed_hosts: frozenset[str] | None,
+    events: list[dict[str, Any]],
+) -> SynthResult:
+    start = time.monotonic()
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(
+        _synth_coro(
+            loop=loop,
+            pool=pool,
+            fn=fn,
+            prompt=prompt,
+            read_timeout_s=read_timeout_s,
+            effort=effort,
+            api_key=api_key,
+            model=model,
+            endpoint=endpoint,
+            allowed_hosts=allowed_hosts,
+        )
+    )
+    _, pending = await asyncio.wait(
+        {task}, timeout=cfg.synthesizer_wait_for_s, return_when=asyncio.ALL_COMPLETED
+    )
+    if pending:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        latency_ms = _latency_ms(start)
+        events.append(
+            synthesizer_failed(error_class="timeout", latency_ms=latency_ms, run_id=run_id)
+        )
+        raise FanoutDegraded("timeout", "synthesizer")
+    try:
+        comment, tokens_in, tokens_out = task.result()
+    except _SynthFailure as exc:
+        events.append(
+            synthesizer_failed(
+                error_class=exc.error_class, latency_ms=exc.latency_ms, run_id=run_id
+            )
+        )
+        raise FanoutDegraded(exc.error_class, "synthesizer") from None
+    # Trust boundary (documented): the comment's ## Findings fidelity to
+    # `merged` is prompt-contract (verbatim-copy instruction) and
+    # eval-measured (D8 Gate 4) — never runtime-rejected. A paraphrasing
+    # model degrades eval scores, not this stage: the event always
+    # carries the deterministic code truth.
+    events.append(
+        review_synthesized(
+            findings_merged_n=len(merged),
+            dropped_as_duplicate_n=dropped_as_duplicate_n,
+            latency_ms=_latency_ms(start),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            findings=merged,
+            run_id=run_id,
+        )
+    )
+    return SynthResult(
+        comment=comment, merged=merged, dropped_as_duplicate_n=dropped_as_duplicate_n
+    )
+
+
+def run_synthesizer(
+    *,
+    run_id: str,
+    cfg: MultiAgentConfig,
+    api_key: str,
+    model: str,
+    endpoint: str,
+    synth_prompt: str,
+    verified: list[dict[str, Any]],
+    escalated: list[dict[str, Any]],
+    residuals: list[str] | None = None,
+    review_fn: Callable[..., ReviewResult] | None = None,
+    allowed_hosts: frozenset[str] | None = None,
+    events: list[dict[str, Any]],
+) -> SynthResult:
+    """Run the synthesis stage: deterministic duplicate merge, exact
+    ## Findings rendering into the prompt (verbatim-copy block), one
+    comment leg, `review_synthesized` event with code-exact counts.
+
+    `verified`/`escalated` are the verifier's finding-shaped items;
+    `residuals` are accepted-residual lines (HLD §5 flow feeds them to
+    the synthesizer — raw lines here, never the loader: ADV-17's file
+    wiring belongs to the assembly ticket). `synth_prompt` is the
+    template carrying `{{FINDINGS_SECTION}}` + `{{ACCEPTED_RESIDUALS}}`
+    slots (NO `{{DIFF}}` — the flow feeds the synthesizer no diff; the
+    summary derives solely from the findings). Empty survivors still
+    run the leg (uniform behavior): merged is empty, the section is the
+    sentinel, counts zeroed.
+
+    Returns `SynthResult`; any leg failure emits `synthesizer_failed`
+    and raises `FanoutDegraded` for the review closure to catch.
+    """
+    merged = dedupe_findings(verified, escalated)
+    dropped_as_duplicate_n = (len(verified) + len(escalated)) - len(merged)
+    prompt = _fill_prompt(
+        synth_prompt,
+        render_findings_section(merged),
+        _render_residuals(residuals or []),
+    )
+    fn = review_fn if review_fn is not None else llm.review_diff
+    read_timeout_s = llm._read_timeout_s()
+    # ADV-9 (first wiring PR): env-sourced effort rides stripped.
+    effort = cfg.reasoning_effort.strip()
+    pool = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix=f"fanout-{run_id[:8]}",
+    )
+    try:
+        return asyncio.run(
+            _synth_async(
+                run_id=run_id,
+                cfg=cfg,
+                pool=pool,
+                fn=fn,
+                prompt=prompt,
+                merged=merged,
+                dropped_as_duplicate_n=dropped_as_duplicate_n,
+                read_timeout_s=read_timeout_s,
+                effort=effort,
+                api_key=api_key,
+                model=model,
+                endpoint=endpoint,
+                allowed_hosts=allowed_hosts,
+                events=events,
             )
         )
     finally:
