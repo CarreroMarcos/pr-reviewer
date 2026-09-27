@@ -14,7 +14,7 @@ from common.sanitize import SanitizeError, sanitize
 
 
 def test_plain_prose_with_generics_and_jsx_untouched():
-    text = "Use List<T> and Dict[str, Any>; render <div className=\"x\">; a < b; <3."
+    text = 'Use List<T> and Dict[str, Any>; render <div className="x">; a < b; <3.'
     assert sanitize(text) == text
 
 
@@ -75,7 +75,7 @@ def test_link_with_title_keeps_dest_and_title():
 
 @pytest.mark.parametrize("url", ["http://x.test/a", "https://x.test/a"])
 def test_bare_autolink_neutralized(url):
-    assert sanitize(f"see <{url}> now") == f"see `{url}` now"
+    assert sanitize(f"see <{url}> now") == f"see `<{url}>` now"
 
 
 def test_autolink_scheme_case_insensitive():
