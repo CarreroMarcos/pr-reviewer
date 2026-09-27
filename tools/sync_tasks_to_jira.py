@@ -32,7 +32,9 @@ def sid_for(spec: str, tid: str) -> str:
     """Jira-facing task id: bare for 001 (legacy tickets), spec-prefixed otherwise.
 
     Spec Task ID is the upsert key matched via JQL '~' (token match), so bare
-    ids collide across specs; only the original spec keeps them bare.
+    ids collide across specs; only the original spec keeps them bare. The
+    result is always spec (whitelist-validated) + tid (TASK_RE-bound
+    [0-9a-z-]) — no quotes/metacharacters, safe for JQL interpolation.
     """
     return tid if spec == "001" else f"{spec}-{tid}"
 
@@ -223,7 +225,7 @@ def main() -> None:
         payload_fields = {
             "summary": f"{t['sid']}: {t['summary']}"[:255],
             "description": desc,
-            field_id: t["id"],
+            field_id: t["sid"],
             "labels": labels,
         }
         if dry:
