@@ -278,6 +278,23 @@ def test_medium_low_kill_without_reason_escalates(cid):
     assert outcome["escalated"][0]["escalation_reason"] == REROUTE_MARKER
 
 
+@pytest.mark.parametrize("cid", ["security:0", "tests:0"])
+def test_medium_low_kill_whitespace_reason_escalates(cid):
+    """Whitespace-only cites nothing — the presence gate is non-blank."""
+    payload = {
+        "verified": [],
+        "killed": [{"candidate_id": cid, "kill_reason": "   "}],
+        "escalated": [],
+    }
+    outcome, _ = result_of(
+        ScriptedVerifierCall(("ok", payload)),
+        candidates=[c for c in CANDIDATES if c["candidate_id"] == cid],
+    )
+    assert outcome["killed"] == []
+    assert len(outcome["escalated"]) == 1
+    assert outcome["escalated"][0]["escalation_reason"] == REROUTE_MARKER
+
+
 # --- re-anchoring count ------------------------------------------------------------
 
 

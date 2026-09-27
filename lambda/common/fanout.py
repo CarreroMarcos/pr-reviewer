@@ -549,8 +549,9 @@ def _route_verdict(
     """Apply the D3 kill policy + count re-anchors.
 
     HIGH-severity kills reroute to escalated (never killed, no
-    exceptions); MEDIUM/LOW kills stand ONLY with a non-empty
-    kill_reason (the evidence-citation substance is prompt contract) —
+    exceptions); MEDIUM/LOW kills stand ONLY with a non-blank
+    kill_reason (whitespace cites nothing; the evidence-citation
+    substance is prompt contract) —
     reasonless kills reroute to escalated, never fail. Rerouted items
     are rebuilt from the trusted candidate coordinates (killed items
     carry none) with the model's reason preserved, or the fixed policy
@@ -566,8 +567,8 @@ def _route_verdict(
     for item in validated["killed"]:
         cid = item["candidate_id"]
         candidate = by_id[cid]
-        reason = item["kill_reason"]
-        if candidate.get("severity") == "HIGH" or not reason:
+        cited = item["kill_reason"].strip()
+        if candidate.get("severity") == "HIGH" or not cited:
             verdict["escalated"].append(
                 {
                     "candidate_id": cid,
@@ -579,11 +580,11 @@ def _route_verdict(
                     "suggested_fix": candidate["suggested_fix"],
                     "severity": candidate["severity"],
                     "category": candidate["category"],
-                    "escalation_reason": reason or _POLICY_REROUTE_NOTE,
+                    "escalation_reason": cited or _POLICY_REROUTE_NOTE,
                 }
             )
         else:
-            verdict["killed"].append({"candidate_id": cid, "kill_reason": reason})
+            verdict["killed"].append({"candidate_id": cid, "kill_reason": item["kill_reason"]})
     reanchored_n = 0
     for item in verdict["verified"] + verdict["escalated"]:
         candidate = by_id[item["candidate_id"]]
@@ -606,7 +607,6 @@ async def _verifier_coro(
     pool: ThreadPoolExecutor,
     fn: Callable[..., ReviewResult],
     run_id: str,
-    cfg: MultiAgentConfig,
     api_key: str,
     model: str,
     endpoint: str,
@@ -681,7 +681,6 @@ async def _verify_async(
             pool=pool,
             fn=fn,
             run_id=run_id,
-            cfg=cfg,
             api_key=api_key,
             model=model,
             endpoint=endpoint,
