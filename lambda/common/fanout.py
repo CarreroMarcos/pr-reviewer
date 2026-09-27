@@ -31,6 +31,7 @@ import asyncio
 import functools
 import json
 import re
+import secrets
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -999,7 +1000,7 @@ _LINE_PROXIMITY = 2
 
 _SEVERITY_RANK = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
-_SLOT_RE = re.compile(r"\{\{FINDINGS_SECTION\}\}|\{\{ACCEPTED_RESIDUALS\}\}")
+_SLOT_RE = re.compile(r"\{\{([A-Za-z_]+)\}\}")
 
 
 def _title_tokens(title: str) -> frozenset[str]:
@@ -1151,14 +1152,14 @@ def _render_residuals(residuals: list[str]) -> str:
     return "\n".join(f"- {residual}" for residual in residuals)
 
 
-def _fill_prompt(template: str, section: str, residuals: str) -> str:
+def _fill_prompt(template: str, values: Mapping[str, str]) -> str:
     # Single-pass slot substitution (Gate-6(a) payload-literal safety):
     # replacements never re-scan each other, so finding/residual text
     # containing slot-looking markers cannot hijack the template.
+    # Unknown slots pass through untouched (tolerant — each assembly
+    # owns its slots; only the caller's keys fill).
     def replace(match: re.Match[str]) -> str:
-        if "FINDINGS_SECTION" in match.group(0):
-            return section
-        return residuals
+        return values.get(match.group(1), match.group(0))
 
     return _SLOT_RE.sub(replace, template)
 
@@ -1320,8 +1321,10 @@ def run_synthesizer(
     dropped_as_duplicate_n = (len(verified) + len(escalated)) - len(merged)
     prompt = _fill_prompt(
         synth_prompt,
-        render_findings_section(merged),
-        _render_residuals(residuals or []),
+        {
+            "FINDINGS_SECTION": render_findings_section(merged),
+            "ACCEPTED_RESIDUALS": _render_residuals(residuals or []),
+        },
     )
     fn = review_fn if review_fn is not None else llm.review_diff
     read_timeout_s = llm._read_timeout_s()
@@ -1352,3 +1355,134 @@ def run_synthesizer(
         )
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+# Prompt assembly + nonced injection delimiters (HLD-004 §5 items 1, 4).
+#
+# Pure string mechanics: each function takes template + data and returns
+# one model-visible prompt string. NO stage-signature changes, NO
+# run_fanout wiring — the homeless assembly ticket owns integration
+# (Gate-9 Finding 2); these functions are its building blocks.
+#
+# Freshness reading (HLD §5 scope pin vs task-text EXACTLY-TWICE): the
+# pin's "one fresh nonce per model-visible prompt string" is the
+# freshness SCOPE (no cross-string reuse ever); within a string each
+# nonced block binds its OWN nonce so every nonce appears EXACTLY TWICE
+# (own open/close tags). A verifier prompt therefore carries two nonces
+# (candidates + reasoning), a synthesizer prompt one, specialist prompts
+# none. Collision re-rolls are deliberately absent: at 2^-64 per string
+# the check would be theater, and boundary-break DETECTION belongs to
+# the sequencer (which owns the nonce and the content together), never
+# to assembly.
+#
+# The diff is fenced-verbatim (plain ``` fences, exact bytes — never
+# escaped, never stripped; one structural newline separates content
+# from the closer). It is NEVER nonced: HLD item 1 binds nonces to
+# stage-boundary <<<>>> blocks only, and the task text pins specialists
+# receiving the diff un-nonced.
+
+
+def new_nonce() -> str:
+    """One 64-bit hex stage nonce (HLD §5 item 1 verbatim:
+    `secrets.token_hex(8)`)."""
+    return secrets.token_hex(8)
+
+
+def candidate_findings_block(*, candidates: list[dict[str, Any]], nonce: str) -> str:
+    """Wrap verifier candidates in the nonced stage-boundary block (HLD
+    §5 item 1 verbatim tags). Compact JSON encoding (repo discipline);
+    the contract is round-trip (`json.loads` recovers the structures),
+    not byte-identity — byte-verbatim is the DIFF's pin, not this
+    block's."""
+    body = json.dumps(candidates, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return (
+        f'<<<CANDIDATE_FINDINGS nonce="{nonce}">>>\n'
+        f"{body}\n"
+        f'<<<END_CANDIDATE_FINDINGS nonce="{nonce}">>>'
+    )
+
+
+def reasoning_block(*, excerpts: list[tuple[str, str | None]], nonce: str) -> str:
+    """Wrap specialist reasoning excerpts (HLD §5 item 4 verbatim tags).
+    Present excerpts only (absent reasoning emits no entry — D6 renders
+    when present); the block itself is ALWAYS emitted (uniform shape —
+    every verifier/synthesizer prompt carries exactly one reasoning
+    block even with an empty body). Excerpt bytes ride verbatim."""
+    body = "\n".join(f"[{specialty}]\n{excerpt}" for specialty, excerpt in excerpts if excerpt)
+    return (
+        f'<<<SPECIALIST_REASONING nonce="{nonce}">>>\n'
+        f"{body}\n"
+        f'<<<END_SPECIALIST_REASONING nonce="{nonce}">>>'
+    )
+
+
+def _fenced_verbatim(diff_text: str) -> str:
+    # Four-backtick fence (CommonMark): a closing fence must be at least
+    # as long as the opening one, so a diff containing ``` lines cannot
+    # close the fence early. Every §5 pin still holds (verbatim, fenced,
+    # no escaping/mutation — fence length is unpinned). Residual: a diff
+    # line carrying 4+ backticks could still close it — accepted.
+    return "````\n" + diff_text + "\n````"
+
+
+def assemble_specialist_prompt(
+    *, template: str, diff_text: str, residuals: list[str] | None = None
+) -> str:
+    """Fill a specialist template: fenced-verbatim diff + rendered
+    residuals (shared `_render_residuals`: bullets, empty → ""). No
+    nonce anywhere (HLD §5 scope pin) — specialists never see delimiter
+    machinery."""
+    return _fill_prompt(
+        template,
+        {
+            "DIFF": _fenced_verbatim(diff_text),
+            "ACCEPTED_RESIDUALS": _render_residuals(residuals or []),
+        },
+    )
+
+
+def assemble_verifier_prompt(
+    *,
+    template: str,
+    candidates: list[dict[str, Any]],
+    excerpts: list[tuple[str, str | None]],
+    diff_text: str,
+) -> str:
+    """Fill a verifier template (nonced candidates block + fenced diff),
+    then append the nonced reasoning block (the template carries no
+    reasoning slot — instructions precede untrusted blocks). Two fresh
+    nonces, never shared across strings. No residuals: the HLD flow
+    does not feed the verifier residuals."""
+    filled = _fill_prompt(
+        template,
+        {
+            "CANDIDATE_FINDINGS": candidate_findings_block(
+                candidates=candidates, nonce=new_nonce()
+            ),
+            "DIFF": _fenced_verbatim(diff_text),
+        },
+    )
+    return filled + "\n" + reasoning_block(excerpts=excerpts, nonce=new_nonce())
+
+
+def assemble_synth_prompt(
+    *,
+    template: str,
+    findings_section: str,
+    residuals: list[str] | None = None,
+    excerpts: list[tuple[str, str | None]],
+) -> str:
+    """Fill a synthesizer template (rendered section + residuals), then
+    append the nonced reasoning block. One fresh nonce. (Run_synth fills
+    the same two slots internally for its leg; this assembly adds the
+    reasoning block the stage signature cannot carry — the sequencer
+    composes them, and the internal fill is a harmless no-op on
+    pre-filled prompts.)"""
+    filled = _fill_prompt(
+        template,
+        {
+            "FINDINGS_SECTION": findings_section,
+            "ACCEPTED_RESIDUALS": _render_residuals(residuals or []),
+        },
+    )
+    return filled + "\n" + reasoning_block(excerpts=excerpts, nonce=new_nonce())
