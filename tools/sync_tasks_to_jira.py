@@ -12,9 +12,20 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-TASKS_PATH = Path("specs/001-pr-reviewer/tasks.md")
+TASKS_PATHS = {
+    "001": Path("specs/001-pr-reviewer/tasks.md"),
+    "004": Path("specs/004-multi-agent-review/tasks.md"),
+}
 FIELD_NAME = "Spec Task ID"
-TASK_RE = re.compile(r"^- \[[ xX]\] (T\d+)(?: \[P\])?(?: \[US(\d+)\])? (.+)$")
+TASK_RE = re.compile(r"^- \[[ xX]\] (T\d+[a-z]?)(?: \[P\])?(?: \[US(\d+)\])? (.+)$")
+
+
+def tid_num(tid: str) -> int:
+    """Numeric part of a T-id; tolerates letter suffixes (T010a -> 10)."""
+    m = re.match(r"\d+", tid[1:])
+    if not m:
+        sys.exit(f"unparsable T-id {tid!r}: expected T<digits>[letter suffix]")
+    return int(m.group())
 
 
 def env(name: str) -> str:
@@ -87,12 +98,12 @@ def parse_tasks(text: str, scope: str) -> list[dict]:
             }
         )
     us2_min = min(
-        (int(t["id"][1:]) for t in parsed if t["us"] is not None and t["us"] >= 2),
+        (tid_num(t["id"]) for t in parsed if t["us"] is not None and t["us"] >= 2),
         default=None,
     )
     out = []
     for t in parsed:
-        n = int(t["id"][1:])
+        n = tid_num(t["id"])
         if scope == "mvp":
             if t["us"] is not None and t["us"] != 1:
                 continue
@@ -127,16 +138,22 @@ def main() -> None:
     email = env("JIRA_EMAIL")
     token = env("JIRA_API_TOKEN")
     dry = truthy(os.environ.get("DRY_RUN", "true"))
+    spec = (os.environ.get("SPEC") or "001").strip()
+    if spec not in TASKS_PATHS:
+        sys.exit(f"SPEC must be one of: {', '.join(TASKS_PATHS)}")
+    tasks_path = TASKS_PATHS[spec]
     scope = (os.environ.get("SCOPE") or "mvp").strip().lower()
     if scope not in {"mvp", "all", "us2", "us3", "us4", "us5"}:
         sys.exit("SCOPE must be one of: mvp, us2, us3, us4, us5, all")
-    if not TASKS_PATH.is_file():
-        sys.exit(f"missing {TASKS_PATH}")
+    if spec == "004" and scope != "all":
+        sys.exit("spec 004 has no [USn] scopes; SCOPE must be 'all'")
+    if not tasks_path.is_file():
+        sys.exit(f"missing {tasks_path}")
 
-    tasks = parse_tasks(TASKS_PATH.read_text(encoding="utf-8"), scope)
+    tasks = parse_tasks(tasks_path.read_text(encoding="utf-8"), scope)
     repo = os.environ.get("GITHUB_REPOSITORY", "CarreroMarcos/pr-reviewer")
     sha = os.environ.get("GITHUB_SHA", "main")
-    spec_url = f"https://github.com/{repo}/blob/{sha}/specs/001-pr-reviewer/tasks.md"
+    spec_url = f"https://github.com/{repo}/blob/{sha}/{tasks_path}"
     print(f"scope={scope} dry_run={dry} tasks={len(tasks)} project={key}")
 
     jira = Jira(base, email, token)
