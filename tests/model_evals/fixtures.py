@@ -573,6 +573,157 @@ _SEED_SPECS: tuple[dict, ...] = (
     },
 )
 
+# --- T037 growth specs: tests-gap + subtle-true (HLD D8) ---
+#
+# Same `_SEED_SPECS` shape (anchor-on-line, ≤60-line budget, one planted
+# defect each) so `_seed_builder` enforces the identical discipline.
+# Classification lives in TESTS_GAP_IDS / SUBTLE_TRUE_IDS below — the
+# manifests stay byte-compatible with the existing scorer contract.
+# Tests-gap: the corpus had ZERO tests-category coverage (D8). Each case
+# is a tests-code defect (tautology, skipped security test, clock-flaky
+# test) — the Tests specialist's scope per D3.
+# Subtle-true: TRUE defects that read innocent (wrongful-kill guards per
+# D8 gate 3 — the verifier must verify-or-escalate, never kill).
+
+_GAP_SPECS: tuple[dict, ...] = (
+    {
+        "id": "tautological_assertion",
+        "category": "tautological-assertion",
+        "path": "tests/test_checkout.py",
+        "line": 8,
+        "severity": "MEDIUM",
+        "hint": "tautological-assertion-no-verification",
+        "anchor": "assert True",
+        "old": [],
+        "new": [
+            "from unittest.mock import MagicMock",
+            "",
+            "",
+            "def test_checkout_charges_card():",
+            '    """Checkout charges the card once."""',
+            "    gateway = MagicMock()",
+            "    checkout(gateway, 1999)",
+            "    assert True",
+        ],
+    },
+    {
+        "id": "skipped_security_test",
+        "category": "skipped-test",
+        "path": "tests/test_auth.py",
+        "line": 4,
+        "severity": "MEDIUM",
+        "hint": "skipped-security-test-no-ticket",
+        "anchor": "pytest.mark.skip",
+        "old": [
+            "import pytest",
+            "",
+            "",
+            "def test_expired_token_rejected():",
+            '    """Expired tokens are rejected."""',
+            "    token = mint(expired=True)",
+            "    with pytest.raises(AuthError):",
+            "        guard(token)",
+        ],
+        "new": [
+            "import pytest",
+            "",
+            "",
+            '@pytest.mark.skip(reason="flaky in CI")',
+            "def test_expired_token_rejected():",
+            '    """Expired tokens are rejected."""',
+            "    token = mint(expired=True)",
+            "    with pytest.raises(AuthError):",
+            "        guard(token)",
+        ],
+    },
+    {
+        "id": "clock_dependent_test",
+        "category": "clock-dependent-test",
+        "path": "tests/test_cache.py",
+        "line": 7,
+        "severity": "LOW",
+        "hint": "clock-dependent-slow-test",
+        "anchor": "time.sleep",
+        "old": [],
+        "new": [
+            "import time",
+            "",
+            "",
+            "def test_entry_expires():",
+            '    """Cache entries expire after 60 seconds."""',
+            "    cache.put('k', 1)",
+            "    time.sleep(60)",
+            "    assert cache.get('k') is None",
+        ],
+    },
+)
+
+_SUBTLE_SPECS: tuple[dict, ...] = (
+    {
+        "id": "split_lock_race",
+        "category": "split-lock-race",
+        "path": "src/app/meters.py",
+        "line": 11,
+        "severity": "MEDIUM",
+        "hint": "split-lock-counter-lost-update",
+        "anchor": "current += 1",
+        "old": [
+            "from threading import Lock",
+            "",
+            "STATS_LOCK = Lock()",
+            "COUNTS = {}",
+            "",
+            "",
+            "def record(endpoint):",
+            '    """Count hits per endpoint."""',
+            "    with STATS_LOCK:",
+            "        COUNTS[endpoint] = COUNTS.get(endpoint, 0) + 1",
+            "        return COUNTS[endpoint]",
+        ],
+        "new": [
+            "from threading import Lock",
+            "",
+            "STATS_LOCK = Lock()",
+            "COUNTS = {}",
+            "",
+            "",
+            "def record(endpoint):",
+            '    """Count hits per endpoint."""',
+            "    with STATS_LOCK:",
+            "        current = COUNTS.get(endpoint, 0)",
+            "    current += 1",
+            "    with STATS_LOCK:",
+            "        COUNTS[endpoint] = current",
+            "        return COUNTS[endpoint]",
+        ],
+    },
+    {
+        "id": "naive_aware_datetime",
+        "category": "datetime-tz-mismatch",
+        "path": "src/app/expiry.py",
+        "line": 6,
+        "severity": "MEDIUM",
+        "hint": "naive-aware-datetime-mismatch",
+        "anchor": "datetime.now(timezone.utc)",
+        "old": [
+            "from datetime import datetime",
+            "",
+            "",
+            "def is_expired(expiry):",
+            '    """True when the expiry timestamp has passed."""',
+            "    return expiry < datetime.now()",
+        ],
+        "new": [
+            "from datetime import datetime, timezone",
+            "",
+            "",
+            "def is_expired(expiry):",
+            '    """True when the expiry timestamp has passed."""',
+            "    return expiry < datetime.now(timezone.utc)",
+        ],
+    },
+)
+
 
 def _seed_builder(spec: dict) -> Callable[[], tuple[str, dict, dict]]:
     """Build the zero-arg `(diff, manifest, meta)` builder for one seed spec."""
@@ -611,13 +762,24 @@ def _seed_builder(spec: dict) -> Callable[[], tuple[str, dict, dict]]:
 # Registry: single ordered mapping id -> builder. Seeded scoring cases are
 # the 12 specs above plus `representative_diff` (seeded SQLi); robustness
 # cases keep behavioral assertions and are excluded from recall/precision.
+# T037 growth registers through the same `_seed_builder` discipline below;
+# the scored vocabulary stays frozen (HLD D8: "13 seeded" = scored set).
 CORPUS: dict[str, Callable[[], tuple[str, dict, dict]]] = {"representative": representative_diff}
 for _spec in _SEED_SPECS:
+    CORPUS[_spec["id"]] = _seed_builder(_spec)
+for _spec in _GAP_SPECS:
+    CORPUS[_spec["id"]] = _seed_builder(_spec)
+for _spec in _SUBTLE_SPECS:
     CORPUS[_spec["id"]] = _seed_builder(_spec)
 CORPUS["injection"] = injection_diff
 CORPUS["large"] = large_diff
 
-SEED_SCORING_IDS: tuple[str, ...] = tuple(
-    case_id for case_id in CORPUS if case_id not in ("injection", "large")
-)
+TESTS_GAP_IDS: tuple[str, ...] = tuple(spec["id"] for spec in _GAP_SPECS)
+SUBTLE_TRUE_IDS: tuple[str, ...] = tuple(spec["id"] for spec in _SUBTLE_SPECS)
+
+# Frozen scored vocabulary (HLD D8): exactly the 13 pre-growth cases.
+# New classes register in CORPUS (capture/harness surface) but NEVER join
+# this tuple until a capture run pins their outputs (T039/T045) — the
+# single-pass scorer and its drift guards keep scoring exactly these 13.
+SEED_SCORING_IDS: tuple[str, ...] = ("representative",) + tuple(spec["id"] for spec in _SEED_SPECS)
 ROBUSTNESS_IDS: tuple[str, ...] = ("injection", "large")
