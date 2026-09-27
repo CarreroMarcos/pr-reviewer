@@ -265,10 +265,38 @@ def test_floors_clean_and_violated():
 
 
 def clean_inputs():
-    kills = {"wrongful_kills": 0, "matches": [], "subtle_violations": [], "subtle_checked": 1}
+    kills = {
+        "wrongful_kills": 0,
+        "matches": [],
+        "subtle_violations": [],
+        "kills_checked": 0,
+        "subtle_checked": 1,
+    }
     fidelity = {"dropped": 0, "invented": 0, "details": []}
     floors = {"fabricated": 0, "forbidden_hits": [], "passed": True}
     return kills, fidelity, floors
+
+
+def test_kill_counters_split_populations():
+    """Bot R2 Fix 4: `kills_checked` counts evaluated killed candidates;
+    `subtle_checked` counts evaluated subtle manifest findings — one
+    counter no longer serves two populations."""
+    report = mas.wrongful_kill_report(
+        runs=[
+            run_row(killed=["k1"], candidates=[with_id("k1", cand(line=11))]),
+            run_row(case_id="s", survived=["v1"], candidates=[with_id("v1", cand())]),
+        ],
+        manifests={
+            "c": {"expected_findings": [manifest_item()]},
+            "s": {"expected_findings": [manifest_item()]},
+        },
+        vectors={},
+        subtle_ids=["s"],
+    )
+    assert report["wrongful_kills"] == 1
+    assert report["kills_checked"] == 1
+    assert report["subtle_checked"] == 1
+    assert report["subtle_violations"] == []
 
 
 def test_evaluate_interim_reports_no_verdicts():
