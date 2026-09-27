@@ -90,12 +90,14 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from common import mutex as mutex_mod
 from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
 from common.config import ConfigError, ConfigProvider, multi_agent_config
 from common.diff import DiffError, fetch_diff, fetch_pr_head_sha
 from common.envelope import Envelope, EnvelopeError, validate_envelope
 from common.events import (
     checkpoint,
+    concurrency_single_pass,
     degraded_no_budget,
     degraded_to_single_pass,
     review_published,
@@ -221,6 +223,26 @@ class _BotoTable:
 
         try:
             return self._table.update_item(**kwargs)
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            code = response.get("Error", {}).get("Code") if isinstance(response, dict) else None
+            if code == "ConditionalCheckFailedException":
+                raise ConditionalCheckFailed(str(exc)) from exc
+            raise
+
+    def delete_item(self, **kwargs: Any) -> dict[str, Any]:
+        """Mutex-release passthrough (HLD-004 D9, T027): same
+        omit-if-empty names discipline and the same
+        `ConditionalCheckFailed` translation as `update_item`, so the
+        caller's exact alias maps (`_ACQUIRE_NAMES` / `_TOKEN_NAMES`
+        semantics) ride through unmutated — no re-aliasing here."""
+        from common.protocol import ConditionalCheckFailed
+
+        if not kwargs.get("ExpressionAttributeNames"):
+            kwargs.pop("ExpressionAttributeNames", None)
+
+        try:
+            return self._table.delete_item(**kwargs)
         except Exception as exc:
             response = getattr(exc, "response", None)
             code = response.get("Error", {}).get("Code") if isinstance(response, dict) else None
@@ -455,6 +477,34 @@ _FANOUT_PROMPT_FILES = {
 
 _RESIDUALS_FILENAME = "accepted-residuals.md"
 
+# Contender viability check (HLD-004 D9 contention path, T026): the
+# contender may only spend what fits after the margin and the fixed
+# pipeline reserve. Both numbers are PROVISIONAL pre-Phase-0 — the floor
+# is the measured ~240s server-side queue latency (below it a socket
+# budget cannot succeed), the reserve is HLD D9's ~90s
+# claim/fence/publish/finalize/archive overhead. Phase 0 tunes both;
+# deliberately module constants, NOT env knobs (the 12 HLD §8 checklist
+# env vars are closed — these join only by spec amendment).
+CONTENDER_READ_FLOOR_S = 240
+CONTENDER_FIXED_OVERHEAD_S = 90
+
+
+def _contender_read_timeout_s(remaining_ms: int | float | None, cfg: Any) -> int | None:
+    """Contender viability check: clamp `remaining − BUDGET_MARGIN_S −
+    ~90s` against the viability floor. Returns the clamped socket budget
+    (seconds, computed ONCE — the caller forwards this same value as
+    `read_timeout_s`) or `None` when below the floor or unreadable.
+
+    OWN predicate, distinct from elapsed-budget gate 4 (which governs the
+    holder's single-pass fallback): different math, no shared code path.
+    """
+    if isinstance(remaining_ms, bool) or not isinstance(remaining_ms, (int, float)):
+        return None
+    clamped = int(remaining_ms // 1000) - cfg.budget_margin_s - CONTENDER_FIXED_OVERHEAD_S
+    if clamped < CONTENDER_READ_FLOOR_S:
+        return None
+    return clamped
+
 
 def _load_fanout_prompts() -> dict[str, str]:
     """Production fan-out template source: the five `prompts/*.md` files.
@@ -514,6 +564,7 @@ def _make_review(
     events: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     fanout_prompts: Mapping[str, str] | None = None,
+    table: Any = None,
 ) -> Callable[[str, int], str]:
     """Protocol `review` port: diff → prior comment → LLM (single 401
     re-fetch, plus one immediate in-executor retry on `timeout` when the
@@ -535,7 +586,11 @@ def _make_review(
     dropped on the floor unless the caller keeps it); `run_id` is the
     run's uuid4-hex id (generated per invocation when `None`);
     `fanout_prompts` carries the five production templates (tests inject
-    sentinels; production loads `prompts/*.md` from disk)."""
+    sentinels; production loads `prompts/*.md` from disk).
+    `table` is the state table for the D9 mutex row (HLD-004 T027):
+    acquire after establish, release after the last lease-covered LLM
+    call; `None` (older callers, unit doubles) skips the mutex entirely
+    — today's single-pass behavior, unchanged."""
 
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
@@ -554,7 +609,7 @@ def _make_review(
                 )
             raise
 
-    def _call_llm(diff_text: str) -> Any:
+    def _call_llm(diff_text: str, read_timeout_s: int | None = None) -> Any:
         now = clock if clock is not None else time.time
 
         def _invoke(cfg: Any) -> Any:
@@ -564,6 +619,7 @@ def _make_review(
                 endpoint=cfg.glm_endpoint,
                 system_prompt=system_prompt,
                 diff_text=diff_text,
+                read_timeout_s=read_timeout_s,
                 allowed_hosts=allowed_hosts,
                 _connection_factory=llm_factory,
             )
@@ -679,6 +735,24 @@ def _make_review(
         evts = events if events is not None else []
         now = clock if clock is not None else time.time
         evts.append(checkpoint(stage="established", run_id=rid))
+        ma_cfg = multi_agent_config()
+        # D9 mutex (T027): acquire after validate/hydrate/establish,
+        # before any Z.AI call. The row lives in the state table; a
+        # failed acquire makes this record the contender (single-pass
+        # inline or budget SKIP below). No table → no mutex (older
+        # callers behave exactly as today).
+        lease: Any = None
+        t_acquired: float | None = None
+        contender = False
+        if table is not None:
+            t_acquired = now()
+            lease = mutex_mod.acquire(
+                table,
+                owner=envelope.delivery_guid,
+                now=t_acquired,
+                ttl_s=ma_cfg.mutex_lease_ttl_s,
+            )
+            contender = lease is None
         diff_result = _fetch_diff()
         evts.append(
             review_started(
@@ -693,9 +767,69 @@ def _make_review(
             )
         )
         evts.append(checkpoint(stage="diff_fetched", run_id=rid))
-        ma_cfg = multi_agent_config()
+        if contender:
+            content = _contender_content(
+                diff_result, head_sha, generation, ma_cfg, rid, evts, now, t_acquired
+            )
+            return content
         if ma_cfg.multi_agent == 1:
-            return _fanout_content(diff_result, head_sha, generation, ma_cfg, rid, evts, now)
+            content = _fanout_content(
+                diff_result, head_sha, generation, ma_cfg, rid, evts, now, lease, t_acquired
+            )
+        else:
+            content = _single_pass_inline(diff_result, head_sha, generation)
+        # Release AFTER the last lease-covered LLM call, BEFORE
+        # claim/fence/publish/finalize (all run after review() returns).
+        # A lost race (False) is ignored — the owner-guard converges.
+        if lease is not None:
+            mutex_mod.release(table, lease=lease)
+        return content
+
+    def _contender_content(
+        diff_result: Any,
+        head_sha: str,
+        generation: int,
+        ma_cfg: Any,
+        rid: str,
+        evts: list[dict[str, Any]],
+        now: Clock,
+        t_acquired: float | None,
+    ) -> str:
+        """Contender path (HLD D9): the mutex is held, so this record does
+        NOT defer and does NOT touch visibility — it runs single-pass
+        inline and completes normally. The viability check is its OWN
+        predicate: below the floor the call is SKIPPED (`transient`
+        `LlmError("timeout")` for the existing re-raise/notice path and
+        queue redelivery); at/above, one single-pass with the clamped
+        value forwarded as `read_timeout_s`. The contender holds no lease
+        — nothing to release, and publication runs unprotected (owner
+        guard converges). Emits only its own `concurrency_single_pass`
+        event (never `degraded_to_single_pass` — fan-out was never
+        attempted).
+        """
+        clamped = _contender_read_timeout_s(_safe_remaining_ms(), ma_cfg)
+        elapsed_ms = max(0, int((now() - t_acquired) * 1000)) if t_acquired is not None else 0
+        if clamped is None:
+            evts.append(
+                concurrency_single_pass(
+                    reason="mutex_held_no_budget", elapsed_ms=elapsed_ms, run_id=rid
+                )
+            )
+            raise LlmError("timeout")
+        evts.append(concurrency_single_pass(reason="mutex_held", elapsed_ms=elapsed_ms, run_id=rid))
+        return _single_pass_inline(diff_result, head_sha, generation, read_timeout_s=clamped)
+
+    def _single_pass_inline(
+        diff_result: Any,
+        head_sha: str,
+        generation: int,
+        read_timeout_s: int | None = None,
+    ) -> str:
+        """The existing single-pass inline path (prior comment → payload →
+        LLM → assemble + validate gate → publish-ready content), byte for
+        byte as before. `read_timeout_s` is the contender's clamped
+        forward (T026); `None` keeps today's `_read_timeout_s()`
+        resolution for every existing caller."""
         prior_comment = _fetch_prior_comment()
         payload = render_review_payload(
             title=diff_result.title,
@@ -703,7 +837,7 @@ def _make_review(
             diff_text=render_diff_text(diff_result),
             prior_comment=prior_comment,
         )
-        result = _call_llm(payload)
+        result = _call_llm(payload, read_timeout_s=read_timeout_s)
         usage["tokens"] = result.total_tokens
         comment = build_comment(
             repo_full_name=repo,
@@ -723,6 +857,8 @@ def _make_review(
         rid: str,
         evts: list[dict[str, Any]],
         now: Clock,
+        lease: Any,
+        t_acquired: float | None,
     ) -> str:
         """Fan-out attempt with single-pass fallback (HLD §5 wiring pin).
 
@@ -735,7 +871,9 @@ def _make_review(
         decides — pass: the existing single-pass inline path runs and its
         content returns; fail: `degraded_no_budget` is emitted and the
         `FanoutDegraded` re-raises (terminal for this attempt — the queue
-        owns the retry with a fresh budget on redelivery).
+        owns the retry with a fresh budget on redelivery). Past 50% TTL a
+        lease refresh precedes any fallback LLM work; a lost refresh
+        re-raises with no fallback and no re-assert.
 
         An unknown `failed_stage` re-raises immediately: it is never
         mislabeled into an event and no fallback is attempted (ADV-4).
@@ -779,6 +917,22 @@ def _make_review(
                     reason=exc.reason, failed_stage=exc.failed_stage, run_id=rid
                 )
             )
+            # Gate-15(c): 50%-TTL refresh scheduling. Past half the lease
+            # the original row may not cover the fallback call, so refresh
+            # before issuing more LLM work. A lost refresh STOPS all LLM
+            # work: re-raise without fallback and never re-assert (the
+            # raise path holds no valid lease and calls acquire nowhere).
+            # Below half-TTL the original lease still covers the fallback.
+            if (
+                lease is not None
+                and t_acquired is not None
+                and (now() - t_acquired) >= ma_cfg.mutex_lease_ttl_s / 2
+            ):
+                if (
+                    mutex_mod.refresh(table, lease=lease, now=now(), ttl_s=ma_cfg.mutex_lease_ttl_s)
+                    is None
+                ):
+                    raise
             remaining = _safe_remaining_ms()
             if remaining is None or not single_pass_budget_ok(remaining, ma_cfg):
                 elapsed_ms = max(0, int((now() - t0) * 1000))
@@ -788,24 +942,7 @@ def _make_review(
                     )
                 )
                 raise
-            prior_comment = _fetch_prior_comment()
-            payload = render_review_payload(
-                title=diff_result.title,
-                body=diff_result.body,
-                diff_text=render_diff_text(diff_result),
-                prior_comment=prior_comment,
-            )
-            result = _call_llm(payload)
-            usage["tokens"] = result.total_tokens
-            comment = build_comment(
-                repo_full_name=repo,
-                pr_number=pr_number,
-                review_content=result.content,
-                truncated=diff_result.truncated,
-                review_number=generation + 1,
-                now=(clock if clock is not None else time.time)(),
-            )
-            return comment.content
+            return _single_pass_inline(diff_result, head_sha, generation)
         comment = build_comment(
             repo_full_name=repo,
             pr_number=pr_number,
@@ -1409,6 +1546,7 @@ def _process_record(
                 remaining_time_ms=remaining_time_ms,
                 events=record_events,
                 run_id=record_run_id,
+                table=table,
             ),
             fence=_evented_fence,
             publish=_evented_publish,

@@ -134,20 +134,28 @@ class FakeTable:
     def update_item(self, **kwargs):
         update = kwargs.get("UpdateExpression", "")
         values = kwargs.get("ExpressionAttributeValues") or {}
-        if self.items.get(PK) is None:
-            self.items[PK] = {"pk": PK}
-        text = update.replace("#st", "status")
+        pk = (kwargs.get("Key") or {}).get("pk", PK)
+        if self.items.get(pk) is None:
+            self.items[pk] = {"pk": pk}
+        text = update.replace("#st", "status").replace("#owner", "owner").replace("#tok", "token")
         if text.startswith("REMOVE ") and " = " not in text:
             for attr in text[len("REMOVE ") :].split(", "):
-                self.items[PK].pop(attr.strip(), None)
-            return {"Attributes": dict(self.items[PK])}
+                self.items[pk].pop(attr.strip(), None)
+            return {"Attributes": dict(self.items[pk])}
         set_part = text[4:].partition(" REMOVE ")[0] if text.startswith("SET ") else ""
         for clause in set_part.split(", "):
             attr, _, placeholder = clause.partition(" = ")
             attr, placeholder = attr.strip(), placeholder.strip()
             if placeholder.startswith(":") and placeholder in values:
-                self.items[PK][attr] = values[placeholder]
-        return {"Attributes": dict(self.items[PK])}
+                self.items[pk][attr] = values[placeholder]
+        return {"Attributes": dict(self.items[pk])}
+
+    def delete_item(self, **kwargs):
+        """HLD-004 D9 mutex-release passthrough (T027 port extension):
+        drop the keyed row (conditions stay pinned by the state-machine
+        tier — permissive here by this double's contract)."""
+        self.items.pop((kwargs.get("Key") or {}).get("pk"), None)
+        return {}
 
 
 class ScriptedGitHub:

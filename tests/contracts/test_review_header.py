@@ -200,6 +200,15 @@ class _BotoShapedAdapter:
             ExpressionAttributeValues=kwargs.get("ExpressionAttributeValues"),
         )
 
+    def delete_item(self, **kwargs):
+        """HLD-004 D9 mutex-release passthrough (T027 port extension)."""
+        return self._inner.delete_item(
+            Key=kwargs["Key"],
+            ConditionExpression=kwargs["ConditionExpression"],
+            ExpressionAttributeNames=kwargs.get("ExpressionAttributeNames"),
+            ExpressionAttributeValues=kwargs.get("ExpressionAttributeValues"),
+        )
+
 
 class _Harness:
     def __init__(self, *, clock, table=None):

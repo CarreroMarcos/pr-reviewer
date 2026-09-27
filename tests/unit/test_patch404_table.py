@@ -115,6 +115,14 @@ class FakeTable:
             self.items[PK]["comment_id"] = values[":comment"]
         return {"Attributes": dict(self.items[PK])}
 
+    def delete_item(self, **kwargs):
+        """HLD-004 D9 mutex-release passthrough (T027 port extension):
+        drop the keyed row (the mutex row is never seeded here, so this
+        is a no-op in practice)."""
+        self.updates.append(kwargs.get("ConditionExpression"))
+        self.items.pop((kwargs.get("Key") or {}).get("pk"), None)
+        return {}
+
 
 class ScriptedGitHub:
     """Ordered (status, body) script consumed per call regardless of method;
