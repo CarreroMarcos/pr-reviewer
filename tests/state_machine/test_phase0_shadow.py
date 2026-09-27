@@ -46,6 +46,7 @@ from worker_handler import (
 
 REPO = "octo-org/hello-world"
 PR_NUMBER = 42
+PK = "review:octo-org/hello-world#42"
 SHA_B = "bb" * 20
 BASE_SHA = "00" * 20
 GUID_1 = "11111111-1111-4111-8111-111111111111"
@@ -199,9 +200,10 @@ class FakeLLMConnection:
 
 
 class FakeGitHub:
-    def __init__(self, log, *, post_id=POST_ID):
+    def __init__(self, log, *, post_id=POST_ID, on_write=None):
         self._log = log
         self._post_id = post_id
+        self._on_write = on_write
         self.calls = []
 
     def __call__(self, method, url, headers, body):
@@ -212,6 +214,8 @@ class FakeGitHub:
             call["body"] = None
         self.calls.append(call)
         self._log.append(("github", method))
+        if self._on_write is not None:
+            self._on_write(call)
         if method == "POST":
             return 201, json.dumps({"id": self._post_id}).encode()
         if method == "GET":
@@ -309,13 +313,14 @@ def drive(
     fanout_behavior=REVIEW_BODY,
     shadow_behavior=None,
     caps=None,
+    github_on_write=None,
 ):
     monkeypatch.setenv("MULTI_AGENT", multi_agent)
     monkeypatch.setenv("MULTI_AGENT_PHASE0", phase0)
     stub = FanoutStub(fanout_behavior)
     monkeypatch.setattr(worker_handler, "run_fanout", stub)
     provider, ssm = make_provider()
-    github = FakeGitHub(log)
+    github = FakeGitHub(log, on_write=github_on_write)
     if caps is not None:
         caps["github"] = github
     status = _process_record(
@@ -517,6 +522,42 @@ def test_shadow_archive_pipeline_and_row(monkeypatch):
     assert leg_logged and len(puts_at) == 2
 
 
+def test_conflict_publishes_and_participates_in_shadow(monkeypatch):
+    """Bot R2 Fix 2: `PUBLISHED_FINALIZE_CONFLICT` means the review
+    published (GitHub comment exists) — the fence loss is delivery
+    bookkeeping. Shadow still runs, archive row lands with
+    status="published" and the shadow pipeline literal."""
+    landed: dict = {}
+
+    def _takeover(call):
+        if not landed and call["method"] == "POST":
+            landed["moved"] = True
+            row = table.items[PK]
+            row["claim_owner"] = "22222222-2222-4222-8222-222222222222"
+
+    shared: list = []
+    table = InMemoryTable(log=shared)
+    s3 = FakeS3(log=shared)
+    events: list = []
+    log: list = []
+    status, _, _ = drive(
+        table=table,
+        s3=s3,
+        events=events,
+        log=log,
+        monkeypatch=monkeypatch,
+        multi_agent="0",
+        phase0="1",
+        github_on_write=_takeover,
+    )
+    assert status == "published_finalize_conflict"
+    assert ("shadow-leg",) in log  # shadow participated despite the fence loss
+    meta_key = next(k for k in (c["Key"] for c in s3.calls) if k.endswith("/meta.json"))
+    meta = json.loads(next(c["Body"] for c in s3.calls if c["Key"] == meta_key).decode())
+    assert (meta["pipeline"], meta["status"]) == ("phase0_shadow", "published")
+    assert table.get_item(f"archive:{meta['run_id']}") is not None
+
+
 def test_shadow_budget_boundary_runs(monkeypatch):
     """remaining == WAVE_WAIT_FOR_S + BUDGET_MARGIN_S (360_000ms) still
     runs the shadow (>=, fail-closed only below)."""
@@ -539,9 +580,10 @@ def test_shadow_budget_boundary_runs(monkeypatch):
     assert ("shadow-leg",) in log
 
 
-def test_shadow_skip_no_budget(monkeypatch):
-    """Below the gate: `review_skipped {phase0_no_budget}` EVENT, no wave
-    call, archive still written, NO index row."""
+def test_shadow_skip_no_budget(monkeypatch, caplog):
+    """Below the gate: `review_skipped {phase0_no_budget}` EVENT (plus a
+    `shadow_no_budget` warn — both skip paths warn), no wave call,
+    archive still written, NO index row."""
     monkeypatch.setattr(
         worker_handler,
         "run_wave",
@@ -553,21 +595,23 @@ def test_shadow_skip_no_budget(monkeypatch):
     table = InMemoryTable(log=shared)
     s3 = FakeS3(log=shared)
     events: list = []
-    status, _, _ = drive(
-        table=table,
-        s3=s3,
-        events=events,
-        log=[],
-        monkeypatch=monkeypatch,
-        multi_agent="0",
-        phase0="1",
-        remaining=100_000,
-    )
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        status, _, _ = drive(
+            table=table,
+            s3=s3,
+            events=events,
+            log=[],
+            monkeypatch=monkeypatch,
+            multi_agent="0",
+            phase0="1",
+            remaining=100_000,
+        )
     assert status == "published"
     skipped = events_of_type(events, "review_skipped")
     assert [(e["reason"], e["pr"], e["sha"]) for e in skipped] == [
         ("phase0_no_budget", PR_NUMBER, SHA_B)
     ]
+    assert "shadow_no_budget" in caplog.messages
     assert len(s3.calls) == 2  # archive follows the skip path too
     run_id = events[0]["run_id"]
     assert table.get_item(f"archive:{run_id}") is None
@@ -648,6 +692,45 @@ def test_shadow_leg_failure_never_blocks(monkeypatch, caplog):
     assert len(s3.calls) == 2
     run_id = events[0]["run_id"]
     assert table.get_item(f"archive:{run_id}") is not None
+    assert "shadow_failed" in caplog.messages
+    assert "shadow_degraded" not in caplog.messages
+
+
+def test_witness_scoped_to_shadow_leg_emissions(monkeypatch, caplog):
+    """Bot R2 Fix 1: a pre-existing correctness `agent_completed` (prior
+    degraded fan-out) must not witness for the shadow leg — a
+    produced-nothing shadow logs `shadow_failed`, never
+    `shadow_degraded`."""
+    from common.events import agent_completed
+
+    seed = agent_completed(
+        specialty="correctness",
+        findings_n=1,
+        latency_ms=1,
+        tokens_in=1,
+        tokens_out=1,
+        findings=[],
+        run_id=RUN_ID,
+        ts=1,
+    )
+    events = [seed]
+    with caplog.at_level(logging.WARNING, logger="worker_handler"):
+        assert (
+            _run_phase0_shadow(
+                diff_result=make_diff(),
+                ma_cfg=live_cfg(),
+                api_key="k",
+                model="m",
+                endpoint="https://llm.example.test/v1/chat/completions",
+                allowed_hosts=frozenset({"llm.example.test"}),
+                run_id=RUN_ID,
+                events=events,
+                remaining_ms=900_000,
+                residuals=[],
+                review_fn=shadow_leg([], behavior=LlmError("timeout")),
+            )
+            is True
+        )
     assert "shadow_failed" in caplog.messages
     assert "shadow_degraded" not in caplog.messages
 
@@ -790,3 +873,22 @@ def test_helper_exact_boundary_runs(monkeypatch):
     )
     assert seen["specialties"] == ("correctness",)
     assert list(seen["system_prompts"]) == ["correctness"]
+
+
+def test_helper_signature_isolated():
+    """Bot R2 Fix 2 (401-test pin): isolation-by-construction — the
+    helper's signature carries snapshot scalars (`api_key`/`model`/
+    `endpoint`) and never a holder-shaped parameter, so there is no
+    code path that could reach the 401-refresh budget. Blacklist
+    substrings (not a whitelist): a future signature change adding such
+    a parameter fails here deliberately, forcing an explicit isolation
+    re-review rather than silent coupling."""
+    import inspect
+
+    names = set(inspect.signature(_run_phase0_shadow).parameters)
+    coupled = {
+        name
+        for name in names
+        if any(part in name for part in ("creds", "refresh", "table", "ssm", "provider"))
+    }
+    assert coupled == set(), f"holder-coupled parameters: {sorted(coupled)}"

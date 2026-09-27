@@ -601,7 +601,9 @@ def _run_phase0_shadow(
 
     Budget gate FIRST: `remaining >= WAVE_WAIT_FOR_S + BUDGET_MARGIN_S`
     (else `False` — the caller appends `review_skipped
-    {phase0_no_budget}`). `None` remaining fails closed to SKIP.
+    {phase0_no_budget}`). `None` remaining fails closed to SKIP. Both
+    skip paths warn (`shadow_no_budget` here, `shadow_no_diff` at the
+    call site) so a skipped shadow is always loud.
 
     Returns True when the specialist ran. A `FanoutDegraded` outcome is
     EXPECTED even on a successful leg — one specialty can never satisfy
@@ -616,7 +618,16 @@ def _run_phase0_shadow(
     """
     budget_ms = (ma_cfg.wave_wait_for_s + ma_cfg.budget_margin_s) * 1000
     if remaining_ms is None or remaining_ms < budget_ms:
+        logger.warning(
+            "shadow_no_budget",
+            extra={"status": "shadow_no_budget"},
+        )
         return False
+    # Witness scope: only emissions APPENDED by this leg count. The shared
+    # list may already hold a correctness `agent_completed` from an
+    # earlier partial fan-out (degraded path) — scanning the whole list
+    # would mislog a produced-nothing shadow as `shadow_degraded`.
+    events_len = len(events)
     try:
         prompts = _load_fanout_prompts()
         diff_text = render_diff_text(diff_result)
@@ -641,13 +652,14 @@ def _run_phase0_shadow(
     except FanoutDegraded as exc:
         # Distinguish the expected single-specialty degrade (the
         # specialist ran; the ≥2-survivor rule is unmeetable by design)
-        # from a leg that never produced: presence of the correctness
-        # `agent_completed` event is the witness.
+        # from a leg that never produced: presence of a correctness
+        # `agent_completed` event APPENDED BY THIS LEG is the witness
+        # (see events_len above).
         degraded = any(
             isinstance(event, dict)
             and event.get("type") == "agent_completed"
             and event.get("specialty") == "correctness"
-            for event in events
+            for event in events[events_len:]
         )
         logger.warning(
             "shadow_degraded" if degraded else "shadow_failed",
