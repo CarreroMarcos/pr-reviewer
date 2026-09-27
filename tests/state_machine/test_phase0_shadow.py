@@ -505,7 +505,7 @@ def test_shadow_archive_pipeline_and_row(monkeypatch):
         table=table,
         s3=s3,
         events=events,
-        log=[],
+        log=shared,
         monkeypatch=monkeypatch,
         multi_agent="0",
         phase0="1",
@@ -518,6 +518,11 @@ def test_shadow_archive_pipeline_and_row(monkeypatch):
     row = table.get_item(f"archive:{run_id}")
     assert row is not None and row["pipeline"] == "phase0_shadow"
     puts_at = [i for i, e in enumerate(shared) if e[0] == "s3"]
+    leg_at = [i for i, e in enumerate(shared) if e == ("shadow-leg",)]
+    # Archive AFTER shadow (T035): a reorder would silently drop the
+    # shadow agent_* telemetry from the archive — pin leg-before-puts
+    # on the shared timeline (Gate 20, Finding 1).
+    assert leg_at and max(leg_at) < min(puts_at)
     leg_logged = any(True for _ in events_of_type(events, "agent_completed"))
     assert leg_logged and len(puts_at) == 2
 

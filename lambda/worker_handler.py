@@ -1830,6 +1830,13 @@ def _process_record(
             isinstance(event, dict) and event.get("type") == "degraded_to_single_pass"
             for event in record_events
         )
+        # Degraded x shadow exclusion (Gate 20, Finding 2): degrade needs
+        # MULTI_AGENT=1 while shadow needs MULTI_AGENT=0+PHASE0=1 — same
+        # env, no mid-flight mutation, so the pair is flag-unreachable.
+        # It is also mapping-invalid (("phase0_shadow",
+        # "degraded_single_pass") -> build_meta bad_status = whole-archive
+        # loss). The override below is safe BECAUSE the pair cannot
+        # co-occur — do not "fix" it into archive loss.
         _archive_run(
             s3=s3,
             bucket=archive_bucket,
