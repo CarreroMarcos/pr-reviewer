@@ -305,7 +305,7 @@ class ScriptedSynth:
         model,
         endpoint,
         system_prompt,
-        diff_text=None,
+        diff_text,
         thinking_enabled=False,
         reasoning_effort="low",
         read_timeout_s=None,
@@ -315,6 +315,7 @@ class ScriptedSynth:
         self.calls.append(
             {
                 "system_prompt": system_prompt,
+                "diff_text": diff_text,
                 "thinking_enabled": thinking_enabled,
                 "reasoning_effort": reasoning_effort,
                 "read_timeout_s": read_timeout_s,
@@ -484,6 +485,17 @@ def test_empty_inputs_still_call_leg_with_zeroed_event():
     assert outcome.dropped_as_duplicate_n == 0
     done = [e for e in events if e["type"] == "review_synthesized"][0]
     assert (done["findings_merged_n"], done["dropped_as_duplicate_n"]) == (0, 0)
+
+
+def test_synth_leg_passes_empty_diff_text():
+    """The synth leg has no diff access (§5 flow) — it passes empty user
+    content, not the diff. The double's diff_text param is REQUIRED so a
+    future partial omission fails loudly here instead of TypeError-ing
+    into _SynthFailure("unknown") in production (Gate-11 Finding 1)."""
+    call = ScriptedSynth(("ok", "c"))
+    invoke(call)
+    assert len(call.calls) == 1
+    assert call.calls[0]["diff_text"] == ""
 
 
 def test_events_carry_run_id():

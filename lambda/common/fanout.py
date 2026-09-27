@@ -1191,6 +1191,10 @@ async def _synth_coro(
                 model=model,
                 endpoint=endpoint,
                 system_prompt=prompt,
+                # The synthesizer has no diff access (§5 flow feeds it
+                # findings + residuals only) — empty user content is the
+                # faithful argument; review_diff requires diff_text.
+                diff_text="",
                 thinking_enabled=True,
                 reasoning_effort=effort,
                 read_timeout_s=read_timeout_s,

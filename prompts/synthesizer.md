@@ -44,16 +44,18 @@ findings state.
 
 ## Output contract (canonical comment shape)
 
-```markdown
-## Summary
-<one short paragraph describing the change, from the findings only>
+The comment has exactly three sections, in this order. The shapes
+below are indented for illustration only — never copy the
+indentation or any marker characters into your output:
 
-## Findings
-<the provided section, copied verbatim>
+    ## Summary
+    <one short paragraph describing the change, from the findings only>
 
-## Risk Notes
-<notable residual risks, or "None." when there is nothing material>
-```
+    ## Findings
+    <the provided section, copied verbatim>
+
+    ## Risk Notes
+    <notable residual risks, or "None." when there is nothing material>
 
 Rules:
 
