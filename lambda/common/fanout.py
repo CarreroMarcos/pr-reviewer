@@ -346,7 +346,8 @@ def run_wave(
     review closure to catch (single-pass fallback owns recovery).
     """
     for specialty in specialties:
-        system_prompts[specialty]
+        if specialty not in system_prompts:
+            raise KeyError(specialty)  # loud pre-dispatch failure (docstring pin)
     fn = review_fn if review_fn is not None else llm.review_diff
     read_timeout_s = llm._read_timeout_s()
     # ADV-9 (first wiring PR): env-sourced effort rides stripped.
