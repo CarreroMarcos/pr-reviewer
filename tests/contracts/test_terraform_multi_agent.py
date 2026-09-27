@@ -28,6 +28,8 @@ from pathlib import Path
 TERRAFORM_DIR = Path(__file__).resolve().parent.parent.parent / "terraform"
 STATE_TF = (TERRAFORM_DIR / "state.tf").read_text(encoding="utf-8")
 COMPUTE_TF = (TERRAFORM_DIR / "compute.tf").read_text(encoding="utf-8")
+OBSERVABILITY_TF = (TERRAFORM_DIR / "observability.tf").read_text(encoding="utf-8")
+VARIABLES_TF = (TERRAFORM_DIR / "variables.tf").read_text(encoding="utf-8")
 
 # The 12 HLD §8 checklist-7 vars with the T005 defaults, exactly as they
 # appear in HCL (all quoted — Lambda env is strings, matching the
@@ -57,13 +59,19 @@ EXPECTED_PROJECTION = [
 ]
 
 
-def _resource_block(text: str, resource_type: str, name: str) -> str:
-    """Source of the named resource block, brace-matched (handles nested
-    blocks and `${...}` interpolations — both balance)."""
-    start = re.search(
-        rf'resource\s+"{re.escape(resource_type)}"\s+"{re.escape(name)}"\s*\{{', text
-    )
-    assert start is not None, f"resource {resource_type}.{name} not found"
+def _resource_block(text: str, resource_type: str, name: str, kind: str = "resource") -> str:
+    """Source of the named block, brace-matched (handles nested
+    blocks and `${...}` interpolations — both balance). `kind` covers
+    `resource` blocks (`resource_type` + `name`) and `variable` blocks
+    (`resource_type` is the variable name, `name` ignored)."""
+    if kind == "resource":
+        pattern = rf'resource\s+"{re.escape(resource_type)}"\s+"{re.escape(name)}"\s*\{{'
+        label = f"resource {resource_type}.{name}"
+    else:
+        pattern = rf'variable\s+"{re.escape(resource_type)}"\s*\{{'
+        label = f"variable {resource_type}"
+    start = re.search(pattern, text)
+    assert start is not None, f"{label} not found"
     depth, i = 0, start.end() - 1
     while True:
         char = text[i]
@@ -83,9 +91,7 @@ def _int_assignment(block: str, key: str) -> int:
 
 
 def _str_assignment(block: str, key: str) -> str:
-    match = re.search(
-        rf'^\s*{re.escape(key)}\s*=\s*"([^"]*)"\s*(?:#.*)?$', block, re.MULTILINE
-    )
+    match = re.search(rf'^\s*{re.escape(key)}\s*=\s*"([^"]*)"\s*(?:#.*)?$', block, re.MULTILINE)
     assert match is not None, f"{key!r} string assignment not found"
     return match.group(1)
 
@@ -144,12 +150,14 @@ def test_gsi_pr_runs_index_exact_shape():
 
 def test_gsi_key_attribute_types():
     table = _resource_block(STATE_TF, "aws_dynamodb_table", "state")
-    assert re.search(
-        r'attribute\s*\{\s*name\s*=\s*"pr_number"\s*type\s*=\s*"N"\s*\}', table
-    ) is not None
-    assert re.search(
-        r'attribute\s*\{\s*name\s*=\s*"started_ts"\s*type\s*=\s*"S"\s*\}', table
-    ) is not None
+    assert (
+        re.search(r'attribute\s*\{\s*name\s*=\s*"pr_number"\s*type\s*=\s*"N"\s*\}', table)
+        is not None
+    )
+    assert (
+        re.search(r'attribute\s*\{\s*name\s*=\s*"started_ts"\s*type\s*=\s*"S"\s*\}', table)
+        is not None
+    )
 
 
 def test_base_table_20_20():
@@ -176,7 +184,7 @@ def test_worker_unreserved():
     assert "reserved_concurrent_executions" not in worker
 
 
-# --- twelve env vars + naming pin + config cross-check (checklist 7) ---------------------------------
+# --- twelve env vars + naming pin + config cross-check (list 7) ------------------------------
 
 
 def test_twelve_env_vars_with_t005_defaults():
@@ -222,3 +230,23 @@ def test_env_defaults_match_config():
         "SOCKET_READ_TIMEOUT_S": str(DEFAULT_SOCKET_READ_TIMEOUT_S),
         "BUDGET_MARGIN_S": str(DEFAULT_BUDGET_MARGIN_S),
     }
+
+
+# --- daily spend alarm recalibration (checklist 8; T034) ---------------------------------------
+
+
+def test_spend_alarm_threshold_shape():
+    """Shape-only until T042 (which snapshots the Mars-set number and
+    turns drift into failure): the alarm exists, its threshold derives
+    from the config budget scaled by the 5-call factor, and the budget
+    variable still defaults numeric."""
+    alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "daily_llm_spend")
+    threshold = re.search(r"^\s*threshold\s*=\s*(.+?)\s*(?:#.*)?$", alarm, re.MULTILINE)
+    assert threshold is not None, "daily_llm_spend threshold not found"
+    assert threshold.group(1).strip() == "var.daily_llm_spend_budget_usd * 5", (
+        f"threshold not budget x5: {threshold.group(1)!r}"
+    )
+    var_block = _resource_block(VARIABLES_TF, "daily_llm_spend_budget_usd", "", kind="variable")
+    default = re.search(r"^\s*default\s*=\s*(\d+(?:\.\d+)?)\s*$", var_block, re.MULTILINE)
+    assert default is not None, "budget default is not a numeric literal"
+    assert float(default.group(1)) > 0
