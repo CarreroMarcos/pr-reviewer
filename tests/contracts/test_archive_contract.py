@@ -28,6 +28,7 @@ RED state: `common.archive` does not exist — collection errors on import.
 import json
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -608,6 +609,12 @@ def test_index_item_shape():
     )
     assert item["pk"] == f"archive:{RUN_ID}"
     assert item["pr_number"] == PR_NUMBER
-    assert item["started_ts"] == NOW * 1000
+    # GSI sort key is String (HLD §7/T031): the index row carries ISO-8601
+    # UTC; meta.json keeps epoch-ms INT (T028).
+    assert item["started_ts"] == (
+        datetime.fromtimestamp(NOW, tz=UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
     assert item["status"] == "published"
     assert item["findings_n"] == 3

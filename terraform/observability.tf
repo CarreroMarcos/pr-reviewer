@@ -271,8 +271,14 @@ resource "aws_cloudwatch_metric_alarm" "daily_llm_spend" {
   alarm_description   = "Daily LLM spend above the configured budget; kill switch is worker reserved concurrency to 0 (HLD §4.3). Owner: ${var.alert_owner}."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  threshold           = var.daily_llm_spend_budget_usd
-  treat_missing_data  = "notBreaching"
+  # T034 (5-call recalibration, PROVISIONAL): a review now costs ~5 model
+  # calls (D8 true count: 3 specialists + verifier + synthesizer), so the
+  # 1-call-era budget scales 5x. Mars sets the exact number at T042 deploy
+  # (observed 1-call baseline x 5); until then this SHAPE — a numeric
+  # threshold derived from the config budget — is the contract, not the
+  # value. No hard-coded money figures (variables.tf law).
+  threshold          = var.daily_llm_spend_budget_usd * 5
+  treat_missing_data = "notBreaching"
 
   metric_query {
     id          = "spend_usd"

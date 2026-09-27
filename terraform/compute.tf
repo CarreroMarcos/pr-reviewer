@@ -111,6 +111,22 @@ resource "aws_lambda_function" "worker" {
   environment {
     variables = {
       GLM_ALLOWED_HOSTS = "api.z.ai"
+      # T033: the 12 HLD §8 checklist-7 multi-agent knobs with the T005
+      # defaults (cross-checked against common.config in
+      # tests/contracts/test_terraform_multi_agent.py). REASONING_EFFORT
+      # stays "low" PROVISIONAL — Phase-0 data picks the ship config.
+      MULTI_AGENT            = "0"
+      MULTI_AGENT_PHASE0     = "0"
+      FANOUT_CONCURRENCY     = "3"
+      MUTEX_LEASE_TTL_S      = "900"
+      REASONING_MAX_CHARS    = "4000"
+      REASONING_EFFORT       = "low"
+      WAVE_WAIT_FOR_S        = "300"
+      VERIFIER_WAIT_FOR_S    = "240"
+      SYNTHESIZER_WAIT_FOR_S = "180"
+      SINGLE_PASS_WAIT_FOR_S = "240"
+      SOCKET_READ_TIMEOUT_S  = "240"
+      BUDGET_MARGIN_S        = "60"
     }
   }
 }
@@ -138,4 +154,11 @@ resource "aws_lambda_event_source_mapping" "work" {
   event_source_arn = aws_sqs_queue.work.arn
   function_name    = aws_lambda_function.worker.arn
   batch_size       = 1
+
+  # T032 (HLD §8 checklist 3): cap concurrent worker executions at 2 —
+  # the D9 application-level mutex serializes fan-out, this bounds the
+  # account-wide concurrency beside it. Worker stays unreserved.
+  scaling_config {
+    maximum_concurrency = 2
+  }
 }
