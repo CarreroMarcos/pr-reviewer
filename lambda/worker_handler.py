@@ -102,6 +102,7 @@ from common.events import (
     degraded_no_budget,
     degraded_to_single_pass,
     review_published,
+    review_skipped,
     review_started,
 )
 from common.failure_notice import (
@@ -110,7 +111,13 @@ from common.failure_notice import (
     notice_phase,
     publish_failure_notice,
 )
-from common.fanout import FanoutDegraded, run_fanout, single_pass_budget_ok
+from common.fanout import (
+    FanoutDegraded,
+    assemble_specialist_prompt,
+    run_fanout,
+    run_wave,
+    single_pass_budget_ok,
+)
 from common.llm import LlmError, _read_timeout_s, review_diff
 from common.logs import build_event, emit, prompt_sha256
 from common.marker import build_marker
@@ -559,6 +566,116 @@ def _load_residuals_for(repo_full_name: str, pr_number: int) -> list[str]:
     return []
 
 
+def _read_remaining_ms(source: Callable[[], int] | None) -> int | None:
+    """Fail-closed remaining-time read: missing/unreadable/non-numeric
+    clocks yield `None`, and every budget gate treats `None` as
+    exhausted (mirrors the `_call_llm` timeout-retry guard)."""
+    if source is None:
+        return None
+    try:
+        remaining = source()
+    except Exception:  # noqa: BLE001 (unreadable clock → no budget)
+        return None
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+        return None
+    return int(remaining)
+
+
+def _run_phase0_shadow(
+    *,
+    diff_result: Any,
+    ma_cfg: Any,
+    api_key: str,
+    model: str,
+    endpoint: str,
+    allowed_hosts: Any,
+    run_id: str,
+    events: list[dict[str, Any]],
+    remaining_ms: int | None,
+    residuals: list[str] | None = None,
+    review_fn: Callable[..., Any] | None = None,
+) -> bool:
+    """Phase-0 shadow specialist (HLD §8 Phase 0, T036): ONE correctness
+    specialist via the T015 wave primitive (pool at FANOUT_CONCURRENCY,
+    `specialties=("correctness",)`), inline after publish.
+
+    Budget gate FIRST: `remaining >= WAVE_WAIT_FOR_S + BUDGET_MARGIN_S`
+    (else `False` — the caller appends `review_skipped
+    {phase0_no_budget}`). `None` remaining fails closed to SKIP. Both
+    skip paths warn (`shadow_no_budget` here, `shadow_no_diff` at the
+    call site) so a skipped shadow is always loud.
+
+    Returns True when the specialist ran. A `FanoutDegraded` outcome is
+    EXPECTED even on a successful leg — one specialty can never satisfy
+    the ≥2-survivor rule — so it is swallowed after logging: the wave's
+    own `agent_*` events are the shadow telemetry, and the (already
+    published) review never fails. The helper is a never-raises boundary
+    past the budget gate (best-effort, mirroring the archive path): any
+    other exception is warned and swallowed the same way. Snapshot creds
+    only (the 401-refresh budget is never shared) and no table (the D9
+    lease is released before the shadow runs — not lease-covered by
+    construction).
+    """
+    budget_ms = (ma_cfg.wave_wait_for_s + ma_cfg.budget_margin_s) * 1000
+    if remaining_ms is None or remaining_ms < budget_ms:
+        logger.warning(
+            "shadow_no_budget",
+            extra={"status": "shadow_no_budget"},
+        )
+        return False
+    # Witness scope: only emissions APPENDED by this leg count. The shared
+    # list may already hold a correctness `agent_completed` from an
+    # earlier partial fan-out (degraded path) — scanning the whole list
+    # would mislog a produced-nothing shadow as `shadow_degraded`.
+    events_len = len(events)
+    try:
+        prompts = _load_fanout_prompts()
+        diff_text = render_diff_text(diff_result)
+        system_prompts = {
+            "correctness": assemble_specialist_prompt(
+                template=prompts["correctness"], diff_text=diff_text, residuals=residuals
+            )
+        }
+        run_wave(
+            run_id=run_id,
+            cfg=ma_cfg,
+            api_key=api_key,
+            model=model,
+            endpoint=endpoint,
+            system_prompts=system_prompts,
+            diff_text=diff_text,
+            specialties=("correctness",),
+            events=events,
+            review_fn=review_fn,
+            allowed_hosts=allowed_hosts,
+        )
+    except FanoutDegraded as exc:
+        # Distinguish the expected single-specialty degrade (the
+        # specialist ran; the ≥2-survivor rule is unmeetable by design)
+        # from a leg that never produced: presence of a correctness
+        # `agent_completed` event APPENDED BY THIS LEG is the witness
+        # (see events_len above).
+        degraded = any(
+            isinstance(event, dict)
+            and event.get("type") == "agent_completed"
+            and event.get("specialty") == "correctness"
+            for event in events[events_len:]
+        )
+        logger.warning(
+            "shadow_degraded" if degraded else "shadow_failed",
+            extra={
+                "status": "shadow_degraded" if degraded else "shadow_failed",
+                "error_class": _error_class(exc),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 (never-raises boundary — see docstring)
+        logger.warning(
+            "shadow_failed",
+            extra={"status": "shadow_failed", "error_class": _error_class(exc)},
+        )
+    return True
+
+
 def _make_review(
     *,
     envelope: Envelope,
@@ -575,6 +692,7 @@ def _make_review(
     run_id: str | None = None,
     fanout_prompts: Mapping[str, str] | None = None,
     table: Any = None,
+    shadow_stash: dict[str, Any] | None = None,
 ) -> Callable[[str, int], str]:
     """Protocol `review` port: diff → prior comment → LLM (single 401
     re-fetch, plus one immediate in-executor retry on `timeout` when the
@@ -600,7 +718,11 @@ def _make_review(
     `table` is the state table for the D9 mutex row (HLD-004 T027):
     acquire after establish, release after the last lease-covered LLM
     call; `None` (older callers, unit doubles) skips the mutex entirely
-    — today's single-pass behavior, unchanged."""
+    — today's single-pass behavior, unchanged.
+    `shadow_stash` (HLD-004 §8 Phase 0, T036) is a caller-owned dict
+    that receives the fetched `diff_result` under `"diff_result"` so the
+    post-publish shadow can run without re-fetching; `None` (older
+    callers) skips the stash."""
 
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
@@ -764,6 +886,8 @@ def _make_review(
             )
             contender = lease is None
         diff_result = _fetch_diff()
+        if shadow_stash is not None:
+            shadow_stash["diff_result"] = diff_result
         evts.append(
             review_started(
                 pr=pr_number,
@@ -978,15 +1102,7 @@ def _make_review(
         """Fail-closed remaining-time read (mirrors the `_call_llm`
         timeout-retry guard): missing/unreadable/non-numeric clocks yield
         `None`, and the pre-fallback gate treats `None` as exhausted."""
-        if remaining_time_ms is None:
-            return None
-        try:
-            remaining = remaining_time_ms()
-        except Exception:  # noqa: BLE001 (unreadable clock → no fallback)
-            return None
-        if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
-            return None
-        return int(remaining)
+        return _read_remaining_ms(remaining_time_ms)
 
     return review
 
@@ -1483,6 +1599,7 @@ def _process_record(
     events: list[dict[str, Any]] | None = None,
     s3: Any = None,
     archive_bucket: str = "",
+    shadow_review_fn: Callable[..., Any] | None = None,
 ) -> str:
     """Run one SQS record through the pipeline.
 
@@ -1523,6 +1640,9 @@ def _process_record(
     # it (tests, and the T029 archive writer later); otherwise it drops.
     record_events = events if events is not None else []
     record_run_id = uuid.uuid4().hex
+    # Phase-0 shadow input slot (T036): review() stashes the fetched
+    # diff_result here so the post-publish shadow runs without re-fetch.
+    shadow_stash: dict[str, Any] = {}
     try:
         creds = _Credentials(provider)
         pk = review_pk(envelope.repo_full_name, envelope.pr_number)
@@ -1570,6 +1690,7 @@ def _process_record(
                 events=record_events,
                 run_id=record_run_id,
                 table=table,
+                shadow_stash=shadow_stash,
             ),
             fence=_evented_fence,
             publish=_evented_publish,
@@ -1654,13 +1775,68 @@ def _process_record(
         prompt_sha256=delivered_prompt_sha256,
     )
     if outcome.kind in (OutcomeKind.PUBLISHED, OutcomeKind.PUBLISHED_FINALIZE_CONFLICT):
-        # Archive AFTER finalize (and after any shadow call — none exists
-        # yet, T035/T036; this post-run_review point stays past it by
-        # construction). Discard outcomes archive nothing: no review ran.
+        # PUBLISHED_FINALIZE_CONFLICT: the review published; the fence loss
+        # is delivery bookkeeping (failure_notice), not the review outcome —
+        # archive status and shadow participation are correct.
+        # Phase-0 shadow (HLD §8, T036): single-pass already published
+        # above with unchanged latency; the shadow specialist runs inline
+        # AFTER publish (never before — it must not block, delay, or
+        # share the 401 budget with the essential path), and the archive
+        # below runs AFTER the shadow completes. `MULTI_AGENT=1` ignores
+        # `MULTI_AGENT_PHASE0` entirely; shadow iff 0/1. The D9 lease was
+        # released inside review() — the shadow is NOT lease-covered.
+        # Discard outcomes archive nothing: no review ran.
+        shadow_ran = False
+        ma_shadow = multi_agent_config()
+        if ma_shadow.multi_agent != 1 and ma_shadow.multi_agent_phase0 == 1:
+            diff_result = shadow_stash.get("diff_result")
+            if diff_result is None:
+                # Defensive telemetry only (unreachable through review(),
+                # which always stashes on the publish path): a closed
+                # HLD §6 reason set forbids a dedicated `review_skipped`
+                # reason here (`{"empty_diff", "phase0_no_budget"}`), so
+                # this warns instead of emitting a false-categorized
+                # event. The run archives as the plain single-pass
+                # publish it was.
+                logger.warning(
+                    "shadow_skipped",
+                    extra={"status": "shadow_no_diff", "error_class": "missing_diff_result"},
+                )
+            else:
+                snapshot = creds.current()
+                shadow_ran = _run_phase0_shadow(
+                    diff_result=diff_result,
+                    ma_cfg=ma_shadow,
+                    api_key=snapshot.glm_api_key,
+                    model=snapshot.glm_model,
+                    endpoint=snapshot.glm_endpoint,
+                    allowed_hosts=provider.allowed_hosts,
+                    run_id=record_run_id,
+                    events=record_events,
+                    remaining_ms=_read_remaining_ms(remaining_time_ms),
+                    residuals=_load_residuals_for(envelope.repo_full_name, envelope.pr_number),
+                    review_fn=shadow_review_fn,
+                )
+                if not shadow_ran:
+                    record_events.append(
+                        review_skipped(
+                            reason="phase0_no_budget",
+                            pr=envelope.pr_number,
+                            sha=outcome.head_sha or envelope.head_sha,
+                            run_id=record_run_id,
+                        )
+                    )
         degraded = any(
             isinstance(event, dict) and event.get("type") == "degraded_to_single_pass"
             for event in record_events
         )
+        # Degraded x shadow exclusion (Gate 20, Finding 2): degrade needs
+        # MULTI_AGENT=1 while shadow needs MULTI_AGENT=0+PHASE0=1 — same
+        # env, no mid-flight mutation, so the pair is flag-unreachable.
+        # It is also mapping-invalid (("phase0_shadow",
+        # "degraded_single_pass") -> build_meta bad_status = whole-archive
+        # loss). The override below is safe BECAUSE the pair cannot
+        # co-occur — do not "fix" it into archive loss.
         _archive_run(
             s3=s3,
             bucket=archive_bucket,
@@ -1668,7 +1844,7 @@ def _process_record(
             envelope=envelope,
             head_sha=outcome.head_sha or envelope.head_sha,
             status="degraded_single_pass" if degraded else "published",
-            pipeline=archive_mod.resolve_pipeline(record_events),
+            pipeline="phase0_shadow" if shadow_ran else archive_mod.resolve_pipeline(record_events),
             events=record_events,
             run_id=record_run_id,
             started_ts_ms=int(started * 1000),
