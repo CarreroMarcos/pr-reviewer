@@ -36,8 +36,9 @@ transports mirror the `test_worker`/`test_fanout_containment` port
 shapes; the `run_fanout` stub mirrors the sequencer signature with no
 defaults on required params.
 
-RED state: `worker_handler` has no contention symbols — collection
-errors on import.
+RED state (commit 1): `worker_handler` had no contention symbols —
+collection errors on import. T027 ships the symbols in this same PR;
+the red proof is re-enacted detached at `31a1795`.
 """
 
 import json
