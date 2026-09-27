@@ -124,10 +124,15 @@ def test_set_values_parsed(monkeypatch):
     ("env", "field", "default"),
     [
         ("MULTI_AGENT", "multi_agent", 0),
+        ("MULTI_AGENT_PHASE0", "multi_agent_phase0", 0),
         ("FANOUT_CONCURRENCY", "fanout_concurrency", 3),
         ("MUTEX_LEASE_TTL_S", "mutex_lease_ttl_s", 900),
         ("REASONING_MAX_CHARS", "reasoning_max_chars", 4000),
         ("WAVE_WAIT_FOR_S", "wave_wait_for_s", 300),
+        ("VERIFIER_WAIT_FOR_S", "verifier_wait_for_s", 240),
+        ("SYNTHESIZER_WAIT_FOR_S", "synthesizer_wait_for_s", 180),
+        ("SINGLE_PASS_WAIT_FOR_S", "single_pass_wait_for_s", 240),
+        ("SOCKET_READ_TIMEOUT_S", "socket_read_timeout_s", 240),
         ("BUDGET_MARGIN_S", "budget_margin_s", 60),
     ],
 )
