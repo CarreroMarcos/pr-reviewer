@@ -1417,7 +1417,12 @@ def reasoning_block(*, excerpts: list[tuple[str, str | None]], nonce: str) -> st
 
 
 def _fenced_verbatim(diff_text: str) -> str:
-    return "```\n" + diff_text + "\n```"
+    # Four-backtick fence (CommonMark): a closing fence must be at least
+    # as long as the opening one, so a diff containing ``` lines cannot
+    # close the fence early. Every §5 pin still holds (verbatim, fenced,
+    # no escaping/mutation — fence length is unpinned). Residual: a diff
+    # line carrying 4+ backticks could still close it — accepted.
+    return "````\n" + diff_text + "\n````"
 
 
 def assemble_specialist_prompt(

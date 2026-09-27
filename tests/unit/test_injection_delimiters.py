@@ -121,13 +121,26 @@ def test_specialist_carries_no_nonce():
 def test_specialist_diff_fenced_verbatim_no_escaping():
     prompt = assemble_specialist_prompt(template=SPEC_TEMPLATE, diff_text=NASTY_DIFF, residuals=[])
     assert NASTY_DIFF in prompt
-    fenced = "```\n" + NASTY_DIFF + "\n```"
+    # 4-backtick fence (CommonMark: closing fence >= opening fence) so a
+    # diff containing ``` lines cannot close the fence early — the fence
+    # length is implementation detail; the contract pins verbatim +
+    # fenced + no escaping/mutation (disclosed with the Gate-12 fix).
+    fenced = "````\n" + NASTY_DIFF + "\n````"
     assert fenced in prompt
     # Single-pass substitution (Gate-6(a)): the template slot is gone,
     # but the diff's OWN slot-looking literals survive exactly once.
     assert prompt.count("{{DIFF}}") == 1
     assert prompt.count("{{ACCEPTED_RESIDUALS}}") == 1
     assert prompt.count("{{FINDINGS_SECTION}}") == 1
+
+
+def test_diff_with_triple_backticks_does_not_close_fence():
+    """A diff containing ``` lines must not close the fence early — the
+    diff is the attacker-controlled surface (PR content). The 4-backtick
+    fence holds every pinned property: verbatim, fenced, no mutation."""
+    nasty = "context\n```python\ncode()\n```\ntail"
+    prompt = assemble_specialist_prompt(template=SPEC_TEMPLATE, diff_text=nasty, residuals=[])
+    assert "````\n" + nasty + "\n````" in prompt
 
 
 def test_specialist_residuals_rendered_and_emptied():
@@ -239,3 +252,19 @@ def test_no_cross_string_reuse():
         assert nonce not in synth and nonce not in specialist
     for nonce in synth_nonces:
         assert nonce not in verifier
+
+
+def test_fresh_nonce_per_invocation_of_same_assembler():
+    """Freshness across REPEATED invocations of ONE assembler with
+    identical inputs — the per-run pattern (each run assembles its own
+    verifier/synth prompt): nonces must never repeat across calls."""
+    kwargs = dict(
+        template=VER_TEMPLATE,
+        candidates=CANDIDATES,
+        excerpts=[("correctness", "t")],
+        diff_text="d",
+    )
+    first = nonces_in(assemble_verifier_prompt(**kwargs))
+    second = nonces_in(assemble_verifier_prompt(**kwargs))
+    assert len(first) == 4 and len(second) == 4
+    assert set(first).isdisjoint(second)
