@@ -207,6 +207,11 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   re-running `SPEC=001 SCOPE=all`). Non-001 specs namespace field+labels
   (`004-T001`); 001 keeps bare ids. 001 re-syncs must run before namespaced
   tickets exist (token double-hit exits safely rather than corrupting).
+- **Jira writes need live ticket identity (orchestrator, 2026-09-26):** a stale
+  local key↔T-id map (predating the 7ad05aa remediation that added T010a/b)
+  sent T011's start/PR comments + In Review to SPR-94 (T010a). Always read the
+  live ticket summary before commenting or transitioning; pick next work via
+  the JQL, never a cached key map.
 - **Living document (Mars, 2026-09-20):** short actionable gotchas discovered
   during work graduate into this file — one bullet, dated, attributed.
   Session notes live in the git-ignored deepwork progress file
