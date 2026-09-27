@@ -28,6 +28,15 @@ def tid_num(tid: str) -> int:
     return int(m.group())
 
 
+def sid_for(spec: str, tid: str) -> str:
+    """Jira-facing task id: bare for 001 (legacy tickets), spec-prefixed otherwise.
+
+    Spec Task ID is the upsert key matched via JQL '~' (token match), so bare
+    ids collide across specs; only the original spec keeps them bare.
+    """
+    return tid if spec == "001" else f"{spec}-{tid}"
+
+
 def env(name: str) -> str:
     v = os.environ.get(name, "").strip()
     if not v:
@@ -151,10 +160,12 @@ def main() -> None:
         sys.exit(f"missing {tasks_path}")
 
     tasks = parse_tasks(tasks_path.read_text(encoding="utf-8"), scope)
+    for t in tasks:
+        t["sid"] = sid_for(spec, t["id"])
     repo = os.environ.get("GITHUB_REPOSITORY", "CarreroMarcos/pr-reviewer")
     sha = os.environ.get("GITHUB_SHA", "main")
     spec_url = f"https://github.com/{repo}/blob/{sha}/{tasks_path}"
-    print(f"scope={scope} dry_run={dry} tasks={len(tasks)} project={key}")
+    print(f"spec={spec} scope={scope} dry_run={dry} tasks={len(tasks)} project={key}")
 
     jira = Jira(base, email, token)
     fields = jira.req("GET", "/rest/api/3/field")
@@ -178,7 +189,7 @@ def main() -> None:
     created = updated = listed = 0
     fid_num = field_id.replace("customfield_", "")
     for t in tasks:
-        jql = f'project = "{key}" AND cf[{fid_num}] ~ "{t["id"]}"'
+        jql = f'project = "{key}" AND cf[{fid_num}] ~ "{t["sid"]}"'
         try:
             search = jira.req(
                 "POST",
@@ -193,15 +204,15 @@ def main() -> None:
             )
         hits = search.get("issues") or []
         if len(hits) > 1:
-            sys.exit(f"duplicate Jira rows for {t['id']}: {[i['key'] for i in hits]}")
-        labels = ["spec-sync", t["id"].lower()]
+            sys.exit(f"duplicate Jira rows for {t['sid']}: {[i['key'] for i in hits]}")
+        labels = ["spec-sync", t["sid"].lower()]
         if t["us"] is not None:
             labels.append(f"us{t['us']}")
         if scope == "mvp":
             labels.append("mvp")
         desc = adf(
             [
-                f"Spec task: {t['id']}",
+                f"Spec task: {t['sid']}",
                 f"Source: {spec_url}",
                 t["full"],
                 "Do not edit ACs here. Change git spec, then re-sync.",
@@ -210,7 +221,7 @@ def main() -> None:
             ]
         )
         payload_fields = {
-            "summary": f"{t['id']}: {t['summary']}"[:255],
+            "summary": f"{t['sid']}: {t['summary']}"[:255],
             "description": desc,
             field_id: t["id"],
             "labels": labels,
@@ -218,7 +229,7 @@ def main() -> None:
         if dry:
             action = "UPDATE" if hits else "CREATE"
             summary = payload_fields["summary"][:90]
-            print(f"DRY {action} {t['id']} {summary}")
+            print(f"DRY {action} {t['sid']} {summary}")
             listed += 1
             continue
         if not hits:
@@ -233,7 +244,7 @@ def main() -> None:
                     }
                 },
             )
-            print(f"CREATE {t['id']} -> {created_issue.get('key')}")
+            print(f"CREATE {t['sid']} -> {created_issue.get('key')}")
             created += 1
         else:
             ikey = hits[0]["key"]
@@ -242,7 +253,7 @@ def main() -> None:
                 f"/rest/api/3/issue/{ikey}",
                 body={"fields": payload_fields},
             )
-            print(f"UPDATE {t['id']} -> {ikey}")
+            print(f"UPDATE {t['sid']} -> {ikey}")
             updated += 1
         time.sleep(0.35)
     print(f"done created={created} updated={updated} dry_listed={listed}")
