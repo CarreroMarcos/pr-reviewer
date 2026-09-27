@@ -770,7 +770,7 @@ beyond `review_started` / `checkpoint` / `review_published`.
    - Add permission statement `lambda:InvokeFunction` with condition `lambda:InvokedViaFunctionUrl = true`.
    - Viewer IAM role: `s3:GetObject` on `runs/*` and `static/*`; `dynamodb:Query` on GSI ARN;
      `ssm:GetParameter` on token ARN plus `kms:Decrypt` on the parameter's KMS key ARN (§7).
-7. **Environment Variables:**
+7. **Environment Variables (12):**
    - `MULTI_AGENT` (0/1), `MULTI_AGENT_PHASE0` (0/1), `FANOUT_CONCURRENCY` (default 3),
    - `MUTEX_LEASE_TTL_S` (default 900 — see the lease TTL pin under §Concurrency Resolution),
    - `REASONING_MAX_CHARS` (default 4000), `REASONING_EFFORT` (default `low` — PROVISIONAL until the
