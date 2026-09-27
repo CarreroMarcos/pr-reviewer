@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from common.events import EVENT_VERSION, EventsError, to_jsonl
@@ -198,6 +199,21 @@ def findings_count(events: list[dict[str, Any]]) -> int:
     return count
 
 
+def _index_started_ts(value: int) -> str:
+    """GSI `started_ts` is a String sort key (HLD §7 / T031): ISO-8601 UTC
+    keeps lexicographic order == chronological order (epoch-ms digits do
+    not sort correctly as strings). The input stays epoch-ms INT (T028's
+    meta.json contract — that artifact is unchanged); only the index row
+    is ISO. Resolves the tension T029's docstring deferred to T031 —
+    deliberate conversion at this boundary, not a silent coercion."""
+    checked = _check_ts(value, "started_ts")
+    return (
+        datetime.fromtimestamp(checked / 1000, tz=UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
 def build_index_item(
     *,
     run_id: str,
@@ -220,7 +236,7 @@ def build_index_item(
     return {
         "pk": f"archive:{_check_run_id(run_id)}",
         "pr_number": _check_pr(pr),
-        "started_ts": _check_ts(started_ts, "started_ts"),
+        "started_ts": _index_started_ts(started_ts),
         "sha": _check_sha(sha),
         "status": status,
         "pipeline": pipeline,
