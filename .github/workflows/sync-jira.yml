@@ -4,10 +4,18 @@ on:
   pull_request:
     paths:
       - specs/001-pr-reviewer/tasks.md
+      - specs/004-multi-agent-review/tasks.md
       - tools/sync_tasks_to_jira.py
       - .github/workflows/sync-jira.yml
   workflow_dispatch:
     inputs:
+      spec:
+        description: Which spec's tasks.md to sync
+        type: choice
+        options:
+          - "001"
+          - "004"
+        default: "004"
       dry_run:
         description: Print creates/updates only; do not write Jira
         type: boolean
@@ -46,4 +54,5 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'pull_request' || inputs.dry_run }}
           SCOPE: ${{ inputs.scope || 'mvp' }}
+          SPEC: ${{ inputs.spec || '001' }}
         run: python tools/sync_tasks_to_jira.py
