@@ -320,3 +320,33 @@ def test_extra_kwargs_structurally_rejected():
     """Fixed field sets: there is no parameter for diffs/secrets/payloads."""
     with pytest.raises(TypeError):
         agent_started(specialty="correctness", diff="diff --git a/b")  # type: ignore[call-arg]
+
+
+def test_to_jsonl_rejects_extra_unknown_key():
+    """A post-construction-mutated dict never serializes."""
+    event = agent_started(specialty="correctness")
+    event["diff"] = "diff --git a/b"
+    with pytest.raises(EventsError) as excinfo:
+        to_jsonl(event)
+    assert excinfo.value.field == "event"
+
+
+def test_to_jsonl_rejects_mutated_ts():
+    event = checkpoint(stage="claimed")
+    event["ts"] = True
+    with pytest.raises(EventsError) as excinfo:
+        to_jsonl(event)
+    assert excinfo.value.field == "ts"
+
+
+def test_to_jsonl_rejects_unknown_type():
+    with pytest.raises(EventsError) as excinfo:
+        to_jsonl({"v": 1, "run_id": uuid.uuid4().hex, "ts": 1, "type": "bogus"})
+    assert excinfo.value.field == "event"
+
+
+@pytest.mark.parametrize("comment_id", [0, -1])
+def test_review_published_rejects_nonpositive_comment_id(comment_id):
+    with pytest.raises(EventsError) as excinfo:
+        review_published(comment_id=comment_id)
+    assert excinfo.value.field == "comment_id"

@@ -13,6 +13,11 @@ Findings/verified/killed/escalated arrays are carried as opaque JSON lists;
 their closed-schema validation belongs to `common.findings` (HLD §6),
 not here.
 
+`_FIELD_SETS` is the single source of truth for the per-type field sets:
+constructors assert their payload against it via `_build`, and `to_jsonl`
+re-validates any dict against it at the render boundary — so a hand-built
+or post-construction-mutated dict can never serialize as an event.
+
 Pure stdlib, no I/O, no boto3 import.
 """
 
@@ -34,26 +39,55 @@ CHECKPOINT_STAGES = frozenset({"established", "diff_fetched", "claimed", "publis
 FAILED_STAGES = frozenset({"wave", "verifier", "synthesizer"})
 CONCURRENCY_SINGLE_PASS_REASONS = frozenset({"mutex_held", "mutex_held_no_budget"})
 
-EVENT_TYPES = frozenset(
-    {
-        "review_started",
-        "review_skipped",
-        "checkpoint",
-        "agent_started",
-        "agent_reasoning",
-        "agent_completed",
-        "agent_retry",
-        "agent_failed",
-        "verification_done",
-        "verification_failed",
-        "review_synthesized",
-        "synthesizer_failed",
-        "degraded_to_single_pass",
-        "concurrency_single_pass",
-        "degraded_no_budget",
-        "review_published",
-    }
-)
+_ENVELOPE_KEYS = frozenset({"v", "run_id", "ts", "type"})
+
+# Single source of truth for the §6 fixed field sets (extra keys beyond
+# the envelope, per event type). Constructors build through `_build` and
+# `to_jsonl` validates against this same table — never duplicated.
+_FIELD_SETS: dict[str, frozenset[str]] = {
+    "review_started": frozenset({"pr", "sha", "diff_stats"}),
+    "review_skipped": frozenset({"reason", "pr", "sha"}),
+    "checkpoint": frozenset({"stage"}),
+    "agent_started": frozenset({"specialty"}),
+    "agent_reasoning": frozenset({"specialty", "reasoning_excerpt"}),
+    "agent_completed": frozenset(
+        {"specialty", "findings_n", "latency_ms", "tokens_in", "tokens_out", "findings"}
+    ),
+    "agent_retry": frozenset({"specialty", "attempt", "error_code", "backoff_ms"}),
+    "agent_failed": frozenset({"specialty", "error_class", "latency_ms"}),
+    "verification_done": frozenset(
+        {
+            "survived_n",
+            "killed_n",
+            "escalated_n",
+            "wave_survivors",
+            "latency_ms",
+            "tokens_in",
+            "tokens_out",
+            "verified",
+            "killed",
+            "escalated",
+        }
+    ),
+    "verification_failed": frozenset({"error_class", "latency_ms"}),
+    "review_synthesized": frozenset(
+        {
+            "findings_merged_n",
+            "dropped_as_duplicate_n",
+            "latency_ms",
+            "tokens_in",
+            "tokens_out",
+            "findings",
+        }
+    ),
+    "synthesizer_failed": frozenset({"error_class", "latency_ms"}),
+    "degraded_to_single_pass": frozenset({"reason", "failed_stage"}),
+    "concurrency_single_pass": frozenset({"reason", "elapsed_ms"}),
+    "degraded_no_budget": frozenset({"reason", "elapsed_ms"}),
+    "review_published": frozenset({"comment_id"}),
+}
+
+EVENT_TYPES = frozenset(_FIELD_SETS)
 
 
 class EventsError(ValueError):
@@ -63,7 +97,7 @@ class EventsError(ValueError):
     `bad_specialty`, `bad_count`, `bad_latency`, `bad_tokens`,
     `bad_attempt`, `bad_error_code`, `bad_error_class`, `bad_comment_id`,
     `bad_reasoning`, `bad_findings`, `bad_elapsed`, `bad_failed_stage`,
-    `not_object`, `bad_event`)."""
+    `bad_fields`, `not_object`, `bad_event`)."""
 
     def __init__(self, field: str, reason: str) -> None:
         self.field = field
@@ -146,6 +180,17 @@ def _envelope(type_name: str, run_id: Any = None, ts: Any = None) -> dict[str, A
     }
 
 
+def _build(
+    type_name: str, fields: dict[str, Any], run_id: Any = None, ts: Any = None
+) -> dict[str, Any]:
+    """Assemble an event, asserting the payload matches `_FIELD_SETS` —
+    a constructor edited without updating the table fails here, never
+    silently."""
+    if set(fields) != _FIELD_SETS[type_name]:
+        raise EventsError("event", "bad_fields")
+    return _envelope(type_name, run_id, ts) | fields
+
+
 def review_started(
     *,
     pr: Any,
@@ -155,11 +200,16 @@ def review_started(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Review step begins (worker_handler)."""
-    return _envelope("review_started", run_id, ts) | {
-        "pr": _clean_pr(pr),
-        "sha": _clean_sha(sha),
-        "diff_stats": _clean_diff_stats(diff_stats),
-    }
+    return _build(
+        "review_started",
+        {
+            "pr": _clean_pr(pr),
+            "sha": _clean_sha(sha),
+            "diff_stats": _clean_diff_stats(diff_stats),
+        },
+        run_id,
+        ts,
+    )
 
 
 def review_skipped(
@@ -171,11 +221,16 @@ def review_skipped(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Fan-out skipped (worker_handler)."""
-    return _envelope("review_skipped", run_id, ts) | {
-        "reason": _clean_enum(reason, REVIEW_SKIPPED_REASONS, "reason", "bad_reason"),
-        "pr": _clean_pr(pr),
-        "sha": _clean_sha(sha),
-    }
+    return _build(
+        "review_skipped",
+        {
+            "reason": _clean_enum(reason, REVIEW_SKIPPED_REASONS, "reason", "bad_reason"),
+            "pr": _clean_pr(pr),
+            "sha": _clean_sha(sha),
+        },
+        run_id,
+        ts,
+    )
 
 
 def checkpoint(
@@ -185,9 +240,12 @@ def checkpoint(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Pipeline stage reached."""
-    return _envelope("checkpoint", run_id, ts) | {
-        "stage": _clean_enum(stage, CHECKPOINT_STAGES, "stage", "bad_stage"),
-    }
+    return _build(
+        "checkpoint",
+        {"stage": _clean_enum(stage, CHECKPOINT_STAGES, "stage", "bad_stage")},
+        run_id,
+        ts,
+    )
 
 
 def agent_started(
@@ -197,9 +255,12 @@ def agent_started(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Specialist coroutine begins."""
-    return _envelope("agent_started", run_id, ts) | {
-        "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
-    }
+    return _build(
+        "agent_started",
+        {"specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty")},
+        run_id,
+        ts,
+    )
 
 
 def agent_reasoning(
@@ -214,10 +275,15 @@ def agent_reasoning(
     there is no summarizer call; see HLD D6)."""
     if not isinstance(reasoning_excerpt, str):
         raise EventsError("reasoning_excerpt", "bad_reasoning")
-    return _envelope("agent_reasoning", run_id, ts) | {
-        "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
-        "reasoning_excerpt": reasoning_excerpt,
-    }
+    return _build(
+        "agent_reasoning",
+        {
+            "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
+            "reasoning_excerpt": reasoning_excerpt,
+        },
+        run_id,
+        ts,
+    )
 
 
 def agent_completed(
@@ -232,14 +298,19 @@ def agent_completed(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Specialist returned parseable findings."""
-    return _envelope("agent_completed", run_id, ts) | {
-        "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
-        "findings_n": _clean_count(findings_n, "findings_n"),
-        "latency_ms": _clean_count(latency_ms, "latency_ms"),
-        "tokens_in": _clean_count(tokens_in, "tokens_in"),
-        "tokens_out": _clean_count(tokens_out, "tokens_out"),
-        "findings": _clean_json_list(findings, "findings"),
-    }
+    return _build(
+        "agent_completed",
+        {
+            "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
+            "findings_n": _clean_count(findings_n, "findings_n"),
+            "latency_ms": _clean_count(latency_ms, "latency_ms"),
+            "tokens_in": _clean_count(tokens_in, "tokens_in"),
+            "tokens_out": _clean_count(tokens_out, "tokens_out"),
+            "findings": _clean_json_list(findings, "findings"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def agent_retry(
@@ -256,12 +327,17 @@ def agent_retry(
     ownership stays with the SQS queue)."""
     if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
         raise EventsError("attempt", "bad_attempt")
-    return _envelope("agent_retry", run_id, ts) | {
-        "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
-        "attempt": attempt,
-        "error_code": _clean_nonempty_str(error_code, "error_code", "bad_error_code"),
-        "backoff_ms": _clean_count(backoff_ms, "backoff_ms"),
-    }
+    return _build(
+        "agent_retry",
+        {
+            "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
+            "attempt": attempt,
+            "error_code": _clean_nonempty_str(error_code, "error_code", "bad_error_code"),
+            "backoff_ms": _clean_count(backoff_ms, "backoff_ms"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def agent_failed(
@@ -273,11 +349,16 @@ def agent_failed(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Specialist raised or timed out."""
-    return _envelope("agent_failed", run_id, ts) | {
-        "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
-        "error_class": _clean_nonempty_str(error_class, "error_class", "bad_error_class"),
-        "latency_ms": _clean_count(latency_ms, "latency_ms"),
-    }
+    return _build(
+        "agent_failed",
+        {
+            "specialty": _clean_nonempty_str(specialty, "specialty", "bad_specialty"),
+            "error_class": _clean_nonempty_str(error_class, "error_class", "bad_error_class"),
+            "latency_ms": _clean_count(latency_ms, "latency_ms"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def verification_done(
@@ -298,18 +379,23 @@ def verification_done(
     """Verifier returned. `wave_survivors` is the count of specialists that
     returned parseable findings (e.g. 2 after one 429/timeout loss) — it
     lets replay/eval attribute recall deltas to partial waves."""
-    return _envelope("verification_done", run_id, ts) | {
-        "survived_n": _clean_count(survived_n, "survived_n"),
-        "killed_n": _clean_count(killed_n, "killed_n"),
-        "escalated_n": _clean_count(escalated_n, "escalated_n"),
-        "wave_survivors": _clean_count(wave_survivors, "wave_survivors"),
-        "latency_ms": _clean_count(latency_ms, "latency_ms"),
-        "tokens_in": _clean_count(tokens_in, "tokens_in"),
-        "tokens_out": _clean_count(tokens_out, "tokens_out"),
-        "verified": _clean_json_list(verified, "verified"),
-        "killed": _clean_json_list(killed, "killed"),
-        "escalated": _clean_json_list(escalated, "escalated"),
-    }
+    return _build(
+        "verification_done",
+        {
+            "survived_n": _clean_count(survived_n, "survived_n"),
+            "killed_n": _clean_count(killed_n, "killed_n"),
+            "escalated_n": _clean_count(escalated_n, "escalated_n"),
+            "wave_survivors": _clean_count(wave_survivors, "wave_survivors"),
+            "latency_ms": _clean_count(latency_ms, "latency_ms"),
+            "tokens_in": _clean_count(tokens_in, "tokens_in"),
+            "tokens_out": _clean_count(tokens_out, "tokens_out"),
+            "verified": _clean_json_list(verified, "verified"),
+            "killed": _clean_json_list(killed, "killed"),
+            "escalated": _clean_json_list(escalated, "escalated"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def verification_failed(
@@ -320,10 +406,15 @@ def verification_failed(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Verifier raised or timed out."""
-    return _envelope("verification_failed", run_id, ts) | {
-        "error_class": _clean_nonempty_str(error_class, "error_class", "bad_error_class"),
-        "latency_ms": _clean_count(latency_ms, "latency_ms"),
-    }
+    return _build(
+        "verification_failed",
+        {
+            "error_class": _clean_nonempty_str(error_class, "error_class", "bad_error_class"),
+            "latency_ms": _clean_count(latency_ms, "latency_ms"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def review_synthesized(
@@ -338,14 +429,21 @@ def review_synthesized(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Synthesizer returned merged findings JSON."""
-    return _envelope("review_synthesized", run_id, ts) | {
-        "findings_merged_n": _clean_count(findings_merged_n, "findings_merged_n"),
-        "dropped_as_duplicate_n": _clean_count(dropped_as_duplicate_n, "dropped_as_duplicate_n"),
-        "latency_ms": _clean_count(latency_ms, "latency_ms"),
-        "tokens_in": _clean_count(tokens_in, "tokens_in"),
-        "tokens_out": _clean_count(tokens_out, "tokens_out"),
-        "findings": _clean_json_list(findings, "findings"),
-    }
+    return _build(
+        "review_synthesized",
+        {
+            "findings_merged_n": _clean_count(findings_merged_n, "findings_merged_n"),
+            "dropped_as_duplicate_n": _clean_count(
+                dropped_as_duplicate_n, "dropped_as_duplicate_n"
+            ),
+            "latency_ms": _clean_count(latency_ms, "latency_ms"),
+            "tokens_in": _clean_count(tokens_in, "tokens_in"),
+            "tokens_out": _clean_count(tokens_out, "tokens_out"),
+            "findings": _clean_json_list(findings, "findings"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def synthesizer_failed(
@@ -356,10 +454,15 @@ def synthesizer_failed(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Synthesizer raised or timed out."""
-    return _envelope("synthesizer_failed", run_id, ts) | {
-        "error_class": _clean_nonempty_str(error_class, "error_class", "bad_error_class"),
-        "latency_ms": _clean_count(latency_ms, "latency_ms"),
-    }
+    return _build(
+        "synthesizer_failed",
+        {
+            "error_class": _clean_nonempty_str(error_class, "error_class", "bad_error_class"),
+            "latency_ms": _clean_count(latency_ms, "latency_ms"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def degraded_to_single_pass(
@@ -370,12 +473,17 @@ def degraded_to_single_pass(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Fan-out abandoned for single-pass fallback."""
-    return _envelope("degraded_to_single_pass", run_id, ts) | {
-        "reason": _clean_nonempty_str(reason, "reason", "bad_reason"),
-        "failed_stage": _clean_enum(
-            failed_stage, FAILED_STAGES, "failed_stage", "bad_failed_stage"
-        ),
-    }
+    return _build(
+        "degraded_to_single_pass",
+        {
+            "reason": _clean_nonempty_str(reason, "reason", "bad_reason"),
+            "failed_stage": _clean_enum(
+                failed_stage, FAILED_STAGES, "failed_stage", "bad_failed_stage"
+            ),
+        },
+        run_id,
+        ts,
+    )
 
 
 def concurrency_single_pass(
@@ -386,10 +494,15 @@ def concurrency_single_pass(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Mutex held; contender executes single-pass inline (no deferral)."""
-    return _envelope("concurrency_single_pass", run_id, ts) | {
-        "reason": _clean_enum(reason, CONCURRENCY_SINGLE_PASS_REASONS, "reason", "bad_reason"),
-        "elapsed_ms": _clean_count(elapsed_ms, "elapsed_ms"),
-    }
+    return _build(
+        "concurrency_single_pass",
+        {
+            "reason": _clean_enum(reason, CONCURRENCY_SINGLE_PASS_REASONS, "reason", "bad_reason"),
+            "elapsed_ms": _clean_count(elapsed_ms, "elapsed_ms"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def degraded_no_budget(
@@ -400,10 +513,15 @@ def degraded_no_budget(
     ts: Any = None,
 ) -> dict[str, Any]:
     """No budget left even for fallback (terminal)."""
-    return _envelope("degraded_no_budget", run_id, ts) | {
-        "reason": _clean_nonempty_str(reason, "reason", "bad_reason"),
-        "elapsed_ms": _clean_count(elapsed_ms, "elapsed_ms"),
-    }
+    return _build(
+        "degraded_no_budget",
+        {
+            "reason": _clean_nonempty_str(reason, "reason", "bad_reason"),
+            "elapsed_ms": _clean_count(elapsed_ms, "elapsed_ms"),
+        },
+        run_id,
+        ts,
+    )
 
 
 def review_published(
@@ -413,20 +531,43 @@ def review_published(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Canonical comment PATCHed."""
-    if not isinstance(comment_id, int) or isinstance(comment_id, bool):
+    if not isinstance(comment_id, int) or isinstance(comment_id, bool) or comment_id < 1:
         raise EventsError("comment_id", "bad_comment_id")
-    return _envelope("review_published", run_id, ts) | {"comment_id": comment_id}
+    return _build("review_published", {"comment_id": comment_id}, run_id, ts)
 
 
 def to_jsonl(event: Any) -> str:
     """Render one event as a single JSONL line (no trailing newline —
     callers join lines with `"\\n"` when writing `events.jsonl`).
 
+    Full validation at this render boundary: the dict must carry exactly
+    the envelope + the `_FIELD_SETS` keys for its type, with a valid `v`,
+    `run_id`, and `ts` — a hand-built or post-construction-mutated dict
+    that fails any of these is rejected with `EventsError` and nothing
+    serializes. Deep value checks stay constructor-side; this gate covers
+    shape plus the redaction-relevant envelope scalars.
+
     `json.dumps` escapes embedded newlines inside string values, so the
     result never contains a raw newline and `json.loads` round-trips it.
     """
     if not isinstance(event, dict):
         raise EventsError("event", "not_object")
-    if event.get("v") != EVENT_VERSION or event.get("type") not in EVENT_TYPES:
+    type_name = event.get("type")
+    if type_name not in _FIELD_SETS:
         raise EventsError("event", "bad_event")
+    if set(event) != _ENVELOPE_KEYS | _FIELD_SETS[type_name]:
+        raise EventsError("event", "bad_fields")
+    if event.get("v") != EVENT_VERSION:
+        raise EventsError("event", "bad_event")
+    # Strict scalar re-checks (no None-defaulting: the key set above
+    # guarantees the keys exist; a None value here is a mutation, not
+    # an omission, and must fail, never silently regenerate).
+    run_id = event.get("run_id")
+    if run_id is None:
+        raise EventsError("run_id", "bad_run_id")
+    _clean_run_id(run_id)
+    ts = event.get("ts")
+    if ts is None:
+        raise EventsError("ts", "bad_ts")
+    _clean_ts(ts)
     return json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
