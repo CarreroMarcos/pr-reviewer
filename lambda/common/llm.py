@@ -8,7 +8,9 @@ the worker (T034) injects the hydrated values, keeping the client pure.
 
 Timeout policy (HLD §2.3): connect 2 s, read env-configurable
 (`GLM_READ_TIMEOUT_S`, default 240 s, clamped to [30, 600] — see
-`_read_timeout_s`). stdlib exposes a single socket timeout, so the
+`_read_timeout_s`) with an explicit per-call `read_timeout_s` override
+(HLD-004 §9 item 1: resolved once at entry, applied at the socket
+switch below). stdlib exposes a single socket timeout, so the
 connection is opened with `timeout=CONNECT_TIMEOUT_S` and, once
 connected, the socket is switched to the resolved read timeout for the
 response read. `CONNECT_TIMEOUT_S` and `DEFAULT_READ_TIMEOUT_S` are
@@ -81,7 +83,9 @@ class LlmError(Exception):
     """Typed LLM failure for queue-retry semantics.
 
     `error_class` is machine-readable: `bad_endpoint`, `timeout`,
-    `connection_error`, `http_{status}`, `invalid_response`, `invalid_key`.
+    `connection_error`, `http_{status}`, `invalid_response`, `invalid_key`,
+    `length` (truncated at the provider max tokens — HLD-004 §9 item 3),
+    `rate_limit` (Z.AI concurrency-cap code 1302 on HTTP 429 — §9 item 6).
     The message never carries prompt, diff, completion, or key material.
     """
 
@@ -92,12 +96,19 @@ class LlmError(Exception):
 
 @dataclass(frozen=True)
 class ReviewResult:
-    """Parsed completion: Markdown content plus provider-observed usage."""
+    """Parsed completion: Markdown content plus provider-observed usage.
+
+    `reasoning_content` is the provider's reasoning trace when the call
+    ran with thinking enabled (HLD-004 §9 item 5), else `None` — the raw
+    trace is truncated at capture by the caller (`REASONING_MAX_CHARS`),
+    never summarized here.
+    """
 
     content: str
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    reasoning_content: str | None = None
 
 
 def _default_factory(host: str, port: int, *, timeout: int) -> http.client.HTTPSConnection:
@@ -143,10 +154,15 @@ def _parse_result(payload: Any) -> ReviewResult:
     if not isinstance(choices, list) or not choices:
         raise LlmError("invalid_response")
     first = choices[0]
+    if isinstance(first, dict) and first.get("finish_reason") == "length":
+        # Truncated at the provider max tokens (HLD-004 §9 item 3): the
+        # partial content is unusable — error, never silent success.
+        raise LlmError("length")
     message = first.get("message") if isinstance(first, dict) else None
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str) or not content:
         raise LlmError("invalid_response")
+    reasoning = message.get("reasoning_content") if isinstance(message, dict) else None
     usage = payload.get("usage")
     if not isinstance(usage, dict):
         usage = {}
@@ -160,6 +176,30 @@ def _parse_result(payload: Any) -> ReviewResult:
         prompt_tokens=_tokens("prompt_tokens"),
         completion_tokens=_tokens("completion_tokens"),
         total_tokens=_tokens("total_tokens"),
+        reasoning_content=reasoning if isinstance(reasoning, str) else None,
+    )
+
+
+def _is_rate_limit_1302(raw: bytes) -> bool:
+    """Z.AI concurrency-cap signal (HLD-004 §9 item 6): an HTTP 429 whose
+    JSON body carries error code 1302. The code travels as a string in
+    Zhipu error envelopes (`{"error": {"code": "1302", ...}}`); the int
+    form is accepted too. Anything unparseable or otherwise shaped is
+    not a 1302 — the caller keeps the generic `http_429` class."""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    candidates = []
+    if isinstance(error, dict):
+        candidates.append(error.get("code"))
+    candidates.append(payload.get("code"))
+    return any(
+        isinstance(code, (int, str)) and not isinstance(code, bool) and str(code) == "1302"
+        for code in candidates
     )
 
 
@@ -171,6 +211,9 @@ def review_diff(
     system_prompt: str,
     diff_text: str,
     allowed_hosts: frozenset[str] | None = None,
+    thinking_enabled: bool = False,
+    reasoning_effort: str = "low",
+    read_timeout_s: int | None = None,
     _connection_factory: ConnectionFactory | None = None,
     _clock: Clock | None = None,
 ) -> ReviewResult:
@@ -182,6 +225,14 @@ def review_diff(
     `allowed_hosts` is the env-configured GLM host set threaded through by
     the worker; `None` (default) falls back to `GLM_ALLOWED_HOSTS` so
     existing callers behave exactly as before.
+    `thinking_enabled` sends `thinking: {"type": "enabled"}` plus
+    `reasoning_effort` on GLM endpoints (HLD-004 §9 item 4; multi-agent
+    specialists/verifier/synthesizer) — the default `False` keeps the
+    existing single-pass `disabled` payload byte-identical.
+    `read_timeout_s` is the explicit socket read budget (HLD-004 §9 item
+    1): `None` (default) resolves `_read_timeout_s()` exactly once at
+    entry; a passed value (the T026 contender clamp) is used verbatim
+    with no env resolution — no new module constant.
     """
     if not api_key or not model:
         raise LlmError("bad_endpoint")
@@ -196,6 +247,19 @@ def review_diff(
     factory = _connection_factory if _connection_factory is not None else _default_factory
     clock = _clock if _clock is not None else time.monotonic
     start = clock()
+    if read_timeout_s is None:
+        resolved_timeout_s = _read_timeout_s()
+    elif (
+        not isinstance(read_timeout_s, int)
+        or isinstance(read_timeout_s, bool)
+        or read_timeout_s < 1
+    ):
+        # Caller-shape fault (same class as the credential-shape faults
+        # above): fail here as typed `LlmError`, never as a raw
+        # `TypeError` escaping `sock.settimeout` below.
+        raise LlmError("bad_endpoint")
+    else:
+        resolved_timeout_s = read_timeout_s
     # Thinking portability gate: GLM-only key (see GLM_ALLOWED_HOSTS) —
     # omitted for every other provider so non-GLM endpoints never see it.
     payload: dict[str, Any] = {
@@ -209,11 +273,18 @@ def review_diff(
             {"role": "user", "content": diff_text},
         ],
         "temperature": TEMPERATURE,
+        # HLD-004 §9 item 2: explicit ceiling so truncation surfaces as
+        # `LlmError("length")` (item 3) instead of silent success.
+        "max_tokens": 16384,
     }
     if model.startswith("glm") and host.lower() in (
         GLM_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts
     ):
-        payload["thinking"] = {"type": "disabled"}
+        if thinking_enabled:
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = reasoning_effort
+        else:
+            payload["thinking"] = {"type": "disabled"}
     body = json.dumps(
         payload,
         separators=(",", ":"),
@@ -224,9 +295,10 @@ def review_diff(
         conn = factory(host, port, timeout=CONNECT_TIMEOUT_S)
         conn.connect()
         # Read budget starts after the TCP/TLS handshake: switch the
-        # connected socket from the connect timeout to the resolved read
-        # timeout (env-configurable, default `DEFAULT_READ_TIMEOUT_S`).
-        conn.sock.settimeout(_read_timeout_s())
+        # connected socket from the connect timeout to the entry-resolved
+        # read timeout (`read_timeout_s` override or one `_read_timeout_s()`
+        # resolution — never re-resolved mid-call).
+        conn.sock.settimeout(resolved_timeout_s)
         conn.request(
             "POST",
             path,
@@ -240,6 +312,11 @@ def review_diff(
         response = conn.getresponse()
         raw = response.read()
         if response.status != 200:
+            if response.status == 429 and _is_rate_limit_1302(raw):
+                # Z.AI concurrency cap (HLD-004 §9 item 6): fail fast to
+                # wave survivors — the worker boundary retries it as a
+                # transient via the existing unknown-fault default.
+                raise LlmError("rate_limit")
             raise LlmError(f"http_{response.status}")
         try:
             payload = json.loads(raw.decode("utf-8"))

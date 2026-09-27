@@ -176,9 +176,7 @@ def test_thinking_default_keeps_disabled_for_glm():
 def test_reasoning_content_extracted_onto_result():
     factory = make_factory(
         behavior={
-            "response": FakeResponse(
-                200, completion_body(reasoning_content="TRACE-SENTINEL-8c1a")
-            )
+            "response": FakeResponse(200, completion_body(reasoning_content="TRACE-SENTINEL-8c1a"))
         }
     )
     result = invoke(_connection_factory=factory)

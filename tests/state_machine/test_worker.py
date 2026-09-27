@@ -886,6 +886,10 @@ def test_is_retryable_table():
     assert is_retryable(LlmError("http_429")) is True
     assert is_retryable(LlmError("http_503")) is True
     assert is_retryable(LlmError("invalid_response")) is True
+    # HLD-004 §9 boundary pin: the new classes ride the unknown-fault
+    # default (retryable transients, no D2 notice row).
+    assert is_retryable(LlmError("length")) is True
+    assert is_retryable(LlmError("rate_limit")) is True
     assert is_retryable(LlmError("bad_endpoint")) is False
     assert is_retryable(LlmError("http_401")) is False
     assert is_retryable(LlmError("invalid_key")) is False
