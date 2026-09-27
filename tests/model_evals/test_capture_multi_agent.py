@@ -365,6 +365,39 @@ def test_stale_checkpoint_warns_before_fresh_start(tmp_path, capsys):
     assert str(output) in captured.err
 
 
+def test_force_clears_checkpoint(tmp_path, capsys):
+    """Gate 22 cycle (bot R4 :540): `--force` overwrites the pin, so a
+    surviving checkpoint would make a later `--resume` skip pairs whose
+    records no longer exist — empty-runs cases claiming "completed".
+    --force must reset the checkpoint to a clean slate."""
+    output = tmp_path / "pinned_multi_agent.json"
+    output.write_text(
+        json.dumps({"cases": {CASE_ID: {"runs": [{"stale": True}]}}}), encoding="utf-8"
+    )
+    checkpoint = tmp_path / "resume.json"
+    checkpoint.write_text(json.dumps({"completed": [["other-case", 0]]}) + "\n", encoding="utf-8")
+    cma.main(
+        [
+            "--cases",
+            CASE_ID,
+            "--output",
+            str(output),
+            "--checkpoint",
+            str(checkpoint),
+            "--force",
+            "--runs",
+            "1",
+        ],
+        _review_fn=ScriptedLegs(),
+        _embed_fn=stub_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    captured = capsys.readouterr()
+    assert "cleared checkpoint" in captured.err
+    completed = json.loads(checkpoint.read_text(encoding="utf-8")).get("completed", [])
+    assert completed == [[CASE_ID, 0]]  # stale pair gone; a later --resume re-runs nothing wrongly
+
+
 def test_resume_partial_preserves_pinned_runs(tmp_path):
     """Bot R1 Fix 1: a partial resume (run 0 checkpointed, run 1 new)
     preserves the pinned run-0 record byte-identically — the checkpoint

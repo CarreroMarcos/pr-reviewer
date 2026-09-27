@@ -503,6 +503,16 @@ def main(
         raise SystemExit(f"unknown cases: {unknown}")
     if output_path.exists() and not args.force and not args.resume:
         raise SystemExit(f"refusing to overwrite {output_path} (use --force)")
+    if args.force and checkpoint_path.exists():
+        # --force promises a clean slate: a surviving checkpoint would make
+        # a later --resume skip pairs whose records no longer exist in the
+        # fresh pin — empty-runs cases claiming "completed".
+        checkpoint_path.unlink()
+        print(
+            f"warning: --force cleared checkpoint {checkpoint_path} so a "
+            f"later --resume cannot skip re-run pairs",
+            file=sys.stderr,
+        )
     completed: set[tuple[str, int]] = set()
     prior: dict = {}
     if args.resume and output_path.exists():
