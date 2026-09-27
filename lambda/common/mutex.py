@@ -70,10 +70,11 @@ STEAL_SKEW_S = 30
 
 class MutexError(ValueError):
     """Typed mutex rejection: `field` names the offending input
-    (`owner`, `now`, `ttl_s`, `token`), `reason` is a machine-readable
-    code (`bad_owner`, `bad_now`, `bad_ttl`, `bad_token`). Never carries
-    secret values (tokens are random fencing material, never credentials,
-    but they still stay out of error text)."""
+    (`owner`, `now`, `ttl_s`, `token`, `lease`), `reason` is a
+    machine-readable code (`bad_owner`, `bad_now`, `bad_ttl`,
+    `bad_token`, `bad_lease`). Never carries secret values (tokens are
+    random fencing material, never credentials, but they still stay out
+    of error text)."""
 
     def __init__(self, field: str, reason: str) -> None:
         self.field = field
@@ -118,6 +119,13 @@ def _check_ttl(ttl_s: Any) -> int:
 def _check_token(token: Any) -> str:
     if token is None:
         return uuid.uuid4().hex
+    return _require_token(token)
+
+
+def _require_token(token: Any) -> str:
+    """Strict token guard (no generation): a malformed token raises
+    instead of silently mapping to a failed conditional (which would
+    conflate "invalid input" with "lease lost")."""
     if not isinstance(token, str) or not token:
         raise MutexError("token", "bad_token")
     return token
@@ -195,14 +203,19 @@ def release(table: Any, *, lease: Lease) -> bool:
     """Release a held lease: row removal conditioned on the stored token.
     `True` → the row is gone and the next acquire proceeds. `False` →
     the row was already taken over, released, or never existed: someone
-    else's lease is untouched (release never force-clears).
+    else's lease is untouched (release never force-clears). A malformed
+    lease raises `MutexError` (same typed-input discipline as
+    acquire/refresh) instead of collapsing into `False`.
     """
+    if not isinstance(lease, Lease):
+        raise MutexError("lease", "bad_lease")
+    token = _require_token(lease.token)
     try:
         table.delete_item(
             Key={"pk": MUTEX_PK},
             ConditionExpression=_TOKEN_CONDITION,
             ExpressionAttributeNames=None,
-            ExpressionAttributeValues={":token": lease.token},
+            ExpressionAttributeValues={":token": token},
         )
     except ConditionalCheckFailed:
         return False

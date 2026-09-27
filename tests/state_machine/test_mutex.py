@@ -100,10 +100,17 @@ class MutexTable:
         values = ExpressionAttributeValues or {}
         if (UpdateExpression, ConditionExpression) == (ACQUIRE_UPDATE, ACQUIRE_CONDITION):
             steal_before = values[":steal_before"]
-            held = current is not None and (
-                current.get("lease_until") is not None and current["lease_until"] >= steal_before
-            )
-            if held:
+            # DynamoDB-faithful OR: a missing row steals via arm 1; a
+            # PRESENT row needs arm 2 with a PRESENT lease_until —
+            # comparison against a missing attribute is false, so an
+            # existing-but-incomplete row (e.g. the key-only residue a
+            # REMOVE-clause release would leave) is HELD, never stealable.
+            if current is None:
+                stealable = True
+            else:
+                present = current.get("lease_until")
+                stealable = present is not None and present < steal_before
+            if not stealable:
                 raise ConditionalCheckFailed(f"mutex held: {pk}")
             self.items[pk] = {
                 "pk": pk,
@@ -230,6 +237,20 @@ def test_acquire_steal_threshold_is_thirty_seconds_in_the_past():
     assert table.calls[-1]["values"][":steal_before"] == T - 30
 
 
+def test_incomplete_row_is_not_stealable():
+    """DynamoDB-faithful edge (bot R1): a row missing `lease_until` —
+    exactly the key-only residue a literal REMOVE-clause release would
+    leave — satisfies NEITHER arm (`attribute_not_exists(pk)` is false
+    on the surviving key; the comparison against the missing attribute
+    is false), so acquire reports held, permanently. This row is the
+    executable form of the release-deadlock determination: literal REMOVE
+    would brick the mutex, which is why release removes the row."""
+    table = MutexTable()
+    table.items[MUTEX_PK] = {"pk": MUTEX_PK}
+    assert acquire(table, owner=GUID_B, now=T) is None
+    assert table.items[MUTEX_PK] == {"pk": MUTEX_PK}
+
+
 # --- refresh ---------------------------------------------------------------------------------
 
 
@@ -329,4 +350,23 @@ def test_invalid_inputs_raise_typed_errors(kwargs, field):
     table = MutexTable()
     with pytest.raises(MutexError) as exc_info:
         acquire(table, **kwargs)
+    assert exc_info.value.field == field
+
+
+@pytest.mark.parametrize(
+    ("lease", "field"),
+    [
+        (Lease(owner=GUID_A, token="", lease_until=T + 900), "token"),
+        (Lease(owner=GUID_A, token=None, lease_until=T + 900), "token"),
+        (None, "lease"),
+        ("not-a-lease", "lease"),
+    ],
+)
+def test_release_invalid_inputs_raise_typed_errors(lease, field):
+    """Bot R1 Fix 2: release shares the typed-input discipline — a
+    malformed lease raises instead of collapsing into `False` (which
+    would conflate "invalid input" with "lease lost")."""
+    table = MutexTable()
+    with pytest.raises(MutexError) as exc_info:
+        release(table, lease=lease)
     assert exc_info.value.field == field
