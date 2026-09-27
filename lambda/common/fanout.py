@@ -18,8 +18,13 @@ Three sections, kept separable:
    highest severity wins, adjacent ordering), exact `## Findings`
    rendering, one comment leg over the same pool/loop machinery.
 
-Sequencer assembly (`run_fanout`) lands in a later ticket and will call
-these sections at each stage boundary.
+5. Sequencer assembly (`run_fanout`): cumulative budget gate first
+   (re-sampled per stage boundary), wave → post-wave candidate_id
+   assignment (`{specialty}:{index}`) + clamp-and-flag with backfill onto
+   the stages' own `agent_completed` events → verifier → synthesizer.
+   `run_fanout` is the nonce authority (all nonces originate in this
+   module's `assemble_*` composition during the call); it emits no events
+   of its own and returns the synthesizer comment body.
 
 Pure stdlib, no I/O, no logging. Event emission here is each stage's
 own events; downstream stages emit theirs.
@@ -39,7 +44,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from common import llm
+from common.assemble import render_diff_text
 from common.config import MultiAgentConfig
+from common.diff import DiffResult
 from common.events import (
     agent_completed,
     agent_failed,
@@ -51,7 +58,12 @@ from common.events import (
     verification_done,
     verification_failed,
 )
-from common.findings import FindingsError, parse_candidate_findings
+from common.findings import (
+    FindingsError,
+    clamp_to_post_image,
+    make_candidate_id,
+    parse_candidate_findings,
+)
 from common.llm import LlmError, ReviewResult
 
 _MS_PER_S = 1000
@@ -1486,3 +1498,202 @@ def assemble_synth_prompt(
         },
     )
     return filled + "\n" + reasoning_block(excerpts=excerpts, nonce=new_nonce())
+
+
+# Sequencer assembly (HLD-004 :418, §5 flow tree, D8 5-calls pin).
+#
+# `run_fanout` composes the existing stage surfaces above — no
+# stage-signature changes, no worker wiring (T023 owns the review-closure
+# wiring; `run_fanout` stays unreferenced by production callers, exactly
+# like the other stage entry points).
+
+
+def _remaining_ms(context: Any) -> int | None:
+    """Read Lambda remaining time in ms (HLD :418-420: threaded as in the
+    single-pass path — `context.get_remaining_time_in_millis`).
+
+    Fail-closed discipline mirrors the worker's timeout-retry budget
+    (`worker_handler.py:485-499`): a missing/unreadable/non-numeric clock
+    yields `None`, and every budget gate treats `None` as exhausted —
+    degrade, never proceed blind.
+    """
+    get_remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if not callable(get_remaining):
+        return None
+    try:
+        remaining = get_remaining()
+    except Exception:
+        return None
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+        return None
+    return int(remaining)
+
+
+def run_fanout(
+    diff_result: DiffResult,
+    residuals: list[str] | None,
+    cfg: MultiAgentConfig,
+    context: Any,
+    *,
+    run_id: str,
+    api_key: str,
+    model: str,
+    endpoint: str,
+    events: list[dict[str, Any]],
+    specialist_templates: Mapping[str, str],
+    verifier_template: str,
+    synth_template: str,
+    file_lengths: Mapping[str, int] | None = None,
+    review_fn: Callable[..., ReviewResult] | None = None,
+    allowed_hosts: frozenset[str] | None = None,
+) -> str:
+    """Run the full multi-agent pipeline; return the comment body.
+
+    `diff_result` is the worker's budgeted `DiffResult` (rendered here via
+    the existing `render_diff_text` machinery — specialists and the
+    verifier see the same bytes as the single-pass path); `residuals` are
+    parsed accepted-residual lines (`[]` until populated); `cfg` is the
+    immutable multi-agent knob snapshot (budgets ride here); `context` is
+    the Lambda context (remaining-time source, re-sampled per stage
+    boundary). Credentials (`api_key`/`model`/`endpoint`) ride as explicit
+    keyword snapshots — immutable strings, never re-read, never mutated
+    (D1 read-only discipline; the HLD :73 `cfg = creds.current()` snapshot
+    in keyword form). `events` is caller-owned; every entry is appended by
+    the stages on the loop thread — this sequencer appends none of its own
+    (the T023 closure owns `review_started`/`degraded_to_single_pass`).
+    Templates are caller-provided text (production threads the
+    `prompts/*.md` files at T023; tests inject sentinels) — this module
+    stays I/O-free.
+
+    Sequence: cumulative budget gate (wave + verifier + synth + margin)
+    → wave (`assemble_specialist_prompt` per specialty, nonce-free) →
+    post-wave clamp-and-flag per specialty (`clamp_to_post_image`,
+    backfilled onto that specialty's own `agent_completed` event — the
+    HLD :520 field) + `{specialty}:{index}` ID assignment (HLD :538-539:
+    index = position in that specialist's findings array) + location sort
+    (deterministic chain order) → budget gate (verifier + synth + margin)
+    → verifier (`assemble_verifier_prompt`: two fresh nonces) → budget
+    gate (synth + margin) → synthesizer (deterministic `dedupe_findings` +
+    `render_findings_section` pre-render composed via
+    `assemble_synth_prompt`: one fresh nonce; the stage's internal slot
+    fill is a harmless no-op on the pre-filled prompt).
+
+    Nonce authority: every nonce in the pipeline originates in this
+    module's `assemble_*` composition during this call — fresh per
+    invocation, never shared across prompt strings, specialists
+    nonce-free end-to-end (HLD §5 item 1).
+
+    Fail-fast: any leg failure propagates its `FanoutDegraded` unchanged
+    (reason + failed_stage from the stage) — no re-sampling, no
+    in-invocation retry; all retry ownership stays with the SQS queue.
+    Budget exhaustion raises `FanoutDegraded("insufficient_budget",
+    <upcoming stage>)` — reason strings are determined (HLD D9 pins the
+    arithmetic, not the strings) with no event emitted (the closure emits
+    the terminal event).
+
+    Clamp posture: specialist coordinates are clamped post-wave;
+    verifier output is ACCEPTED WITH DOCUMENTATION (Gate-10
+    recommendation — HLD :111 pins clamping for specialist coordinates
+    only; synthesizer fidelity is prompt-contract + eval-measured, never
+    runtime-rejected).
+    """
+    lengths = dict(file_lengths) if file_lengths else {}
+    diff_text = render_diff_text(diff_result)
+
+    remaining = _remaining_ms(context)
+    if remaining is None or not wave_budget_ok(remaining, cfg):
+        raise FanoutDegraded("insufficient_budget", "wave")
+
+    system_prompts = {
+        specialty: assemble_specialist_prompt(
+            template=template, diff_text=diff_text, residuals=residuals
+        )
+        for specialty, template in specialist_templates.items()
+    }
+    survivors = run_wave(
+        run_id=run_id,
+        cfg=cfg,
+        api_key=api_key,
+        model=model,
+        endpoint=endpoint,
+        system_prompts=system_prompts,
+        diff_text=diff_text,
+        specialties=tuple(specialist_templates),
+        events=events,
+        review_fn=review_fn,
+        allowed_hosts=allowed_hosts,
+    )
+
+    completed_by_specialty = {
+        event.get("specialty"): event for event in events if event.get("type") == "agent_completed"
+    }
+    candidates: list[dict[str, Any]] = []
+    for survivor in survivors:
+        clamped = clamp_to_post_image(survivor.findings, lengths)
+        completed = completed_by_specialty.get(survivor.specialty)
+        if completed is not None:
+            completed["findings"] = clamped.findings
+            completed["coordinates_clamped_n"] = clamped.clamped_n
+        for index, item in enumerate(clamped.findings):
+            entry = dict(item)
+            entry["candidate_id"] = make_candidate_id(survivor.specialty, index)
+            candidates.append(entry)
+    candidates.sort(
+        key=lambda entry: (
+            entry["file_path"],
+            entry["line_start"],
+            entry["line_end"],
+            entry["candidate_id"],
+        )
+    )
+    excerpts = [(survivor.specialty, survivor.reasoning_excerpt) for survivor in survivors]
+
+    remaining = _remaining_ms(context)
+    if remaining is None or not verifier_budget_ok(remaining, cfg):
+        raise FanoutDegraded("insufficient_budget", "verifier")
+    verifier_prompt = assemble_verifier_prompt(
+        template=verifier_template,
+        candidates=candidates,
+        excerpts=excerpts,
+        diff_text=diff_text,
+    )
+    verdict = run_verifier(
+        run_id=run_id,
+        cfg=cfg,
+        api_key=api_key,
+        model=model,
+        endpoint=endpoint,
+        verifier_prompt=verifier_prompt,
+        candidates=candidates,
+        diff_text=diff_text,
+        wave_survivors=len(survivors),
+        events=events,
+        review_fn=review_fn,
+        allowed_hosts=allowed_hosts,
+    )
+
+    remaining = _remaining_ms(context)
+    if remaining is None or not synthesizer_budget_ok(remaining, cfg):
+        raise FanoutDegraded("insufficient_budget", "synthesizer")
+    merged = dedupe_findings(verdict["verified"], verdict["escalated"])
+    synth_prompt = assemble_synth_prompt(
+        template=synth_template,
+        findings_section=render_findings_section(merged),
+        residuals=residuals,
+        excerpts=excerpts,
+    )
+    result = run_synthesizer(
+        run_id=run_id,
+        cfg=cfg,
+        api_key=api_key,
+        model=model,
+        endpoint=endpoint,
+        synth_prompt=synth_prompt,
+        verified=verdict["verified"],
+        escalated=verdict["escalated"],
+        residuals=residuals,
+        events=events,
+        review_fn=review_fn,
+        allowed_hosts=allowed_hosts,
+    )
+    return result.comment
