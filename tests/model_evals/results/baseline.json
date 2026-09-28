@@ -9,10 +9,10 @@
       "cases": "all",
       "timeout_s": 60
     },
-    "latency_mean_ms": 133957.8,
-    "latency_max_ms": 160975,
-    "wall_s": 3215.0,
-    "captured_at": "2026-09-28T08:40:35.113790+00:00"
+    "latency_mean_ms": 133335.3,
+    "latency_max_ms": 166683,
+    "wall_s": 2000.1,
+    "captured_at": "2026-09-20T17:44:52.174394+00:00"
   },
   "per_case": {
     "representative": {
@@ -24,10 +24,10 @@
       "unlabeled": 2,
       "unparsable": 0,
       "findings_count": 3,
-      "low_count": 1,
-      "nit_rate": 0.3333,
+      "low_count": 2,
+      "nit_rate": 0.6667,
       "severity_agreement": "1/1",
-      "comment_length": 1532,
+      "comment_length": 1109,
       "recall": 1.0,
       "precision": 0.3333
     },
@@ -37,15 +37,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 1,
-      "unparsable": 0,
-      "findings_count": 2,
+      "unlabeled": 2,
+      "unparsable": 1,
+      "findings_count": 3,
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "1/1",
-      "comment_length": 1353,
+      "comment_length": 1837,
       "recall": 1.0,
-      "precision": 0.5
+      "precision": 0.3333
     },
     "hardcoded_secret": {
       "case_id": "hardcoded_secret",
@@ -59,7 +59,7 @@
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "1/1",
-      "comment_length": 910,
+      "comment_length": 841,
       "recall": 1.0,
       "precision": 1.0
     },
@@ -75,7 +75,7 @@
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 866,
+      "comment_length": 885,
       "recall": 1.0,
       "precision": 1.0
     },
@@ -85,15 +85,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 2,
-      "unparsable": 0,
-      "findings_count": 3,
-      "low_count": 1,
-      "nit_rate": 0.3333,
-      "severity_agreement": "0/1",
-      "comment_length": 1851,
+      "unlabeled": 0,
+      "unparsable": 1,
+      "findings_count": 1,
+      "low_count": 0,
+      "nit_rate": 0.0,
+      "severity_agreement": "1/1",
+      "comment_length": 1267,
       "recall": 1.0,
-      "precision": 0.3333
+      "precision": 1.0
     },
     "mutable_default": {
       "case_id": "mutable_default",
@@ -107,7 +107,7 @@
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 1246,
+      "comment_length": 900,
       "recall": 1.0,
       "precision": 1.0
     },
@@ -120,10 +120,10 @@
       "unlabeled": 2,
       "unparsable": 1,
       "findings_count": 3,
-      "low_count": 1,
-      "nit_rate": 0.3333,
+      "low_count": 0,
+      "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 1554,
+      "comment_length": 1649,
       "recall": 1.0,
       "precision": 0.3333
     },
@@ -139,7 +139,7 @@
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 898,
+      "comment_length": 1299,
       "recall": 1.0,
       "precision": 1.0
     },
@@ -149,18 +149,34 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 1,
+      "unlabeled": 2,
       "unparsable": 0,
-      "findings_count": 2,
+      "findings_count": 3,
       "low_count": 1,
-      "nit_rate": 0.5,
+      "nit_rate": 0.3333,
       "severity_agreement": "0/1",
-      "comment_length": 1164,
+      "comment_length": 1316,
       "recall": 1.0,
-      "precision": 0.5
+      "precision": 0.3333
     },
     "command_injection": {
       "case_id": "command_injection",
+      "hits": 1,
+      "expected_total": 1,
+      "missed": 0,
+      "fabricated": 0,
+      "unlabeled": 0,
+      "unparsable": 0,
+      "findings_count": 1,
+      "low_count": 0,
+      "nit_rate": 0.0,
+      "severity_agreement": "1/1",
+      "comment_length": 1125,
+      "recall": 1.0,
+      "precision": 1.0
+    },
+    "shared_state_no_lock": {
+      "case_id": "shared_state_no_lock",
       "hits": 1,
       "expected_total": 1,
       "missed": 0,
@@ -170,26 +186,10 @@
       "findings_count": 3,
       "low_count": 1,
       "nit_rate": 0.3333,
-      "severity_agreement": "1/1",
-      "comment_length": 1457,
+      "severity_agreement": "0/1",
+      "comment_length": 1473,
       "recall": 1.0,
       "precision": 0.3333
-    },
-    "shared_state_no_lock": {
-      "case_id": "shared_state_no_lock",
-      "hits": 1,
-      "expected_total": 1,
-      "missed": 0,
-      "fabricated": 0,
-      "unlabeled": 1,
-      "unparsable": 0,
-      "findings_count": 2,
-      "low_count": 0,
-      "nit_rate": 0.0,
-      "severity_agreement": "0/1",
-      "comment_length": 1216,
-      "recall": 1.0,
-      "precision": 0.5
     },
     "xss_safe": {
       "case_id": "xss_safe",
@@ -197,15 +197,15 @@
       "expected_total": 1,
       "missed": 0,
       "fabricated": 0,
-      "unlabeled": 1,
-      "unparsable": 0,
-      "findings_count": 2,
-      "low_count": 1,
-      "nit_rate": 0.5,
+      "unlabeled": 0,
+      "unparsable": 1,
+      "findings_count": 1,
+      "low_count": 0,
+      "nit_rate": 0.0,
       "severity_agreement": "1/1",
-      "comment_length": 1111,
+      "comment_length": 1103,
       "recall": 1.0,
-      "precision": 0.5
+      "precision": 1.0
     },
     "ring_modulo": {
       "case_id": "ring_modulo",
@@ -219,7 +219,7 @@
       "low_count": 0,
       "nit_rate": 0.0,
       "severity_agreement": "0/1",
-      "comment_length": 1300,
+      "comment_length": 999,
       "recall": 1.0,
       "precision": 0.5
     }
@@ -229,11 +229,11 @@
     "hits": 13,
     "expected": 13,
     "recall": 1.0,
-    "precision": 0.5,
+    "precision": 0.5417,
     "fabricated": 0,
-    "unlabeled": 13,
-    "unparsable": 2,
-    "nit_rate": 0.2308,
-    "avg_comment_length": 1266.0
+    "unlabeled": 11,
+    "unparsable": 5,
+    "nit_rate": 0.1667,
+    "avg_comment_length": 1215.6
   }
 }

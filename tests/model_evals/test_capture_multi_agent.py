@@ -582,10 +582,38 @@ def test_ollama_embed_one_posts_model_and_parses_embeddings(monkeypatch):
     assert captured["body"] == {"model": cma.OLLAMA_MODEL, "input": ["hello"]}
 
 
+def test_ollama_embed_texts_retries_429_then_succeeds(monkeypatch):
+    """Gap-1 (Gate 31): the 429 rate-limit shape exercises the exact-code
+    classifier branch — a typo there (`==` vs `in`) would turn the next
+    throttle into fail-fast, shipping green."""
+
+    script: list = [
+        urllib.error.HTTPError(cma.OLLAMA_URL + "/api/embed", 429, "rate limited", None, None),
+        [1.0],
+    ]
+
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
+
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
+    delays: list = []
+    monkeypatch.setattr(cma.time, "sleep", delays.append)
+    assert cma.ollama_embed_texts(["hi"]) == [[1.0]]
+    assert delays == [2.0]
+
+
 def test_ollama_embed_one_rejects_wrong_dim_vector(monkeypatch):
     """Bot R1 (#136): a wrong-dimension vector fails loud at the seam —
     a misconfigured local model must never silently pin unusable
     vectors that only explode at score time."""
+
+    # Gap-2 (Gate 31): pin the constant itself — the happy-path test
+    # builds its vector FROM this constant, so a wrong value would
+    # otherwise pass vacuously.
+    assert cma.EXPECTED_EMBED_DIM == 768
 
     class _Resp:
         def __enter__(self):

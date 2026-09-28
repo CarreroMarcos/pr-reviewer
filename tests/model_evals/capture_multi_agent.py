@@ -280,7 +280,8 @@ def ollama_embed_texts(texts: list[str]) -> list[list[float]]:
                     raise
                 print(
                     f"ollama embed retry {attempt}/{EMBED_MAX_ATTEMPTS}"
-                    f" ({type(exc).__name__}) — sleeping {delay:.0f}s",
+                    f" ({type(exc).__name__}{getattr(exc, 'code', '') or ''})"
+                    f" — sleeping {delay:.0f}s",
                     file=sys.stderr,
                 )
                 time.sleep(delay)
