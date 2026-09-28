@@ -36,7 +36,7 @@ Forbidden: create issue, edit summary/description/ACs, delete, Cancelled (human 
 Done is agent-settable only through the Oracle review gate (below) — never directly.
 Call mechanics (discover/executeRead wrapping, response shapes, resume after failure): `docs/process/jira-mcp-recipes.md`.
 
-Jira description is a pointer. Source of truth is `specs/<spec-id>/tasks.md` + spec/HLD.
+Jira description is a pointer. Source of truth is `specs/<spec-id>/tasks.md` (currently 004 — the active JQL ticket names its spec) + spec/HLD.
 
 Statuses in this space (names must match; the first column is **To Do**, not Ready):
 

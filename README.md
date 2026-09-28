@@ -78,12 +78,12 @@ The entire system is deployed on AWS using serverless primitives:
 
 ## 📁 Repository Structure
 
-- [`lambda/`](lambda): Python Lambda source code (`ingress_handler.py`, `worker_handler.py`, and shared modules in `lambda/common/`).
-- [`terraform/`](terraform): Infrastructure as Code defining AWS Lambda, SQS, DynamoDB, S3, IAM roles, and SSM parameter references.
-- [`specs/`](specs): Formal specs, data models, contracts, and task breakdowns (`001-pr-reviewer`: the base reviewer; `004-multi-agent-review`: the multi-agent review stage).
-- [`docs/`](docs): High-level architectural design (`HLD.md`), runbooks, and process documentation.
-- [`prompts/`](prompts): System and user prompt templates used for AI code review generation.
-- [`tests/`](tests): Unit tests, contract tests, state machine tests, and model evaluation suites.
+- [`lambda/`](lambda/): Python Lambda source code (`ingress_handler.py`, `worker_handler.py`, and shared modules in `lambda/common/`).
+- [`terraform/`](terraform/): Infrastructure as Code defining AWS Lambda, SQS, DynamoDB, S3, IAM roles, and SSM parameter references.
+- [`specs/`](specs/): Formal specs, data models, contracts, and task breakdowns (`001-pr-reviewer`: the base reviewer; `004-multi-agent-review`: the multi-agent review stage).
+- [`docs/`](docs/): High-level architectural design (`HLD.md`), runbooks, and process documentation.
+- [`prompts/`](prompts/): System and user prompt templates used for AI code review generation.
+- [`tests/`](tests/): Unit tests, contract tests, state machine tests, and model evaluation suites.
 
 ---
 
