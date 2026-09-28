@@ -81,9 +81,11 @@ No locks are required inside fan-out, eliminating cross-thread race conditions b
 His Z.AI plan makes GLM-5.3-Flash effectively unlimited, so a Bedrock migration is hassle
 with no payoff — decided 2026-09-25: GLM for all agents, no Bedrock in the v1 RUNTIME path.
 (Bedrock research kept on file in case a future stronger-synthesizer experiment is ever eval-gated.)
-Carve-out (added 2026-09-26, bot review #5): Bedrock Titan Text Embeddings is permitted in the OFFLINE
-eval harness only — `capture_multi_agent.py`, out-of-band, per the D8 Offline Embedding Rule — never
-in any request-serving path.
+Carve-out (added 2026-09-26, bot review #5; provider amended 2026-09-28, Mars ruling): OFFLINE
+eval-harness embeddings are permitted in `capture_multi_agent.py` only — out-of-band, per the D8
+Offline Embedding Rule — never in any request-serving path. Provider: local Ollama
+`nomic-embed-text` (was Amazon Bedrock Titan V2 — on-demand entitlement suppressed account-wide
+on 395799817120; full ruling in `docs/DECISIONS.md` 2026-09-28).
 The agent interface stays provider-neutral behind the existing `common/llm.py` port.
 
 **D3 — Topology: 3 generator specialists + adversarial verifier + synthesizer.**
@@ -238,8 +240,10 @@ Five hard gates, paired case-by-case vs the single-pass pin:
    → fail outright. $0.05 \le p < 0.15$ → exactly one full re-run; pass iff $(p_1 + p_2)/2 \ge 0.08$.
 3. **wrongful kills:** match rule pre-registered — a killed candidate matches a manifest
    finding iff location matches ($|\Delta\text{line}| \le 2$ on same path) OR embedding cosine ≥ 0.76
-   (using Amazon Bedrock Titan Text Embeddings `amazon.titan-embed-text-v2:0` pinned offline in
-   the eval harness; 0.76 is an app-tuned, pre-registered threshold, not a model property). Human
+   (using the D8-pinned offline embedder — local Ollama `nomic-embed-text`, amended 2026-09-28
+   after the Bedrock entitlement suppression; 0.76 is an app-tuned, pre-registered threshold, not a
+   model property, and both A/B arms share the embedder so deltas stay internally consistent).
+   Human
    adjudication applies ONLY to ties/ambiguities flagged by the deterministic rule — the gate itself
    is computed deterministically, and a run with zero deterministic matches passes without human input.
    Gate: **0 wrongful kills across all runs** (all cases × 3 runs). The 2 subtle-true cases MUST
@@ -262,7 +266,8 @@ exploration beyond the confirmed setting runs only if budget allows and does not
 **Offline Embedding Rule (Constitution II):** External ML libraries (`torch`, `sentence-transformers`,
 `numpy`, `scipy`) are strictly banned by `pyproject.toml`. Pytest in CI must run 100% offline without network.
 Embedding vectors are generated exclusively during out-of-band capture (`capture_multi_agent.py`) via
-`boto3.client("bedrock-runtime")` calling Titan Text Embeddings v2 in `us-west-2`, and serialized into
+`ollama_embed_texts` POSTing local Ollama `nomic-embed-text` at `http://localhost:11434/api/embed`,
+and serialized into
 `pinned_multi_agent.json` — for manifest findings AND for every candidate and verifier-killed finding
 text of each captured run: the wrongful-kill rule scores the killed side's vector, so the cosine arm
 is unscorable without it (amended 2026-09-26, bot review #2). Cosine similarity is computed in pure

@@ -3,7 +3,7 @@
 Human-run tool that executes the FULL multi-agent pipeline
 (`common.fanout.run_fanout` — budget gates, nonce authority, clamp, IDs,
 all five legs) per corpus case x 3 runs, then pins each run's comment,
-verifier verdict, stage events, latencies, and Titan embedding vectors
+verifier verdict, stage events, latencies, and embedding vectors
 to `pinned_multi_agent.json` for the offline scorer (T040).
 
 NEVER in any request-serving path: this module is imported only by its
@@ -31,7 +31,7 @@ Design notes (all load-bearing, all pinned by the smoke tests):
   through the candidate map (killed items carry `candidate_id` only).
 * Embedding text contract (scorer consumes vectors, never text):
   candidate/killed text = `"{title}. {description}"`; manifest finding
-  text = the finding `hint` slug (Titan vectors are semantic — the slug
+  text = the finding `hint` slug (embedding vectors are semantic — the slug
   carries the mechanism vocabulary). Vector keys:
   `manifest:{case}:{index}`, `candidate:{case}:{run}:{candidate_id}`,
   `killed:{case}:{run}:{candidate_id}`.
@@ -59,6 +59,8 @@ import json
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -79,7 +81,8 @@ from common.fanout import FanoutDegraded, run_fanout  # noqa: E402
 from common.llm import review_diff  # noqa: E402
 
 REGION = "us-west-2"
-EMBED_MODEL = "amazon.titan-embed-text-v2:0"
+OLLAMA_URL = "http://localhost:11434"
+OLLAMA_MODEL = "nomic-embed-text"
 FANOUT_CONCURRENCY_PIN = 3
 OFFLINE_REMAINING_MS = 850_000
 RUNS_PER_CASE = 3
@@ -239,86 +242,66 @@ def killed_key(case_id: str, run_index: int, candidate_id: str) -> str:
 EMBED_MAX_ATTEMPTS = 6
 EMBED_BASE_DELAY_S = 2.0
 EMBED_MAX_DELAY_S = 32.0
-# Retryable Bedrock error codes: throttling shapes plus transient 5xx /
-# timeout shapes. Any other ClientError (e.g. 4xx validation) fails fast.
-EMBED_RETRYABLE_CODES = frozenset(
-    {
-        "ThrottlingException",
-        "Throttling",
-        "ThrottledException",
-        "TooManyRequestsException",
-        "RequestThrottled",
-        "RequestLimitExceeded",
-        "ProvisionedThroughputExceededException",
-        "ModelTimeoutException",
-        "ModelNotReadyException",
-        "InternalServerError",
-        "InternalError",
-        "ServiceUnavailable",
-        "RequestTimeout",
-        "TimeoutError",
-    }
-)
 
 
-def _embed_error_retryable(exc: Exception, client) -> bool:
-    """True when an embedding failure is worth retrying: the client's
-    ThrottlingException shape, or a ClientError carrying a throttling /
-    transient code (numeric 5xx included). Anything else fails fast.
-    The 5xx string check is deliberately lenient — a non-botocore
-    exception whose `.response` is a dict with a numeric 500 code would
-    retry unnecessarily; acceptable for an offline harness (bot R3, PR
-    #135)."""
-    throttle_cls = getattr(getattr(client, "exceptions", None), "ThrottlingException", None)
-    if throttle_cls is not None and isinstance(exc, throttle_cls):
+def _embed_error_retryable(exc: Exception) -> bool:
+    """True for transient local-embed failures worth retrying: connection
+    errors and timeouts (URLError and its kin), plus HTTP 429/5xx.
+    Anything else — 4xx API errors, malformed payloads — fails fast; a
+    wrong model name or dead endpoint is a bug, not a storm."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429 or exc.code >= 500
+    if isinstance(exc, urllib.error.URLError):
         return True
-    response = getattr(exc, "response", None)
-    code = response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
-    if code in EMBED_RETRYABLE_CODES:
-        return True
-    return code.isdigit() and code.startswith("5")
+    return isinstance(exc, TimeoutError)
 
 
-def bedrock_embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed texts with Bedrock Titan Text Embeddings v2 in us-west-2
-    (HLD D8 Offline Embedding Rule — live path only, never CI).
+def ollama_embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed texts with local Ollama `nomic-embed-text` (HLD D8 Offline
+    Embedding Rule — live model at capture time, never CI; provider
+    amended by Mars ruling 2026-09-28 after Bedrock on-demand proved
+    suppressed account-wide).
 
     Texts embed SERIALLY (checkpoint-friendly; Gate 22 pinned serial —
-    the overnight gap was NO RETRY, not concurrency). Each `invoke_model`
-    retries transient failures (throttling + 5xx) with 2s doubling
-    backoff capped at 32s, 6 attempts total; the final failure
-    re-raises. Non-transient errors fail fast with no sleep."""
-    import boto3
-
-    client = boto3.client("bedrock-runtime", region_name=REGION)
+    the overnight gap was NO RETRY, not concurrency). Each request
+    retries transient failures (connection errors, timeouts, 429/5xx)
+    with 2s doubling backoff capped at 32s, 6 attempts total; the final
+    failure re-raises. Client errors (4xx) fail fast with no sleep."""
     vectors = []
     for text in texts:
         delay = EMBED_BASE_DELAY_S
         for attempt in range(1, EMBED_MAX_ATTEMPTS + 1):
             try:
-                response = client.invoke_model(
-                    modelId=EMBED_MODEL,
-                    body=json.dumps({"inputText": text}),
-                    contentType="application/json",
-                    accept="application/json",
-                )
-                vectors.append(json.loads(response["body"].read())["embedding"])
+                vectors.append(_ollama_embed_one(text))
                 break
             except Exception as exc:  # noqa: BLE001 (retry classifier decides; final re-raise)
-                if not _embed_error_retryable(exc, client) or attempt == EMBED_MAX_ATTEMPTS:
+                if not _embed_error_retryable(exc) or attempt == EMBED_MAX_ATTEMPTS:
                     raise
-                response = getattr(exc, "response", None)
-                code = (
-                    response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
-                )
                 print(
-                    f"bedrock embed retry {attempt}/{EMBED_MAX_ATTEMPTS}"
-                    f" ({code or type(exc).__name__}) — sleeping {delay:.0f}s",
+                    f"ollama embed retry {attempt}/{EMBED_MAX_ATTEMPTS}"
+                    f" ({type(exc).__name__}) — sleeping {delay:.0f}s",
                     file=sys.stderr,
                 )
                 time.sleep(delay)
                 delay = min(delay * 2, EMBED_MAX_DELAY_S)
     return vectors
+
+
+def _ollama_embed_one(text: str) -> list[float]:
+    """Single POST to the local Ollama `/api/embed` endpoint; returns the
+    embedding vector. Tests stub THIS seam (never a socket)."""
+    req = urllib.request.Request(  # noqa: S310 — fixed localhost constant, never user input
+        f"{OLLAMA_URL}/api/embed",
+        data=json.dumps({"model": OLLAMA_MODEL, "input": [text]}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 — same fixed endpoint
+        payload = json.loads(resp.read())
+    vectors = payload.get("embeddings")
+    if not vectors or not isinstance(vectors, list) or not isinstance(vectors[0], list):
+        raise ValueError(f"ollama /api/embed returned no usable embeddings: {str(payload)[:120]}")
+    return vectors[0]
 
 
 def embed_manifest_findings(manifest: dict, case_id: str, embed_fn) -> dict[str, list[float]]:
@@ -471,7 +454,7 @@ def preflight_delimiter_scan(case_ids: list[str]) -> list[str]:
 def wall_claim(wall_s: float, fanout_concurrency: int, n_runs: int) -> str:
     """Wall-clock claim WITH the assumed parallelism stated beside it
     (HLD wall-time rule — a bare duration is not a claim). Per-run
-    `latency_ms` stops at pipeline return and EXCLUDES Bedrock embedding
+    `latency_ms` stops at pipeline return and EXCLUDES embedding
     time — the p95(low)-vs-p95(default) effort comparison measures
     pipeline latency, never embedding latency."""
     return (
@@ -502,7 +485,7 @@ def execute(
     partial resume preserves earlier records — the checkpoint claiming
     "completed" must never outlive the data it claims. A fully resumed
     case (nothing left to run) reuses its pinned manifest vectors
-    verbatim — resume never re-invokes Bedrock for data it already has,
+    verbatim — resume never re-runs the embedder for data it already has,
     and fresh non-deterministic vectors never replace pinned ones."""
     done = set(completed) if completed else set()
     prior_runs = prior_runs or {}
@@ -585,7 +568,7 @@ def main(
     _creds: tuple[str, str, str] | None = None,
 ) -> dict:
     """Capture entry point. Underscored kwargs are injection seams for
-    the stub smoke (live defaults: real legs, Bedrock embeddings, SSM
+    the stub smoke (live defaults: real legs, local Ollama embeddings, SSM
     creds). Returns run stats (exit-code discipline stays in __main__)."""
     parser = argparse.ArgumentParser(description="Pin multi-agent pipeline runs for evals.")
     parser.add_argument("--cases", nargs="*", default=None, help="case ids (default: all)")
@@ -646,7 +629,7 @@ def main(
     else:
         endpoint, api_key, model = _read_ssm()
     review_fn = _review_fn if _review_fn is not None else _live_review_fn(api_key, model, endpoint)
-    embed_fn = _embed_fn if _embed_fn is not None else bedrock_embed_texts
+    embed_fn = _embed_fn if _embed_fn is not None else ollama_embed_texts
     preflight_delimiter_scan(case_ids)
     start = time.perf_counter()
     cases_out, stats = execute(
