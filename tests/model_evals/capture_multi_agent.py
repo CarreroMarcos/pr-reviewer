@@ -561,10 +561,34 @@ def _read_ssm() -> tuple[str, str, str]:
 
 def _live_review_fn(api_key: str, model: str, endpoint: str):
     """Production-faithful leg caller: direct `llm.review_diff` with the
-    hydrated credentials (same call the worker's stages make)."""
+    hydrated credentials (same call the worker's stages make).
+
+    `run_fanout` passes api_key/model/endpoint explicitly on every call
+    (lambda/common/fanout.py:178-180), so caller kwargs merge OVER the
+    pre-bound closure creds — but a caller cred that DISAGREES with the
+    hydrated one raises (bot R1, PR #137): silent divergence would
+    discard the SSM-hydrated creds, so one source of truth is enforced.
+    The pre-bind originally double-bound those kwargs — TypeError per
+    leg in ~0ms, invisible to the stub smoke (stub legs accept
+    **kwargs) and to CI (no external calls); first exercised by the
+    first live capture 2026-09-28."""
 
     def _call(**kwargs):
-        return review_diff(api_key=api_key, model=model, endpoint=endpoint, **kwargs)
+        for name, bound in (("api_key", api_key), ("model", model), ("endpoint", endpoint)):
+            passed = kwargs.get(name)
+            if passed is not None and passed != bound:
+                raise ValueError(
+                    f"leg kwargs disagree with hydrated creds on {name!r}:"
+                    " one source of truth required (bot R1, PR #137)"
+                )
+        return review_diff(
+            **{
+                "api_key": api_key,
+                "model": model,
+                "endpoint": endpoint,
+                **kwargs,
+            }
+        )
 
     return _call
 
@@ -708,10 +732,23 @@ def main(
     )
     done = stats["runs_completed"]
     skipped = stats["runs_skipped"]
+    # Errored runs counted over the WHOLE pin (merged, resumed included):
+    # "pinned_multi_agent.json complete" means zero errored runs anywhere
+    # in it. __main__ exits 1 iff this is nonzero — a garbage pin must
+    # never look like a clean capture (2026-09-28: a 72-shell all-errored
+    # pin exited 1 only by the SystemExit(dict) accident, and a CLEAN
+    # capture exited 1 by the same accident).
+    errored = sum(
+        1
+        for rec in merged.values()
+        for run in rec["runs"]
+        if run.get("error") is not None  # bot R2 #137: falsy-but-set errors count too
+    )
     print(f"pinned {done} runs ({skipped} resumed) -> {output_path}")
     print(pinned["meta"]["wall_clock_note"])
-    return stats
+    print(f"stats: runs_completed={done} runs_skipped={skipped} runs_errored={errored}")
+    return {**stats, "runs_errored": errored}
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(1 if main()["runs_errored"] else 0)
