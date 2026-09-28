@@ -111,6 +111,7 @@ resource "aws_lambda_function" "worker" {
   environment {
     variables = {
       GLM_ALLOWED_HOSTS = "api.z.ai"
+      ARCHIVE_BUCKET    = "pr-reviewer-archives"
       # T033: the 12 HLD §8 checklist-7 multi-agent knobs with the T005
       # defaults (cross-checked against common.config in
       # tests/contracts/test_terraform_multi_agent.py). REASONING_EFFORT

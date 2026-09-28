@@ -24,6 +24,13 @@ column-0 `}` inside the body (terraform fmt output satisfies this);
 a future here-doc would truncate the match, dropping actions, which
 fails the missing-grant test in the safe direction — robust HCL
 block parsing for the contract suite is SPR-155's scope.
+
+S3 surface (T069, second 2026-09-27 gap): the archive contract's two
+puts (worker_handler.py:1900-1901) had no grant AND no ARCHIVE_BUCKET
+env (the `if not bucket` guard then skips silently — no warning), so
+the bucket stayed empty since the T042 deploy. The pin covers the S3
+call map the same way; the env wiring is pinned in
+test_terraform_multi_agent (GLM_ALLOWED_HOSTS pop-row precedent).
 """
 
 import re
@@ -69,12 +76,37 @@ WORKER_CODE = (LAMBDA_DIR / "common", LAMBDA_DIR / "worker_handler.py")
 
 
 def _worker_table_methods():
+    return _worker_call_sites(TABLE_METHODS)
+
+
+# S3 surface (T069): the archive path's two puts need object-level
+# PutObject; a new call site must extend this map AND iam.tf together.
+S3_OPERATION_ACTIONS = {
+    "put_object": "s3:PutObject",
+}
+
+S3_METHODS = frozenset(S3_OPERATION_ACTIONS) | {
+    "get_object",
+    "head_object",
+    "list_objects_v2",
+    "delete_object",
+    "copy_object",
+    "upload_file",
+    "download_file",
+}
+
+
+def _worker_s3_methods():
+    return _worker_call_sites(S3_METHODS)
+
+
+def _worker_call_sites(method_names):
     found = set()
     for path in WORKER_CODE:
         paths = [path] if path.is_file() else sorted(path.rglob("*.py"))
         for source in paths:
             text = source.read_text(encoding="utf-8")
-            found |= {m for m in TABLE_METHODS if re.search(rf"\.{m}\(", text)}
+            found |= {m for m in method_names if re.search(rf"\.{m}\(", text)}
     return found
 
 
@@ -91,14 +123,22 @@ def _worker_policy_block():
 
 
 def _worker_state_table_actions():
-    """Union of dynamodb actions across ALL statements of the worker
-    policy — a second (differently-scoped) dynamodb statement must not
+    return _worker_statement_actions("dynamodb")
+
+
+def _worker_statement_actions(prefix):
+    """Union of `<prefix>:*` actions across ALL statements of the
+    worker policy — a second (differently-scoped) statement must not
     escape the pin."""
     block = _worker_policy_block()
     actions: set[str] = set()
     for action_block in re.findall(r"Action\s*=\s*\[(.*?)\]", block, re.DOTALL):
-        actions |= set(re.findall(r'"(dynamodb:[A-Za-z]+)"', action_block))
+        actions |= set(re.findall(rf'"({prefix}:[A-Za-z]+)"', action_block))
     return actions
+
+
+def _worker_s3_actions():
+    return _worker_statement_actions("s3")
 
 
 def _required_actions():
@@ -131,4 +171,28 @@ def test_worker_grants_only_mapped_actions():
     assert not unmapped, (
         "granted actions outside the conscious map "
         f"{sorted(unmapped)} — extend OPERATION_ACTIONS or drop the grant"
+    )
+
+
+def test_worker_s3_grant_covers_the_archive_puts():
+    required = {S3_OPERATION_ACTIONS[m] for m in _worker_s3_methods()}
+    assert required, "worker s3 methods not found — the scan broke"
+    missing = required - _worker_s3_actions()
+    assert not missing, f"worker s3 ops missing from the iam.tf grant: {sorted(missing)}"
+
+
+def test_worker_s3_grant_only_mapped():
+    unmapped = _worker_s3_actions() - set(S3_OPERATION_ACTIONS.values())
+    assert not unmapped, (
+        "granted s3 actions outside the conscious map "
+        f"{sorted(unmapped)} — extend S3_OPERATION_ACTIONS or drop the grant"
+    )
+
+
+def test_no_unmapped_s3_operations():
+    methods = _worker_s3_methods()
+    unmapped = methods - set(S3_OPERATION_ACTIONS)
+    assert not unmapped, (
+        "worker code calls s3 methods with no IAM mapping "
+        f"{sorted(unmapped)} — extend S3_OPERATION_ACTIONS and iam.tf together"
     )

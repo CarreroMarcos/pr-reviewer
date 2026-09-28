@@ -11,7 +11,8 @@
 #              glm-api-key, glm-model, glm-endpoint — no wildcard; the webhook
 #              secret is ingress-only per §2.6); dynamodb:GetItem/PutItem/
 #              UpdateItem/DeleteItem (state table; DeleteItem is the
-#              mutex-release op — T067).
+#              mutex-release op — T067); s3:PutObject on the archives
+#              bucket (archive contract writes — T069).
 #   operator — sqs:StartMessageMoveTask/ReceiveMessage/DeleteMessage/
 #              GetQueueAttributes (DLQ) + sqs:SendMessage (work queue);
 #              structurally named (byQueue) in the source queue's
@@ -196,6 +197,13 @@ resource "aws_iam_role_policy" "worker" {
           "dynamodb:DeleteItem",
         ]
         Resource = [aws_dynamodb_table.state.arn]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+        ]
+        Resource = ["${aws_s3_bucket.archives.arn}/*"]
       },
     ]
   })
