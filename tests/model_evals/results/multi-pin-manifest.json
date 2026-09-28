@@ -91,5 +91,6 @@
     "tests/model_evals/results/multi-run-20260928-window2-36runs-5errored.json (pre-#138 targeted re-run: 5/36)"
   ],
   "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask) | related: pinned_outputs.json naive_aware_datetime retains a capture-time markdown fence (verifier fence-tolerant since #138; scored unaffected \u2014 see PR #139 body)",
-  "verification_mode": "manual-only: recompute sha256 on the capture box against pin.sha256 \u2014 the artifact is intentionally outside CI reach; no automated check exists"
+  "verification_mode": "manual-only: recompute sha256 on the capture box against pin.sha256 \u2014 the artifact is intentionally outside CI reach; no automated check exists",
+  "rebaseline_aggregate_scope": "results/baseline.json aggregate intentionally covers the original 13-case set; the 11 corpus additions since then have single-case pins in pinned_outputs.json but no baseline aggregate rows \u2014 extending the aggregate is future capture work"
 }
