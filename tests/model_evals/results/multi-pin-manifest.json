@@ -2,7 +2,11 @@
   "artifact": "tests/model_evals/pinned_multi_agent.json",
   "tracked": false,
   "reason": "exceeds check-added-large-files --maxkb=512 (raw 4.9MB, gzip 966KB); capture-box artifact \u2014 this manifest is the durable in-repo pointer",
-  "artifact_location": "capture box: /home/openclaw/serverless-pr-reviewer/tests/model_evals/pinned_multi_agent.json",
+  "artifact_location": {
+    "machine": "mars-net",
+    "relative_path": "tests/model_evals/pinned_multi_agent.json",
+    "retrieval": "recompute sha256 against pin.sha256 after retrieval; if the box is reaped, the pin is regenerable via reproduction.full_corpus_pass + topup_pass (nomic embedder required)"
+  },
   "pin": {
     "sha256": "5508f9a98bd21016d1e3bb040d01346ac334d5f64cda517ccff3693c8bf4eada",
     "bytes": 5052355,
@@ -86,5 +90,6 @@
     "tests/model_evals/results/multi-run-20260928-pin-first-window-15-verifier-errors.json (pre-#138 first window: 15/72 verifier errors)",
     "tests/model_evals/results/multi-run-20260928-window2-36runs-5errored.json (pre-#138 targeted re-run: 5/36)"
   ],
-  "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask)"
+  "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask) | related: pinned_outputs.json naive_aware_datetime retains a capture-time markdown fence (verifier fence-tolerant since #138; scored unaffected \u2014 see PR #139 body)",
+  "verification_mode": "manual-only: recompute sha256 on the capture box against pin.sha256 \u2014 the artifact is intentionally outside CI reach; no automated check exists"
 }
