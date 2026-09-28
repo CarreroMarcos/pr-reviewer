@@ -18,10 +18,22 @@ import re
 from pathlib import Path
 
 TERRAFORM_DIR = Path(__file__).resolve().parent.parent.parent / "terraform"
-COMPUTE_TF = (TERRAFORM_DIR / "compute.tf").read_text(encoding="utf-8")
-WORKER_HANDLER = (
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"cannot read {path.name} relative to tests/contracts — this "
+            "contract assumes the repo layout (repo root two levels up)"
+        ) from exc
+
+
+COMPUTE_TF = _read(TERRAFORM_DIR / "compute.tf")
+WORKER_HANDLER = _read(
     Path(__file__).resolve().parent.parent.parent / "lambda" / "worker_handler.py"
-).read_text(encoding="utf-8")
+)
 
 
 def _worker_archive_block():
@@ -49,6 +61,10 @@ def test_packaging_pattern_covers_the_runtime_manifest():
     manifest_block = re.search(r"_FANOUT_PROMPT_FILES\s*=\s*\{(.*?)\}", WORKER_HANDLER, re.DOTALL)
     assert manifest_block is not None, (
         "_FANOUT_PROMPT_FILES not found in worker_handler.py — the scan broke"
+    )
+    assert manifest_block.group(1).strip(), (
+        "_FANOUT_PROMPT_FILES parsed empty — the manifest was reformatted "
+        "past the block regex; update this pattern"
     )
     entries = re.findall(r'"([a-z_]+)":\s*"([^"]+)"', manifest_block.group(1))
     assert len(entries) >= 5, f"unexpected manifest shape: {entries}"

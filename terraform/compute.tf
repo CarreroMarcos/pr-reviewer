@@ -33,7 +33,8 @@ data "archive_file" "worker" {
   # zip carried only system_prompt.md, so every Phase-0 shadow died on
   # ConfigError("fanout_prompt", "missing") before any model call).
   # fileset auto-includes new prompts, mirroring the auto-module
-  # pattern below.
+  # pattern below. Map form (f => f) is deliberate: sorted map keys
+  # give deterministic zip member ordering.
   dynamic "source" {
     for_each = {
       for f in fileset("${path.module}/../prompts", "*.md") : f => f
