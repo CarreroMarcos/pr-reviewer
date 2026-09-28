@@ -442,6 +442,23 @@ _ESCALATED_FIELDS = frozenset(
 _VERDICT_KEYS = frozenset({"verified", "killed", "escalated"})
 
 
+def _parse_verifier_payload(content: str) -> Any:
+    """json.loads with markdown-fence tolerance.
+
+    Live captures (T045, 2026-09-28) show roughly half of all
+    `invalid_response` verifier faults are a well-formed verdict wrapped
+    in ``` / ```json fences — transport noise around a contract-shaped
+    payload. Strip the fences and parse. Genuinely malformed JSON
+    (e.g. unescaped quotes inside string values) still raises
+    ValueError and stays a typed failure.
+    """
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+    return json.loads(text)
+
+
 class _VerifierFailure(Exception):
     """One verifier leg failed with a known class: the collector emits
     `verification_failed` and raises `FanoutDegraded`. Internal
@@ -668,7 +685,7 @@ async def _verifier_coro(
     except Exception as exc:
         raise _VerifierFailure("unknown", _latency_ms(start)) from exc
     try:
-        payload = json.loads(result.content)
+        payload = _parse_verifier_payload(result.content)
     except ValueError as exc:
         raise _VerifierFailure("invalid_response", _latency_ms(start)) from exc
     return payload, result.prompt_tokens, result.completion_tokens
@@ -695,52 +712,78 @@ async def _verify_async(
     start = time.monotonic()
     by_id = {candidate["candidate_id"]: candidate for candidate in candidates}
     loop = asyncio.get_running_loop()
-    task = loop.create_task(
-        _verifier_coro(
-            loop=loop,
-            pool=pool,
-            fn=fn,
-            run_id=run_id,
-            api_key=api_key,
-            model=model,
-            endpoint=endpoint,
-            verifier_prompt=verifier_prompt,
-            diff_text=diff_text,
-            read_timeout_s=read_timeout_s,
-            effort=effort,
-            allowed_hosts=allowed_hosts,
-        )
-    )
-    _, pending = await asyncio.wait(
-        {task}, timeout=cfg.verifier_wait_for_s, return_when=asyncio.ALL_COMPLETED
-    )
-    if pending:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        latency_ms = _latency_ms(start)
-        events.append(
-            verification_failed(error_class="timeout", latency_ms=latency_ms, run_id=run_id)
-        )
-        raise FanoutDegraded("timeout", "verifier")
-    try:
-        payload, tokens_in, tokens_out = task.result()
-    except _VerifierFailure as exc:
-        events.append(
-            verification_failed(
-                error_class=exc.error_class, latency_ms=exc.latency_ms, run_id=run_id
+    deadline = time.monotonic() + cfg.verifier_wait_for_s
+    # One deliberate re-ask, and only for a fumbled FORMAT: an
+    # unparseable or shape-invalid verdict is stochastic model output,
+    # not a transport fault — one re-roll turns a per-attempt rate p
+    # into ~p² (T045 capture evidence, 2026-09-28). Transport faults
+    # (429/1302/timeout) and window expiry still fail fast exactly as
+    # before. Both attempts share the stage window deadline; no extra
+    # event is emitted — only the final attempt's outcome is recorded,
+    # with honest total latency and the accepted leg's token counts.
+    validated: dict[str, list[dict[str, Any]]] | None = None
+    tokens_in = tokens_out = 0
+    for attempt in (1, 2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            latency_ms = _latency_ms(start)
+            events.append(
+                verification_failed(error_class="timeout", latency_ms=latency_ms, run_id=run_id)
+            )
+            raise FanoutDegraded("timeout", "verifier")
+        task = loop.create_task(
+            _verifier_coro(
+                loop=loop,
+                pool=pool,
+                fn=fn,
+                run_id=run_id,
+                api_key=api_key,
+                model=model,
+                endpoint=endpoint,
+                verifier_prompt=verifier_prompt,
+                diff_text=diff_text,
+                read_timeout_s=read_timeout_s,
+                effort=effort,
+                allowed_hosts=allowed_hosts,
             )
         )
-        raise FanoutDegraded(exc.error_class, "verifier") from None
-    try:
-        validated = _validate_verifier_output(payload, frozenset(by_id))
-    except _InvalidOutput:
-        latency_ms = _latency_ms(start)
-        events.append(
-            verification_failed(
-                error_class="invalid_response", latency_ms=latency_ms, run_id=run_id
-            )
+        _, pending = await asyncio.wait(
+            {task}, timeout=remaining, return_when=asyncio.ALL_COMPLETED
         )
-        raise FanoutDegraded("invalid_response", "verifier") from None
+        if pending:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            latency_ms = _latency_ms(start)
+            events.append(
+                verification_failed(error_class="timeout", latency_ms=latency_ms, run_id=run_id)
+            )
+            raise FanoutDegraded("timeout", "verifier")
+        try:
+            payload, tokens_in, tokens_out = task.result()
+        except _VerifierFailure as exc:
+            if exc.error_class == "invalid_response" and attempt == 1:
+                continue
+            events.append(
+                verification_failed(
+                    error_class=exc.error_class, latency_ms=exc.latency_ms, run_id=run_id
+                )
+            )
+            raise FanoutDegraded(exc.error_class, "verifier") from None
+        try:
+            validated = _validate_verifier_output(payload, frozenset(by_id))
+        except _InvalidOutput:
+            if attempt == 1:
+                continue
+            latency_ms = _latency_ms(start)
+            events.append(
+                verification_failed(
+                    error_class="invalid_response", latency_ms=latency_ms, run_id=run_id
+                )
+            )
+            raise FanoutDegraded("invalid_response", "verifier") from None
+        break
+    if validated is None:  # pragma: no cover — attempt 2 always raises or breaks
+        raise RuntimeError("verifier attempts exhausted without a verdict")
     verdict, reanchored_n = _route_verdict(validated, by_id)
     events.append(
         verification_done(
