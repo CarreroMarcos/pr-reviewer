@@ -733,17 +733,30 @@ def test_transport_fault_still_fails_fast_without_reask():
 
 
 def test_reask_attempt_two_gets_only_remaining_window():
-    # attempt 1 burns 0.3s of the 1s window, then fails with malformed
-    # JSON; attempt 2 sleeps 0.8s against its ~0.7s remaining budget →
-    # window enforcement cancels it: reason=timeout.
+    # attempt 1 burns 0.5s of a 2s window, then fails with malformed
+    # JSON; attempt 2 sleeps 2.0s against its ~1.5s remaining budget →
+    # window enforcement cancels it: reason=timeout. Margins are >=0.5s
+    # in both directions so a loaded CI runner cannot flip the outcome.
     call = SequentialVerifierCall(
-        [("sleep_raw", 0.3, BAD_JSON), ("sleep_raw", 0.8, json.dumps(GOOD_VERDICT))]
+        [("sleep_raw", 0.5, BAD_JSON), ("sleep_raw", 2.0, json.dumps(GOOD_VERDICT))]
     )
     captured = []
     with pytest.raises(FanoutDegraded) as excinfo:
-        invoke(call, cfg=make_cfg(verifier_wait_for_s=1), events=captured)
+        invoke(call, cfg=make_cfg(verifier_wait_for_s=2), events=captured)
     assert len(call.calls) == 2
     assert excinfo.value.reason == "timeout"
     failed = failed_events(captured, "verification_failed")
     assert len(failed) == 1
     assert failed[0]["error_class"] == "timeout"
+
+
+def test_sliver_budget_skips_reask():
+    # attempt 1 burns 1.7s of a 2s window, then fails with malformed
+    # JSON; only ~0.3s (< 25% floor) remains → no re-ask dispatch (a
+    # sliver-budget leg pays a full model request for a guaranteed
+    # timeout) → honest invalid_response failure with a single call.
+    call = SequentialVerifierCall([("sleep_raw", 1.7, BAD_JSON), ("ok", GOOD_VERDICT)])
+    with pytest.raises(FanoutDegraded) as excinfo:
+        result_of(call, candidates=ONE_CANDIDATE, cfg=make_cfg(verifier_wait_for_s=2))
+    assert len(call.calls) == 1
+    assert excinfo.value.reason == "invalid_response"

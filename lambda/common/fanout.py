@@ -448,14 +448,18 @@ def _parse_verifier_payload(content: str) -> Any:
     Live captures (T045, 2026-09-28) show roughly half of all
     `invalid_response` verifier faults are a well-formed verdict wrapped
     in ``` / ```json fences — transport noise around a contract-shaped
-    payload. Strip the fences and parse. Genuinely malformed JSON
+    payload. Strip the fences and parse. Accepted fence grammar: >=3
+    backticks, optional json tag (the shapes observed in capture);
+    exotically nested fences still fail loud. Genuinely malformed JSON
     (e.g. unescaped quotes inside string values) still raises
     ValueError and stays a typed failure.
     """
+    if not isinstance(content, str):
+        raise ValueError("verdict content is not a string")
     text = content.strip()
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```\s*$", "", text)
+        text = re.sub(r"^`{3,}(?:json)?\s*", "", text)
+        text = re.sub(r"\s*`{3,}\s*$", "", text)
     return json.loads(text)
 
 
@@ -718,9 +722,12 @@ async def _verify_async(
     # not a transport fault — one re-roll turns a per-attempt rate p
     # into ~p² (T045 capture evidence, 2026-09-28). Transport faults
     # (429/1302/timeout) and window expiry still fail fast exactly as
-    # before. Both attempts share the stage window deadline; no extra
-    # event is emitted — only the final attempt's outcome is recorded,
-    # with honest total latency and the accepted leg's token counts.
+    # before. Both attempts share the stage window deadline, and a
+    # re-ask only fires with >=25% of the window remaining — a
+    # sliver-budget re-ask pays a full model request for a
+    # near-guaranteed timeout. No extra event is emitted — only the
+    # final attempt's outcome is recorded, with honest total latency
+    # and the accepted leg's token counts.
     validated: dict[str, list[dict[str, Any]]] | None = None
     tokens_in = tokens_out = 0
     for attempt in (1, 2):
@@ -761,7 +768,11 @@ async def _verify_async(
         try:
             payload, tokens_in, tokens_out = task.result()
         except _VerifierFailure as exc:
-            if exc.error_class == "invalid_response" and attempt == 1:
+            if (
+                exc.error_class == "invalid_response"
+                and attempt == 1
+                and deadline - time.monotonic() > cfg.verifier_wait_for_s / 4
+            ):
                 continue
             events.append(
                 verification_failed(
@@ -772,7 +783,7 @@ async def _verify_async(
         try:
             validated = _validate_verifier_output(payload, frozenset(by_id))
         except _InvalidOutput:
-            if attempt == 1:
+            if attempt == 1 and deadline - time.monotonic() > cfg.verifier_wait_for_s / 4:
                 continue
             latency_ms = _latency_ms(start)
             events.append(
