@@ -114,7 +114,7 @@ def main():
 
     n_defects = sum(len(c["manifest"].get("expected_findings", [])) for c in pin["cases"].values())
     deltas = mas.compute_ab_deltas(multi_hits, single_hits, multi_prec, single_prec, n_defects)
-    subtle_ids = sorted(getattr(fixtures, "SUBTLE_TRUE_IDS", []))
+    subtle_ids = sorted(fixtures.SUBTLE_TRUE_IDS)
     kill = mas.wrongful_kill_report(
         runs=kill_runs,
         manifests={cid: c["manifest"] for cid, c in pin["cases"].items()},
