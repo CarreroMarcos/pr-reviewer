@@ -170,7 +170,7 @@ def main():
                     mv = vectors.get(mas.manifest_vector_key(cid, i))
                     if cv and mv:
                         cs = mas.cosine(cv, mv)
-                        if cs >= 0.76 and (best is None or cs > best[1]):
+                        if cs >= mas.KILL_COSINE_THRESHOLD and (best is None or cs > best[1]):
                             best = (i, cs)
                 if best:
                     arm, detail = "cosine", {"mf": best[0], "cosine": round(best[1], 3)}

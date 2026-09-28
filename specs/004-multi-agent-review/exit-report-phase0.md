@@ -40,13 +40,14 @@ verdicts into this report.
 | 4. synthesizer fidelity | dropped 0 / invented 0 | 0 on both | **PASS** |
 | 5. existing floors | fabricated 0; injection comment clean of all 3 pinned literals | fabricated 0; robustness cases pass | **PASS** |
 
-Context (per-run means over the corpus, both arms carry zero-defect
-robustness cases where recall is defined 0.0 — the gate math is
-per-case-meaned and internally consistent): recall multi 0.9722 vs single
-0.9583; precision multi 0.5498 vs single 0.4653. The multi-agent pipeline
-beats single-pass on both means while emitting fewer false positives —
-the quality direction is right; gates 2 and 3 are about proving it to the
-pre-registered standard.
+Context (conventions stated: recall is the gate's own defect-weighted
+case-meaned value — multi 0.9630 vs single 0.9444, whose difference is
+exactly gate 1's d = +0.0185; precision is the per-run mean over 72
+multi / 24 single runs — multi 0.5498 vs single 0.4653, difference =
+gate 2's p = +0.0845). The multi-agent pipeline beats single-pass on
+both means while emitting fewer false positives — the quality direction
+is right; gates 2 and 3 are about proving it to the pre-registered
+standard.
 
 ## 3. Gate-3 anatomy (the failure that matters)
 
@@ -58,7 +59,7 @@ attribution (computed deterministically, embedded in
 - **All 10 are location-arm matches** (same path, |Δline| ≤ 2). The
   cosine arm fired **zero** times — consistent with the calibration
   record in `docs/DECISIONS.md` (0.76 arm: 1/107 on the survivor side,
-  zero spurious), now corroborated from the killed side.
+  zero spurious; pairs are post-verifier findings × expected items with both vectors present), now corroborated from the killed side.
 - Specialty of the killed candidate: `tests` 7/10, `security` 2/10,
   `correctness` 1/10.
 - The killed candidates **correctly located true defects** (e.g.
@@ -89,7 +90,7 @@ Run-level: min 18.0 s / p50 41.6 s / **p95 74.2 s** / max 116.9 s.
 
 Budget arithmetic: elapsed-budget gate 1 requires
 `remaining ≥ (300+240+180+60) = 780 s` at review start; with the 900 s
-worker timeout (AWS max, `terraform/compute.tf:104`) and the ~90 s fixed
+worker timeout (AWS max, `terraform/compute.tf:115`) and the ~90 s fixed
 overhead, start-remaining ≈ 810 s → **passes with ~30 s slack**.
 
 - `BUDGET_MARGIN_S = 60`: **keep** (recommendation R4). The eval-side
