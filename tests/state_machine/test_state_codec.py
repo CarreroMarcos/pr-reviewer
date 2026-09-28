@@ -14,6 +14,12 @@ machine-readable `field`/`reason`, mirroring `common.envelope.EnvelopeError`.
 
 import pytest
 
+from common.config import (
+    DEFAULT_BUDGET_MARGIN_S,
+    DEFAULT_SYNTHESIZER_WAIT_FOR_S,
+    DEFAULT_VERIFIER_WAIT_FOR_S,
+    DEFAULT_WAVE_WAIT_FOR_S,
+)
 from common.state import (
     CLAIM_LEASE_SECONDS,
     DELIVERY_TTL_SECONDS,
@@ -107,13 +113,6 @@ def test_claim_lease_covers_multi_agent_review_budget():
     budget (elapsed-budget gate-1 total). A future D9 re-tune that outgrows
     the lease fails here loudly instead of silently reopening the steal
     window between lease expiry and claim."""
-    from common.config import (
-        DEFAULT_BUDGET_MARGIN_S,
-        DEFAULT_SYNTHESIZER_WAIT_FOR_S,
-        DEFAULT_VERIFIER_WAIT_FOR_S,
-        DEFAULT_WAVE_WAIT_FOR_S,
-    )
-
     budget = (
         DEFAULT_WAVE_WAIT_FOR_S
         + DEFAULT_VERIFIER_WAIT_FOR_S

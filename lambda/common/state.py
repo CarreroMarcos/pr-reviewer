@@ -31,9 +31,9 @@ from typing import Any
 
 STATUSES = frozenset({"CLAIMED", "ACTIVE"})
 
-# HLD D9 (T047): ≥ the multi-agent review budget (gate-1 total
-# 300+240+180+60); widened from 180, which predated the 240s socket budget.
-# Fixed lease, claim → finalize.
+# HLD D9 (T047): ≥ the multi-agent review budget (gate-1 total 300+240+180+60;
+# defaults live in common.config). Widened from 180, which predated the 240s
+# socket budget. Fixed lease, claim → finalize.
 CLAIM_LEASE_SECONDS = 780
 DELIVERY_TTL_SECONDS = 7 * 24 * 3600  # HLD §2.4 item type 1: delivery TTL 7 days
 

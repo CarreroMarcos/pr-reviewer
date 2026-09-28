@@ -59,6 +59,7 @@ GUID_1 = "11111111-1111-4111-8111-111111111111"
 GUID_2 = "22222222-2222-4222-8222-222222222222"
 GUID_OTHER = "33333333-3333-4333-8333-333333333333"
 NOW = 1_750_000_000
+PRE_T047_LEASE_S = 180  # pre-T047 claim lease (DECISIONS 2026-09-28)
 COMMENT_ID = 987654
 UPDATED_AT = "2026-09-12T10:00:00Z"
 
@@ -361,12 +362,14 @@ def test_claim_fails_on_live_lease_held():
 
 def test_widened_lease_rejects_mid_review_redelivery():
     """T047 (HLD D9): a same-head redelivery landing mid-review — inside the
-    widened lease but past the pre-T047 180 s one — must NOT steal the claim.
-    Under the old lease this arrival found an expired row and claimed it,
-    racing the live review to publish (the steal-window residual D9 records)."""
+    widened lease but past the pre-T047 one (arrival at the midpoint between
+    the two leases) — must NOT steal the claim. Under the old lease this
+    arrival found an expired row and claimed it, racing the live review to
+    publish (the steal-window residual D9 records)."""
     h = Harness(live_shas=[SHA_B])
     before = _seed(h.table, head=SHA_B, gen=2, owner=GUID_OTHER, status="CLAIMED")
-    outcome = h.run(incoming_sha=SHA_B, now=lambda: NOW + 400)
+    arrival = NOW + (PRE_T047_LEASE_S + CLAIM_LEASE_SECONDS) // 2
+    outcome = h.run(incoming_sha=SHA_B, now=lambda: arrival)
     assert outcome.kind == OutcomeKind.DISCARDED_CLAIM_HELD
     assert not any(entry[0] == "fence" for entry in h.calls)
     assert not any(entry[0] == "publish" for entry in h.calls)
