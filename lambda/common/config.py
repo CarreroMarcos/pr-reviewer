@@ -178,7 +178,7 @@ class ConfigProvider:
 # can never freeze these. Env-var wiring into the worker belongs to
 # later tickets; this module defines names, defaults, and parsing only.
 DEFAULT_MULTI_AGENT = 0
-DEFAULT_MULTI_AGENT_PHASE0 = 0
+DEFAULT_MULTI_AGENT_PHASE0 = 1
 DEFAULT_FANOUT_CONCURRENCY = 3
 DEFAULT_MUTEX_LEASE_TTL_S = 900
 DEFAULT_REASONING_MAX_CHARS = 4000

@@ -40,7 +40,7 @@ VARIABLES_TF = (TERRAFORM_DIR / "variables.tf").read_text(encoding="utf-8")
 # os.environ reads in common/config.py).
 EXPECTED_ENV = {
     "MULTI_AGENT": "0",
-    "MULTI_AGENT_PHASE0": "0",
+    "MULTI_AGENT_PHASE0": "1",
     "FANOUT_CONCURRENCY": "3",
     "MUTEX_LEASE_TTL_S": "900",
     "REASONING_MAX_CHARS": "4000",
