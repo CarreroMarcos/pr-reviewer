@@ -23,7 +23,10 @@ grant outside the map fails. The `\\n}` resource anchor assumes no
 column-0 `}` inside the body (terraform fmt output satisfies this);
 a future here-doc would truncate the match, dropping actions, which
 fails the missing-grant test in the safe direction — robust HCL
-block parsing for the contract suite is SPR-155's scope.
+block parsing for the contract suite is SPR-155's scope. The
+action-extraction regex likewise assumes list-form `Action = [...]`
+statements; a string-form Action would be missed (also safe
+direction: toward missing-grant).
 
 S3 surface (T069, second 2026-09-27 gap): the archive contract's two
 puts (worker_handler.py:1900-1901) had no grant AND no ARCHIVE_BUCKET
@@ -39,9 +42,11 @@ from pathlib import Path
 TERRAFORM_DIR = Path(__file__).resolve().parent.parent.parent / "terraform"
 try:
     IAM_TF = (TERRAFORM_DIR / "iam.tf").read_text(encoding="utf-8")
+    COMPUTE_TF = (TERRAFORM_DIR / "compute.tf").read_text(encoding="utf-8")
+    ARCHIVES_TF = (TERRAFORM_DIR / "archives.tf").read_text(encoding="utf-8")
 except OSError as exc:
     raise RuntimeError(
-        "cannot read terraform/iam.tf relative to tests/contracts — this "
+        "cannot read terraform/*.tf relative to tests/contracts — this "
         "contract assumes the repo layout (repo root two levels up); if the "
         "layout moved, update TERRAFORM_DIR here"
     ) from exc
@@ -91,6 +96,10 @@ S3_METHODS = frozenset(S3_OPERATION_ACTIONS) | {
     "list_objects_v2",
     "delete_object",
     "copy_object",
+    # High-level transfer APIs are multipart-capable: adopting one needs
+    # extra grants (s3:AbortMultipartUpload, ListMultipartUploadParts)
+    # added to S3_OPERATION_ACTIONS consciously — the unmapped tripwire
+    # below forces that conversation.
     "upload_file",
     "download_file",
 }
@@ -195,4 +204,22 @@ def test_no_unmapped_s3_operations():
     assert not unmapped, (
         "worker code calls s3 methods with no IAM mapping "
         f"{sorted(unmapped)} — extend S3_OPERATION_ACTIONS and iam.tf together"
+    )
+
+
+def test_archive_bucket_name_is_consistent_across_surfaces():
+    """The env literal (compute.tf), the bucket resource (archives.tf)
+    and the IAM resource reference must name the same bucket: literals
+    that drift would send the puts somewhere the grant does not cover,
+    or skip silently (the T069 failure mode)."""
+    env = re.search(r'ARCHIVE_BUCKET\s*=\s*"([^"]*)"', COMPUTE_TF)
+    assert env is not None, "ARCHIVE_BUCKET env line missing from compute.tf (the T069 wiring)"
+    bucket = re.search(r'bucket\s*=\s*"([^"]*)"', ARCHIVES_TF)
+    assert bucket is not None, "bucket name not found in archives.tf — the scan broke"
+    assert env.group(1) == bucket.group(1), (
+        f"compute.tf ARCHIVE_BUCKET {env.group(1)!r} != archives.tf bucket {bucket.group(1)!r}"
+    )
+    assert re.search(r'Resource\s*=\s*\["\$\{aws_s3_bucket\.archives\.arn\}/runs/\*"\]', IAM_TF), (
+        "the worker S3 statement must target the archives bucket resource "
+        "under the runs/ prefix (the key prefix archive_mod.s3_key writes)"
     )

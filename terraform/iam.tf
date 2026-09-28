@@ -203,7 +203,7 @@ resource "aws_iam_role_policy" "worker" {
         Action = [
           "s3:PutObject",
         ]
-        Resource = ["${aws_s3_bucket.archives.arn}/*"]
+        Resource = ["${aws_s3_bucket.archives.arn}/runs/*"]
       },
     ]
   })
