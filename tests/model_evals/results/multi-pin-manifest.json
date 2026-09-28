@@ -2,13 +2,38 @@
   "artifact": "tests/model_evals/pinned_multi_agent.json",
   "tracked": false,
   "reason": "exceeds check-added-large-files --maxkb=512 (raw 4.9MB, gzip 966KB); capture-box artifact \u2014 this manifest is the durable in-repo pointer",
-  "sha256": "5508f9a98bd21016d1e3bb040d01346ac334d5f64cda517ccff3693c8bf4eada",
-  "bytes": 5052355,
-  "corpus": "24 cases x 3 runs (multi-agent, FANOUT_CONCURRENCY=3)",
-  "final_pass_stats": {
-    "runs_completed": "72",
-    "runs_skipped": "0",
-    "runs_errored": "1"
+  "artifact_location": "capture box: /home/openclaw/serverless-pr-reviewer/tests/model_evals/pinned_multi_agent.json",
+  "pin": {
+    "sha256": "5508f9a98bd21016d1e3bb040d01346ac334d5f64cda517ccff3693c8bf4eada",
+    "bytes": 5052355,
+    "corpus": "24 cases x 3 runs (multi-agent, FANOUT_CONCURRENCY=3)",
+    "runs_total": 72,
+    "runs_errored": 0,
+    "verified_by": "error summed over every run of every case in this exact artifact (post-top-up state)"
+  },
+  "reproduction": {
+    "full_corpus_pass": {
+      "command": "eval \"$(aws configure export-credentials --format env)\" && uv run --frozen python tests/model_evals/capture_multi_agent.py --runs 3 --checkpoint tests/model_evals/results/multi-checkpoint.json --force",
+      "captured_at": "2026-09-28T21:49:21.181333+00:00",
+      "wall_s": 3266.8,
+      "stats": {
+        "runs_completed": 72,
+        "runs_skipped": 0,
+        "runs_errored": 1
+      },
+      "note": "single residual (split_lock_race#0, verifier:invalid_response) \u2014 superseded by the top-up pass below"
+    },
+    "topup_pass": {
+      "command": "eval \"$(aws configure export-credentials --format env)\" && uv run --frozen python tests/model_evals/capture_multi_agent.py --cases split_lock_race --runs 3 --checkpoint tests/model_evals/results/multi-checkpoint.json --resume",
+      "captured_at": "2026-09-28T21:54:13.862999+00:00",
+      "wall_s": 167.0,
+      "stats": {
+        "runs_completed": 3,
+        "runs_skipped": 0,
+        "runs_errored": 0
+      },
+      "note": "checkpoint deleted pre-run so no pairs were marked completed; harness merge (merged = dict(prior.cases)) replaced split_lock_race only"
+    }
   },
   "meta_invocations": [
     {
@@ -61,5 +86,5 @@
     "tests/model_evals/results/multi-run-20260928-pin-first-window-15-verifier-errors.json (pre-#138 first window: 15/72 verifier errors)",
     "tests/model_evals/results/multi-run-20260928-window2-36runs-5errored.json (pre-#138 targeted re-run: 5/36)"
   ],
-  "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask); top-up pass for the 1 residual via harness subset --resume"
+  "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask)"
 }
