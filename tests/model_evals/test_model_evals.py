@@ -258,3 +258,51 @@ def test_baseline_matches_recomputation() -> None:
         for case_id in fixtures.SEED_SCORING_IDS
     ]
     assert scoring.aggregate(fresh) == baseline["aggregate"], "aggregate drifted"
+
+
+def _fake_case(manifest):
+    return (
+        "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n",
+        manifest,
+        {"title": "t", "body": "b", "prior_comment": ""},
+    )
+
+
+def test_capture_record_and_continue_on_transient_failure(tmp_path, monkeypatch, capsys):
+    """T045 pre-flight: a transient mid-batch failure (the overnight GLM
+    read timeout) is recorded with its error plus empty output — the
+    batch completes the remaining cases instead of aborting with nothing
+    written. Fake case ids sit outside SEED_SCORING_IDS, so the vacuous
+    aggregate still passes floors and the pin lands with the error entry."""
+    manifest = {"expected_findings": [], "changed_paths": ["a.py"]}
+    monkeypatch.setattr(
+        fixtures,
+        "CORPUS",
+        {"ok-case": lambda: _fake_case(manifest), "bad-case": lambda: _fake_case(manifest)},
+    )
+    monkeypatch.setattr(
+        capture,
+        "_read_ssm",
+        lambda: ("https://api.z.ai/api/paas/v4/chat/completions", "k", "glm-x"),
+    )
+    attempted: list = []
+
+    def _flaky(*, diff_text, **kwargs):
+        attempted.append(diff_text)
+        if len(attempted) == 2:
+            raise TimeoutError("GLM read timed out")
+        return "## Findings\n\nNo issues found.\n"
+
+    monkeypatch.setattr(capture, "_post_review", _flaky)
+    output = tmp_path / "pinned.json"
+    results = tmp_path / "baseline.json"
+    rc = capture.main(["--output", str(output), "--results", str(results)])
+    assert rc == 0
+    assert len(attempted) == 2  # batch completed past the mid-batch failure
+    pinned = json.loads(output.read_text(encoding="utf-8"))
+    assert pinned["cases"]["bad-case"] == {
+        "output": "",
+        "error": "TimeoutError: GLM read timed out",
+    }
+    assert pinned["cases"]["ok-case"]["output"].startswith("## Findings")
+    assert "recorded, continuing" in capsys.readouterr().err

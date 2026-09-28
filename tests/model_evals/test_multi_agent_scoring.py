@@ -404,3 +404,31 @@ def test_error_runs_score_as_total_miss():
     assert (metrics.hits, metrics.missed) == (0, 1)
     assert metrics.recall == 0.0
     assert metrics.precision == 0.0
+
+
+def test_ab_case_symmetry_passes_on_shared_set():
+    """T045 pre-flight: identical recall/precision extras sets return the
+    shared case set for the delta computations."""
+    shared = mas.assert_ab_case_symmetry(
+        {"a": [1], "b": [0]},
+        {"a": [1], "b": [1]},
+        {"a": [0.5], "b": [0.0]},
+        {"a": [0.5], "b": [0.5]},
+    )
+    assert shared == {"a", "b"}
+
+
+def test_ab_case_symmetry_fails_on_divergence():
+    """T045 pre-flight: a case present on one side only (here `b` drops
+    out of the precision extras) trips the assert naming both directions."""
+    try:
+        mas.assert_ab_case_symmetry(
+            {"a": [1], "b": [0]},
+            {"a": [1], "b": [1]},
+            {"a": [0.5]},
+            {"a": [0.5], "b": [0.5]},
+        )
+    except AssertionError as exc:
+        assert "recall-only=['b']" in str(exc)
+    else:
+        raise AssertionError("expected extras-set asymmetry to trip the assert")

@@ -13,9 +13,13 @@ Usage (after `aws login` + exported creds)::
 
 Refuses to overwrite existing outputs unless `--force`. One mint of AWS
 creds (SSM read ONCE per process); no retry loops on AWS/LLM calls.
-Legacy behavior (no `--tag`): single pass over the full corpus; any failed
-call aborts without writing. Variant behavior (`--tag`): per-case errors
-are recorded as `{"error": ...}` and the batch continues; per-case
+Per-case errors are recorded as `{"output": "", "error": ...}` and the batch
+continues — a transient timeout must not void a 72-call run (record-and-continue,
+T045 pre-flight). The empty output scores 0 through the standard functions,
+so errored defect cases fail the quality floors mechanically (no silent
+partial pin); total failures (SSM/creds) still raise before the loop with
+nothing written. Variant behavior (`--tag`): per-case
+errors are recorded as `{"error": ...}` and the batch continues; per-case
 `latency_ms` and run latency stats land in the results file.
 """
 
@@ -218,13 +222,20 @@ def main(argv: list[str] | None = None) -> int:
                 )
             }
         except Exception as exc:  # noqa: BLE001 (out-of-band tool: record, don't raise)
-            if not variant:
-                print(
-                    f"capture FAILED for {name}: {exc} — aborting, nothing written",
-                    file=sys.stderr,
-                )
-                return 1
-            cases[name] = {"error": f"{type(exc).__name__}: {exc}"}
+            # Record-and-continue (T045 pre-flight; disclosed Gate-22 scope
+            # touching the :498 pin-without-checkpoint asymmetry): a failed
+            # case is recorded and the batch NEVER aborts mid-loop — the
+            # overnight 72-call re-baseline died with nothing written on
+            # ONE transient timeout. Legacy records the multi harness's
+            # FanoutDegraded convention (empty output + error): the empty
+            # output scores through the standard functions, so a defect
+            # case counts its miss mechanically in the floors below
+            # instead of voiding the whole run. Variant keeps its
+            # error-only record (its aggregate counts errors separately).
+            if variant:
+                cases[name] = {"error": f"{type(exc).__name__}: {exc}"}
+            else:
+                cases[name] = {"output": "", "error": f"{type(exc).__name__}: {exc}"}
             print(f"capture FAILED for {name}: {exc} — recorded, continuing", file=sys.stderr)
         finally:
             latencies[name] = int((time.perf_counter() - start) * 1000)
