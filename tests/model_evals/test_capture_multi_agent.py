@@ -642,6 +642,26 @@ def test_live_review_fn_accepts_fanout_kwargs(monkeypatch):
     assert captured["thinking_enabled"] is True
 
 
+def test_live_review_fn_rejects_cred_divergence():
+    """Bot R1 (#137): a caller cred that disagrees with the hydrated
+    closure creds must raise loudly — silent merge-override would
+    discard the SSM-hydrated creds (one source of truth enforced)."""
+
+    fn = cma._live_review_fn("k", "m", "https://e")
+    try:
+        fn(
+            api_key="STALE",
+            model="m",
+            endpoint="https://e",
+            system_prompt="s",
+            diff_text="d",
+        )
+    except ValueError as exc:
+        assert "api_key" in str(exc)
+    else:
+        raise AssertionError("expected ValueError on cred divergence")
+
+
 def test_ollama_embed_one_posts_model_and_parses_embeddings(monkeypatch):
     """The seam POSTs {model, input} to /api/embed and returns the first
     vector of the `embeddings` payload (real seam logic, socket stubbed)."""
