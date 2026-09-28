@@ -167,9 +167,9 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   Tag exactly one commit (`git tag tf-<reason> <sha>`, push that tag
   only); never `git push --tags`. The push itself starts the HCP run and
   the apply happens **automatically** — there is no manual UI approval
-  step (Mars, 2026-09-26). Bundle deploy-coupled PRs (e.g. zip packaging
-  + the env/grant that arms it) into ONE tag ask — a single apply ships
-  them together (2026-09-27).
+  step (Mars, 2026-09-26). Bundle deploy-coupled PRs (e.g. T068+T069 in
+  spec 004: zip packaging + the env/grant that arms it) into ONE tag
+  ask — a single apply ships them together (2026-09-27).
 - **HCP workspace must define `operator_principal_arn` (Mars, 2026-09-26):**
   the HCP workspace VARIABLE is the single source of truth — set it there to
   the live operator principal (verification example:
