@@ -28,10 +28,20 @@ data "archive_file" "worker" {
   output_path = "${path.module}/worker.zip"
 
   # prompts/ ships in the worker zip at zip-root prompts/ so
-  # _load_system_prompt resolves the versioned contract file (T035).
-  source {
-    content  = file("${path.module}/../prompts/system_prompt.md")
-    filename = "prompts/system_prompt.md"
+  # _load_system_prompt resolves the versioned contract file (T035) and
+  # _load_fanout_prompts finds the five fan-out templates (T068: the
+  # zip carried only system_prompt.md, so every Phase-0 shadow died on
+  # ConfigError("fanout_prompt", "missing") before any model call).
+  # fileset auto-includes new prompts, mirroring the auto-module
+  # pattern below.
+  dynamic "source" {
+    for_each = {
+      for f in fileset("${path.module}/../prompts", "*.md") : f => f
+    }
+    content {
+      content  = file("${path.module}/../prompts/${source.value}")
+      filename = "prompts/${source.value}"
+    }
   }
 
   # lambda/ modules enumerated at plan time (auto-includes new modules;
