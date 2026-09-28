@@ -14,31 +14,28 @@ pre-commit run --all-files
 terraform -chdir=terraform init -backend=false
 terraform -chdir=terraform fmt -check
 terraform -chdir=terraform validate
-# Real terraform runs (init/plan/destroy) also need live AWS creds. The CLI's
-# `aws login` cache (~/.aws/login) is invisible to the terraform AWS provider —
-# export resolved session creds into the environment first (verified 2026-09-13):
+# Real terraform runs need live AWS creds — the CLI's ~/.aws/login cache is
+# invisible to the terraform provider, so export session creds first:
 eval "$(aws configure export-credentials --format env)"
 ```
 
-Pre-push hook will run the same class of checks. If it fails, fix the code. Do not `--no-verify`.
-Never `terraform apply`. Never commit secrets, `.env`, or `terraform.tfstate`.
-Never add runtime deps other than boto3. If `pyproject.toml` changes, `uv lock` in the same change.
+Pre-push runs the same checks: fix failures at the source; bypassing hooks (`--no-verify`) is off-limits. Keep secrets, `.env`, and `terraform.tfstate` out of git. `terraform apply` stays human-only — `tf-*` tags trigger it (see Deploys & IAM). Runtime deps: boto3 only; pair any `pyproject.toml` change with `uv lock` in the same change.
 
-## Layout (do not invent folders)
+## Layout (new folders need an HLD change first)
 
-HLD owns the tree: `lambda/common/` (shared contract), thin `lambda/ingress_handler.py` + `lambda/worker_handler.py`, `terraform/`, `tests/{unit,state_machine,contracts,model_evals,integration}/`, `prompts/`, `docs/`, `specs/` (001 base reviewer, 004 multi-agent review). Doc authority: HLD owns architecture (current truth); `docs/DECISIONS.md` owns history/why (append-only); runbooks own procedure; specs own task contracts. Precedence on conflict: HLD wins current behavior, DECISIONS wins why/history; disagreements are Needs-input questions, never silent edits.
+`lambda/common/` (shared contract), thin `lambda/ingress_handler.py` + `lambda/worker_handler.py`, `terraform/`, `tests/{unit,state_machine,contracts,model_evals,integration}/`, `prompts/`, `docs/`, `specs/` (001 base reviewer, 004 multi-agent review).
+
+Doc authority: HLD owns architecture (current truth); `docs/DECISIONS.md` owns history/why (append-only); runbooks own procedure; specs own task contracts. On conflict: HLD wins current behavior, DECISIONS wins why/history; disagreements are Needs-input questions, never silent edits.
+
 Runtime: Python 3.12 stdlib + `boto3` only. No model tools.
 
 ## Jira (MCP)
 
-Allowed tools: search, get issue, list transitions, add comment, transition.
-Forbidden: create issue, edit summary/description/ACs, delete, Cancelled (human only).
-Done is agent-settable only through the Oracle review gate (below) — never directly.
-Call mechanics (discover/executeRead wrapping, response shapes, resume after failure): `docs/process/jira-mcp-recipes.md`.
+Allowed: search, get issue, list transitions, add comment, transition. Forbidden: create issue, edit summary/description/ACs, delete, and the Cancelled transition (human-only). Done is agent-settable only through the Oracle gate — never directly. Call mechanics (discover/executeRead wrapping, response shapes, failure resume): `docs/process/jira-mcp-recipes.md`.
 
-Jira description is a pointer. Source of truth is `specs/<spec-id>/tasks.md` (currently 004 — the active JQL ticket names its spec) + spec/HLD.
+The Jira description is a pointer; the source of truth is `specs/<spec-id>/tasks.md` + spec/HLD (the active JQL ticket names its spec).
 
-Statuses in this space (names must match; the first column is **To Do**, not Ready):
+Event table (comment only at these events — no progress spam, no diffs/secrets in comments, no rewriting history):
 
 | Event | Comment? | Transition |
 | --- | --- | --- |
@@ -48,11 +45,7 @@ Statuses in this space (names must match; the first column is **To Do**, not Rea
 | Human answered, resume | Yes, one line | Needs input → In Progress |
 | Oracle gate passed (merged) | Yes, one line: verdict + short sha | In Review → Done |
 
-Comment only at those events. No progress spam, no pasting diffs or secrets, no rewriting the story in a comment.
-
-Every agent-posted Jira comment begins with a Pacific-time stamp — `[YYYY-MM-DD HH:MM PT]` (America/Los_Angeles, DST-aware) — so Mars can see at a glance when the edit/post happened.
-
-Comment shape:
+Every agent comment starts with a Pacific-time stamp `[YYYY-MM-DD HH:MM PT]` (America/Los_Angeles, DST-aware). Shapes:
 
 ```text
 [2026-09-13 23:55 PT] Started T001 on SPR-1/t001-scaffold.
@@ -67,165 +60,72 @@ verify: <exact command from tasks.md> → pass
 Needs input: <one question>. Not changing the spec here.
 ```
 
-Always `listJiraIssueTransitions` before transitioning. If the name is missing, stop; do not guess.
-
-Next work JQL:
+Always `listJiraIssueTransitions` first; if the transition name is missing, stop — never guess. Pick next work via the JQL (never a cached key map); keep one ticket In Progress at a time:
 
 ```text
 project = SPR AND labels = spec-sync AND status = "To Do" ORDER BY key ASC
 ```
 
-One ticket in **In Progress** at a time. Start at SPR-1 / T001.
-
 ## One ticket, one PR
 
-1. Next To Do story via JQL. Read `tasks.md` for that T-id (not the Jira body).
+1. Next To Do story via JQL; read its `tasks.md` line (not the Jira body).
 2. Comment + To Do → In Progress.
-3. Branch `SPR-n/t00x-short-slug`. Implement only that task. Run its `verify:`.
-4. PR title `SPR-n: T00x …`. Fill the PR template.
-5. Comment PR URL + verify result. In Progress → In Review.
-6. Stop. The Oracle gate owns In Review (below).
+3. Branch `SPR-n/t00x-short-slug`; implement only that task; run its `verify:`.
+4. PR title `SPR-n: T00x …`; fill the PR template.
+5. Comment PR URL + verify result; In Progress → In Review.
+6. Stop — the Oracle gate owns In Review.
 
-If the AC/HLD is wrong: Needs input, stop. Spec change is a git PR first.
+If the AC/HLD is wrong: Needs input, stop. Spec changes are git PRs first.
 
 ## Oracle review gate (In Review → merge → Done)
 
-After step 6, dispatch an Oracle review with a bounded brief: the single T-id text
-from `tasks.md`, the PR diff, real verify evidence + CI status, and the Jira trail.
-The gate is a difficult manager: strict, adversarial, and assumes bugs
-accumulate until evidence clears every surface. Compose per
-`docs/process/gate-brief.md` (v2, mandatory) — the composer attaches a
-codegraph blast-radius report (index refreshed at compose time) and the
-prior-gate advisory ledger. Oracle reviews exactly seven things — nothing more:
+Dispatch an Oracle review with a bounded brief: the single T-id text, the PR diff, real verify evidence + CI status, the Jira trail. The gate is a difficult manager — strict, adversarial, assuming bugs accumulate until evidence clears every surface. Compose per `docs/process/gate-brief.md` (v2, mandatory; attaches a codegraph blast-radius report and the prior-gate advisory ledger). Oracle reviews exactly seven things:
 
-1. Scope discipline — the diff contains only what that T-id requires.
-2. Spec/HLD/AC conformance for that task.
-3. Verify honesty — claimed evidence matches real output and CI.
-4. Jira hygiene — right comment at the right event, legal transitions, no direct Done.
-5. Diff defect hunt — correctness bugs in the diff itself (races, silent
-   coercions, trust boundaries, concurrency posture, test-logic flaws), each
-   with file:line; link any pr-reviewer self-review comment as mandatory input.
-6. Blast-radius sweep — codegraph impact/callers for every changed symbol;
-   every consumer ruled in/out with file:line evidence; unexamined consumers
-   block merge.
-7. Silent-bug & test-adequacy audit — failure modes vs tests (coercions,
-   ordering, partial failure, retry duplication, pagination, clock,
-   concurrency, observability); AC-relevant coverage gaps block merge.
+1. **Scope discipline** — only what that T-id requires.
+2. **Spec/HLD/AC conformance** for that task.
+3. **Verify honesty** — claimed evidence matches real output and CI.
+4. **Jira hygiene** — right comment, right event, legal transitions, no direct Done.
+5. **Diff defect hunt** — correctness bugs in the diff (races, coercions, trust boundaries, concurrency, test-logic flaws), each with file:line; the pr-reviewer self-review comment is mandatory input.
+6. **Blast-radius sweep** — codegraph impact/callers per changed symbol; every consumer ruled in/out with file:line; unexamined consumers block merge.
+7. **Silent-bug & test-adequacy audit** — failure modes vs tests (ordering, partial failure, retry duplication, pagination, clock, concurrency, observability); AC-relevant gaps block merge.
 
-False-positive elimination: an untraced defect is a question, not a finding —
-candidates must be traced end-to-end or listed under "Ruled out". Accumulation
-rule: a prior gate's advisory recurring on the same surface escalates to
-blocking. Even if gates take longer, right-first-time is the goal.
+Untraced defects are questions, not findings — trace end-to-end or list under "Ruled out". A prior gate's advisory recurring on the same surface escalates to blocking. Right-first-time beats fast.
 
-Verdicts and actions:
-
-- **APPROVE** → squash-merge when CI is green; comment `Oracle: APPROVE. Merged <short sha>.`; In Review → Done; start the next ticket via JQL.
-- **CHANGES_REQUESTED** → fix on the same branch, push, re-dispatch the gate. Do not merge.
-- **Spec/HLD conflict** → Needs input, stop. Human decides; spec change is a git PR first.
-
-Never merge without Oracle APPROVE + green CI. Done is set only through the gate.
+Verdicts: **APPROVE** → squash-merge on green CI, comment `Oracle: APPROVE. Merged <short sha>.`, In Review → Done, pull the next ticket. **CHANGES_REQUESTED** → fix on the same branch, push, re-dispatch. **Spec/HLD conflict** → Needs input, stop. Never merge without Oracle APPROVE + green CI; Done is set only through the gate.
 
 ## Delivery loop policies
 
-- **P1 — evidence-only closure:** a verify-only ticket needing zero real delta
-  closes with an evidence comment (verbatim verify command + result + policy
-  name) and **no PR**. Never manufacture a diff to justify a PR.
-- **P2 — pair PRs:** a test-first creator task whose `verify:` demands FAIL
-  ships in the same PR as its implementation task. Title/comments carry both
-  ticket IDs; each ticket keeps its own start comment + In Progress; both get
-  the PR comment; both Done at merge.
-- **Gate briefs:** compose every Oracle gate from the mandatory template in
-  `docs/process/gate-brief.md` (v2: seven dimensions, codegraph blast-radius
-  sweep, false-positive elimination, silent-bug & test-adequacy audit,
-  accumulation rule) — adversarial stance, evidence tables, per-ticket
-  verdicts, attempt N of 3.
-- **P3 — deepwork regime:** every loop run (phase or multi-ticket batch)
-  follows the deepwork skill's workflow — spec-first, thin vertical slices,
-  phase gates, qa ledger — with this file's loop laws layered on top as our
-  expansion. Activate the skill at phase start; slow-but-right beats fast-but-leaky.
-- **Batch orchestration:** running several tickets at once — phases, parallel
-  fixer lanes, batch state file, hang recovery — follows
-  `docs/process/batch-loop.md`.
-- **PR body edits:** `gh pr edit` fails on this repo (Projects-classic
-  GraphQL). Use `gh api repos/CarreroMarcos/pr-reviewer/pulls/N -X PATCH -f body=...`.
-- **Self-review recheck (Mars law, 2026-09-19; retry protocol 2026-09-20):**
-  after every push to an open PR, wait ~2 minutes (`sleep 120`) and re-fetch
-  the pr-reviewer's canonical comment (marker `pr-reviewer:canonical`) — it
-  re-reviews on `synchronize` and updates the comment in place. Disposition
-  changed findings before continuing; the loop is stable when only accepted
-  residuals remain. If the canonical is unchanged or errored at 120s, wait
-  another 45s and re-fetch once; still absent/errored → note it and proceed
-  (merge still requires green CI, never a bot verdict). **Hard stop
-  (2026-09-26):** once the per-round finding count flattens — stable count
-  across 2 consecutive rounds — stop self-fixing: push the remaining open
-  findings into the gate brief as "open at freeze, rulings demanded" with
-  proposed dispositions and let the gate arbitrate. Chasing the bot's long
-  tail costs rounds without converging.
-- **tf-* tags are the HCP apply trigger (Mars, 2026-09-19):** agents may
-  push `tf-*` tags only with Mars's explicit approval — ask when >=90%
-  confident the tagged commit should be applied, and wait for his yes.
-  Tag exactly one commit (`git tag tf-<reason> <sha>`, push that tag
-  only); never `git push --tags`. The push itself starts the HCP run and
-  the apply happens **automatically** — there is no manual UI approval
-  step (Mars, 2026-09-26). Bundle deploy-coupled PRs (e.g. T068+T069 in
-  spec 004: zip packaging + the env/grant that arms it) into ONE tag
-  ask — a single apply ships them together (2026-09-27).
-- **HCP workspace must define `operator_principal_arn` (Mars, 2026-09-26):**
-  the HCP workspace VARIABLE is the single source of truth — set it there to
-  the live operator principal (verification example:
-  `arn:aws:iam::395799817120:user/terraform-admin`; do not treat the example
-  as the authority). Left empty, terraform tries to rewrite
-  `aws_iam_role.operator`'s trust policy (root+MFA fallback) and the run
-  dies on a 403 — `pr-reviewer-hcp-apply` has no `iam:UpdateAssumeRolePolicy`
-  and we deliberately keep it that way (least privilege; parity via the
-  variable, not a broader pipeline grant). Watch the value for a trailing
-  space when pasting: invisible whitespace yields a phantom trust-policy
-  diff → the same 403.
-- **Worker-log diagnosis (2026-09-20):** worker logs are lowercase
-  structured JSON — a CloudWatch `--filter-pattern ERROR` matches nothing.
-  Filter by field: `--filter-pattern '{ $.error_class =
-  "assemble_approval_verdict" }'`, or pull the window and grep locally —
-  `aws --region us-west-2 logs filter-log-events --log-group-name
-  /aws/lambda/pr-reviewer-worker --start-time <epoch-ms>`, then grep
-  `error_class` / `status` (`retry_queued` redelivers, `discarded_error`
-  is terminal). Fields passed as logger `extra` are dropped by the log
-  formatter — `error_class` may not appear in any line at all; pull the
-  raw window and read the emitting code (2026-09-27).
-- **Clean shell after cred export (2026-09-20):** exported AWS session creds
-  (`aws configure export-credentials`) make 8 fake-AWS integration tests
-  error — run `capture.py`/terraform and full pytest in separate shells.
-  Mechanics: `docs/process/pr-protocol.md`.
-- **Self-review failure class (2026-09-20):** `assemble_approval_verdict`
-  on our own PRs is a deterministic non-retryable bot self-review failure;
-  remedy is exactly one empty-commit retrigger (squash-merge collapses it);
-  if it recurs after that one retrigger, note it and proceed — CI gates the
-  merge, not the bot.
-- **Queue retry purgatory (2026-09-20):** queue visibility timeout 5400s ⇒
-  a timed-out delivery redelivers up to ~90 min later and PATCHes
-  already-merged PRs harmlessly. An absent canonical at 165s usually means
-  in-flight/retry, not an outage.
-- **sync-jira T-id collision (2026-09-27):** spec 001 and 004 share `T00x`
-  ids and the sync's idempotency key is the `Spec Task ID` custom field
-  matched by JQL `~` — a bare-id run for a second spec overwrites the first
-  spec's tickets in place (hit 2026-09-27: 54 001 tickets; restored by
-  re-running `SPEC=001 SCOPE=all`). Non-001 specs namespace field+labels
-  (`004-T001`); 001 keeps bare ids. 001 re-syncs must run before namespaced
-  tickets exist (token double-hit exits safely rather than corrupting).
-- **Jira writes need live ticket identity (orchestrator, 2026-09-26):** a stale
-  local key↔T-id map (predating the 7ad05aa remediation that added T010a/b)
-  sent T011's start/PR comments + In Review to SPR-94 (T010a). Always read the
-  live ticket summary before commenting or transitioning; pick next work via
-  the JQL, never a cached key map.
-- **Out-of-band IAM grants are temporary parity (2026-09-27):** an
-  emergency Mars-verbatim grant un-blocks production, but the next HCP
-  apply reconciles it away — land the durable fix (ticket + PR + tag)
-  before that apply, and add a contract pin so the gap can't silently
-  return.
-- **TFC plan/apply role split — new resource types need plan-role reads (orchestrator, 2026-09-27):** the HCP workspace plans assume `pr-reviewer-hcp-plan` (Lambda-reads-only), separate from `pr-reviewer-hcp-apply`. A NEW AWS resource type must get its read battery granted on the plan role too, and Terraform reveals denials one graph-wave at a time (each run names only what it reached) — grant the full read battery up front (16 S3 reads; surgical 3-action grants took 3 runs to converge).
-- **IAM silently accepts dead action strings (orchestrator, 2026-09-27):** `put-role-policy` does not validate action-name existence — naive spellings like `s3:GetBucketEncryption` (real name: `s3:GetEncryptionConfiguration`) store fine and 403 at run time. The policy-gen dataset's dataset-verified action names are the check, not the API.
-- **Living document (Mars, 2026-09-20):** short actionable gotchas discovered
-  during work graduate into this file — one bullet, dated, attributed.
-  Session notes live in the git-ignored deepwork progress file
-  (`.slim/deepwork/`); durable rules land here. Write things down when
-  needed so you don't forget. Superseded bullets are deleted or condensed
-  in the same change that supersedes them.
+- **P1 — evidence-only closure:** a verify-only ticket needing zero delta closes with an evidence comment (verbatim verify command + result + policy name) and no PR. Never manufacture a diff to justify a PR.
+- **P2 — pair PRs:** a test-first creator task whose `verify:` demands FAIL ships in one PR with its implementation task; both ticket IDs in title/comments; each keeps its own start comment + In Progress; both Done at merge.
+- **Gate briefs:** always from `docs/process/gate-brief.md` (v2) — adversarial, evidence tables, per-ticket verdicts, attempt N of 3.
+- **P3 — deepwork regime:** every loop run follows the deepwork skill (spec-first, thin slices, phase gates, qa ledger) with these loop laws layered on top. Activate at phase start.
+- **Batch orchestration:** multi-ticket runs follow `docs/process/batch-loop.md`.
+
+### PR review loop
+
+- **Self-review recheck (Mars, 2026-09-19/20/26):** after every push, wait 2 min, then re-fetch the bot's canonical comment — marker `pr-reviewer:canonical` — with jq `[.[] | select(.body | contains("pr-reviewer:canonical"))] | last | .body` (`tail -1` collapses multi-line bodies). Dispose changed findings each round; absent canonical at 120 s → wait 45 s, re-fetch once, then proceed (in-flight ≠ outage; CI gates merges, never the bot). **Freeze law:** when the per-round finding count holds stable across 2 consecutive rounds, stop self-fixing — carry the residuals into the gate brief as "open at freeze, rulings demanded" with proposed dispositions.
+- **Bot self-review failure (2026-09-20):** `assemble_approval_verdict` on our own PRs fails deterministically; remedy is exactly one empty-commit retrigger (squash collapses it), then proceed.
+- **Queue retry purgatory (2026-09-20):** visibility timeout 5400 s ⇒ a timed-out delivery redelivers ~90 min later and PATCHes merged PRs harmlessly.
+- **PR body edits:** `gh pr edit` fails on this repo — use `gh api repos/CarreroMarcos/pr-reviewer/pulls/N -X PATCH -f body=...`.
+
+### Deploys & IAM
+
+- **`tf-*` tags are the apply trigger (Mars, 2026-09-19/26/27):** push a `tf-*` tag only with Mars's explicit yes (ask at ≥90% confidence). Tag exactly one commit, push that tag only — the push starts the HCP run and the apply is automatic. Bundle deploy-coupled PRs (e.g. packaging + the env/grant that arms it) into one tag ask so a single apply ships them together.
+- **Keep `operator_principal_arn` set in the HCP workspace VARIABLE (Mars, 2026-09-26):** it is the single source of truth. Empty ⇒ terraform tries to rewrite the operator trust policy and dies on 403 (the apply role deliberately lacks `iam:UpdateAssumeRolePolicy`). Watch for a trailing space when pasting — invisible whitespace yields a phantom trust-policy diff and the same 403.
+- **Out-of-band IAM grants are temporary parity (2026-09-27):** land the durable fix (ticket + PR + tag) and a contract pin before the next apply reconciles the grant away.
+- **New AWS resource type ⇒ grant the full read battery on `pr-reviewer-hcp-plan` up front (2026-09-27):** Terraform reveals denials one graph-wave at a time; surgical grants took 3 runs to converge (16 S3 reads).
+- **Treat the IAM API's silence as unverified (2026-09-27):** `put-role-policy` stores misspelled action strings (`s3:GetBucketEncryption`) that 403 at runtime — use the policy-gen dataset's verified action names, not the API, as the check.
+
+### Ops diagnosis
+
+- **Worker logs are lowercase structured JSON (2026-09-20/27):** filter by field (`'{ $.error_class = "..." }'`) or pull the window and grep locally; `retry_queued` redelivers, `discarded_error` is terminal. Logger `extra` fields are dropped by the formatter — grep the raw window and read the emitting code.
+- **Separate shells after cred export (2026-09-20):** exported AWS creds break 8 fake-AWS integration tests — run capture/terraform and full pytest in different shells (`docs/process/pr-protocol.md`).
+
+### Jira hygiene
+
+- **Namespace non-001 spec ids (`004-T001`); 001 keeps bare ids (2026-09-27):** the sync's idempotency key matches `Spec Task ID` by JQL `~`, so a bare-id run for a second spec overwrites the first spec's tickets in place. Run 001 re-syncs before namespaced tickets exist.
+- **Read the live ticket summary before every comment/transition (2026-09-26):** stale key↔T-id maps misroute Jira writes; the JQL is the identity source.
+
+### Living document (Mars, 2026-09-20)
+
+Durable gotchas graduate here — one bullet, dated, attributed; superseded bullets get condensed in the same change. Session notes live in the git-ignored `.slim/deepwork/`.
