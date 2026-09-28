@@ -18,8 +18,8 @@ multi-agent infrastructure surface:
   three-way cross-check against `common.config` defaults — checklist 7.
 
 (Alarm-shape assertions included: the daily LLM-spend alarm threshold
-derives from the budget variable × the 5-call factor — value-agnostic
-until T042 snapshots the Mars-set number.)
+derives from the budget variable × the 5-call factor — the Mars-set
+budget value is snapshotted (T042, 2026-09-27) and drift = fail.)
 
 Commit-ladder note: these assertions failed red against the pre-GSI
 terraform (T031's creator commit, re-proven in a detached worktree); at
@@ -260,22 +260,24 @@ def test_env_defaults_match_config():
 # --- daily spend alarm recalibration (checklist 8; T034) ---------------------------------------
 
 
-def test_spend_alarm_threshold_shape():
-    """Shape-only until T042 (which snapshots the Mars-set number and
-    turns drift into failure): the alarm exists, its threshold derives
-    from the config budget scaled by the 5-call factor, and the budget
-    variable still defaults numeric."""
+def test_spend_alarm_threshold():
+    """T042 snapshot (Mars, 2026-09-27): the alarm exists, its threshold
+    derives from the config budget scaled by the 5-call factor, and the
+    budget default is pinned to the Mars-set $1 ($5/day alarm) — any
+    drift from that number fails."""
     alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "daily_llm_spend")
     threshold = re.search(r"^\s*threshold\s*=\s*(.+?)\s*(?:#.*)?$", alarm, re.MULTILINE)
     assert threshold is not None, "daily_llm_spend threshold not found"
     threshold_norm = " ".join(threshold.group(1).split())
     # Whitespace-normalized (innocent refactors must not trip drift) but
     # order-strict: `5 * var.…` or any other factor form still fails, so
-    # the ×5 factor itself stays pinned until T042 snapshots a literal.
+    # the ×5 factor itself stays pinned.
     assert threshold_norm == "var.daily_llm_spend_budget_usd * 5", (
         f"threshold not budget x5: {threshold.group(1)!r}"
     )
     var_block = _resource_block(VARIABLES_TF, "daily_llm_spend_budget_usd", "", kind="variable")
     default = re.search(r"^\s*default\s*=\s*(\d+(?:\.\d+)?)\s*$", var_block, re.MULTILINE)
     assert default is not None, "budget default is not a numeric literal"
-    assert float(default.group(1)) > 0
+    assert float(default.group(1)) == 1.0, (
+        f"budget drifted from the Mars-set $1: {default.group(1)!r}"
+    )
