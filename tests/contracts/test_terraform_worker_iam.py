@@ -8,6 +8,17 @@ the worker role's state-table grant in lockstep with the table
 operations the lambda code actually performs: a call without a grant
 is the crash class (AccessDenied mid-review); a grant without a call
 is a dead privilege. Both fail loudly here.
+
+Known blind spots (a tripwire, not a proof): the scan is textual, so
+occurrences inside comments or string literals count as call sites
+(false positives are safe — they over-require grants); dynamic
+dispatch (`getattr(table, op)`) and client-level (non-resource)
+dynamo calls would bypass the scan entirely; the ingress role and
+non-table actions (SSM, SQS, S3) are other surfaces with their own
+contracts. Dead-privilege detection is map-level: a granted action
+the worker code never calls (PutItem today — the delivery write lives
+in ingress) is allowed as a consciously mapped residual, while a
+grant outside the map fails.
 """
 
 import re
@@ -35,6 +46,8 @@ TABLE_METHODS = frozenset(OPERATION_ACTIONS) | {
     "scan",
     "batch_get_item",
     "batch_write_item",
+    "transact_get_items",
+    "transact_write_items",
 }
 
 # The worker role executes the worker bundle: common/ + worker_handler.py.
@@ -53,18 +66,30 @@ def _worker_table_methods():
     return found
 
 
+def _worker_policy_block():
+    """The worker role's policy resource body — anchored by resource
+    name, not inferred from action contents (role association must not
+    drift if another statement gains a coincidental action)."""
+    match = re.search(r'resource "aws_iam_role_policy" "worker" \{(.*?)\n\}', IAM_TF, re.DOTALL)
+    return match.group(1) if match else ""
+
+
 def _worker_state_table_actions():
-    """Actions of the worker's state-table statement — the grant block
-    containing UpdateItem (the ingress statement grants GetItem/PutItem
-    only, under a LeadingKeys condition)."""
-    for block in re.findall(r"Action\s*=\s*\[(.*?)\]", IAM_TF, re.DOTALL):
-        actions = set(re.findall(r'"(dynamodb:[A-Za-z]+)"', block))
-        if "dynamodb:UpdateItem" in actions:
+    """Actions of the worker's state-table statement (the grant block
+    within the worker policy that contains dynamodb actions)."""
+    block = _worker_policy_block()
+    for action_block in re.findall(r"Action\s*=\s*\[(.*?)\]", block, re.DOTALL):
+        actions = set(re.findall(r'"(dynamodb:[A-Za-z]+)"', action_block))
+        if actions:
             return actions
     return set()
 
 
-def test_worker_grants_every_table_operation_the_code_performs():
+def _required_actions():
+    return {OPERATION_ACTIONS[m] for m in _worker_table_methods()}
+
+
+def test_no_unmapped_table_operations():
     methods = _worker_table_methods()
     assert methods, "worker table methods not found — the scan broke"
     unmapped = methods - set(OPERATION_ACTIONS)
@@ -72,13 +97,22 @@ def test_worker_grants_every_table_operation_the_code_performs():
         "worker code calls table methods with no IAM mapping "
         f"{sorted(unmapped)} — extend OPERATION_ACTIONS and iam.tf together"
     )
-    required = {OPERATION_ACTIONS[m] for m in methods}
-    granted = _worker_state_table_actions()
-    missing = required - granted
+
+
+def test_worker_grants_every_table_operation_the_code_performs():
+    missing = _required_actions() - _worker_state_table_actions()
     assert not missing, f"worker table ops missing from the iam.tf grant: {sorted(missing)}"
 
 
-def test_worker_state_table_grant_is_exact():
-    """No dead privileges: the statement grants exactly the mapped
-    actions. A wider grant needs a conscious map entry first."""
-    assert _worker_state_table_actions() == set(OPERATION_ACTIONS.values())
+def test_worker_grants_only_mapped_actions():
+    """No unmapped grants: every granted action is a consciously mapped
+    one. A grant outside the map (wildcards, future/renamed actions)
+    fails; a mapped-but-uncalled grant is an accepted residual the map
+    keeps visible (PutItem today — the delivery write lives in
+    ingress)."""
+    granted = _worker_state_table_actions()
+    unmapped = granted - set(OPERATION_ACTIONS.values())
+    assert not unmapped, (
+        "granted actions outside the conscious map "
+        f"{sorted(unmapped)} — extend OPERATION_ACTIONS or drop the grant"
+    )
