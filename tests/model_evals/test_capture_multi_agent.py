@@ -2,15 +2,14 @@
 
 Runs the REAL `run_fanout` sequencer (gates, nonce authority, clamp,
 IDs, events) with scripted legs + stub embeddings on one corpus case —
-no network, no creds, no Bedrock. Pins the capture↔scorer contract
+no network, no creds, no live models. Pins the capture↔scorer contract
 (run-record shape, embedding key families, wall-claim wording) that
 T045's live run must reproduce.
 """
 
 import json
-import sys
 import time
-from types import SimpleNamespace
+import urllib.error
 
 import capture_multi_agent as cma
 import fixtures
@@ -470,113 +469,193 @@ def test_latency_excludes_embedding_time(monkeypatch):
     assert record["error"] is None
 
 
-def test_bedrock_embed_texts_retries_throttling_then_succeeds(monkeypatch):
-    """T045 pre-flight: `bedrock_embed_texts` survives transient Bedrock
-    throttling via app-level retry with doubling backoff (2s..32s), not
-    just botocore's built-in retries. FAILS before the retry fix."""
+def test_ollama_embed_texts_retries_transient_then_succeeds(monkeypatch):
+    """T045 pre-flight: `ollama_embed_texts` survives transient local
+    failures (connection errors, 5xx) via app-level retry with doubling
+    backoff (2s..32s) — same discipline the Bedrock client had."""
 
-    class _Body:
-        def __init__(self, payload):
-            self._payload = payload
+    script: list = [
+        urllib.error.URLError("connection refused"),
+        urllib.error.URLError("connection refused"),
+        [0.1, 0.2],
+    ]
 
-        def read(self):
-            return json.dumps(self._payload).encode("utf-8")
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
 
-    class ThrottlingException(Exception):
-        pass
-
-    script = [ThrottlingException("slow down"), ThrottlingException("slow down"), [0.1, 0.2]]
-
-    class _Client:
-        exceptions = SimpleNamespace(ThrottlingException=ThrottlingException)
-
-        def invoke_model(self, **kwargs):
-            action = script.pop(0)
-            if isinstance(action, Exception):
-                raise action
-            return {"body": _Body({"embedding": action})}
-
-    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
-    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
     delays: list = []
     monkeypatch.setattr(cma.time, "sleep", delays.append)
-    assert cma.bedrock_embed_texts(["hello"]) == [[0.1, 0.2]]
+    assert cma.ollama_embed_texts(["hello"]) == [[0.1, 0.2]]
     assert delays == [2.0, 4.0]
 
 
-def test_bedrock_embed_texts_reraises_after_exhaustion(monkeypatch):
+def test_ollama_embed_texts_reraises_after_exhaustion(monkeypatch):
     """Retry budget is 6 attempts total; the final failure re-raises."""
 
-    class _Client:
-        class ThrottlingException(Exception):
-            pass
+    def always_refused(text):
+        raise urllib.error.URLError("connection refused")
 
-        exceptions = SimpleNamespace(ThrottlingException=ThrottlingException)
-
-        def invoke_model(self, **kwargs):
-            raise self.ThrottlingException("still throttled")
-
-    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
-    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setattr(cma, "_ollama_embed_one", always_refused)
     monkeypatch.setattr(cma.time, "sleep", lambda s: None)
     try:
-        cma.bedrock_embed_texts(["hello"])
-    except _Client.ThrottlingException:
+        cma.ollama_embed_texts(["hello"])
+    except urllib.error.URLError:
         pass
     else:
-        raise AssertionError("expected ThrottlingException after 6 attempts")
+        raise AssertionError("expected URLError after 6 attempts")
 
 
-def test_bedrock_embed_texts_non_retryable_raises_without_sleep(monkeypatch):
-    """A 4xx ClientError is not transient: raise immediately, no backoff."""
+def test_ollama_embed_texts_non_retryable_raises_without_sleep(monkeypatch):
+    """A 4xx HTTPError is not transient: raise immediately, no backoff."""
 
-    from botocore.exceptions import ClientError
+    def not_found(text):
+        raise urllib.error.HTTPError(
+            cma.OLLAMA_URL + "/api/embed", 404, "model not found", None, None
+        )
 
-    class _Client:
-        exceptions = SimpleNamespace()
-
-        def invoke_model(self, **kwargs):
-            raise ClientError({"Error": {"Code": "ValidationException"}}, "InvokeModel")
-
-    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
-    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setattr(cma, "_ollama_embed_one", not_found)
     slept: list = []
     monkeypatch.setattr(cma.time, "sleep", slept.append)
     try:
-        cma.bedrock_embed_texts(["hello"])
-    except ClientError:
+        cma.ollama_embed_texts(["hello"])
+    except urllib.error.HTTPError:
         pass
     else:
-        raise AssertionError("expected ClientError")
+        raise AssertionError("expected HTTPError")
     assert slept == []
 
 
-def test_bedrock_embed_texts_retries_5xx_client_error(monkeypatch):
-    """Generic 5xx ClientError codes retry like throttling."""
+def test_ollama_embed_texts_retries_5xx_then_succeeds(monkeypatch):
+    """HTTP 5xx responses retry like transient failures."""
 
-    from botocore.exceptions import ClientError
+    script: list = [
+        urllib.error.HTTPError(
+            cma.OLLAMA_URL + "/api/embed", 503, "service unavailable", None, None
+        ),
+        [1.0],
+    ]
 
-    class _Body:
-        def read(self):
-            return json.dumps({"embedding": [1.0]}).encode("utf-8")
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
 
-    calls: list = []
-
-    class _Client:
-        exceptions = SimpleNamespace()
-
-        def invoke_model(self, **kwargs):
-            calls.append(1)
-            if len(calls) == 1:
-                raise ClientError({"Error": {"Code": "500"}}, "InvokeModel")
-            return {"body": _Body()}
-
-    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
-    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
     delays: list = []
     monkeypatch.setattr(cma.time, "sleep", delays.append)
-    assert cma.bedrock_embed_texts(["hi"]) == [[1.0]]
+    assert cma.ollama_embed_texts(["hi"]) == [[1.0]]
     assert delays == [2.0]
+
+
+def test_ollama_embed_one_posts_model_and_parses_embeddings(monkeypatch):
+    """The seam POSTs {model, input} to /api/embed and returns the first
+    vector of the `embeddings` payload (real seam logic, socket stubbed)."""
+
+    captured: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"embeddings": [[0.1] * cma.EXPECTED_EMBED_DIM]}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured["method"] = req.get_method()
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        assert timeout == 60
+        return _Resp()
+
+    monkeypatch.setattr(cma.urllib.request, "urlopen", fake_urlopen)
+    assert cma._ollama_embed_one("hello") == [0.1] * cma.EXPECTED_EMBED_DIM
+    assert captured["method"] == "POST"
+    assert captured["url"] == cma.OLLAMA_URL + "/api/embed"
+    assert captured["body"] == {"model": cma.OLLAMA_MODEL, "input": ["hello"]}
+
+
+def test_ollama_embed_texts_retries_429_then_succeeds(monkeypatch):
+    """Gap-1 (Gate 31): the 429 rate-limit shape exercises the exact-code
+    classifier branch — a typo there (`==` vs `in`) would turn the next
+    throttle into fail-fast, shipping green."""
+
+    script: list = [
+        urllib.error.HTTPError(cma.OLLAMA_URL + "/api/embed", 429, "rate limited", None, None),
+        [1.0],
+    ]
+
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
+
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
+    delays: list = []
+    monkeypatch.setattr(cma.time, "sleep", delays.append)
+    assert cma.ollama_embed_texts(["hi"]) == [[1.0]]
+    assert delays == [2.0]
+
+
+def test_ollama_embed_one_rejects_wrong_dim_vector(monkeypatch):
+    """Bot R1 (#136): a wrong-dimension vector fails loud at the seam —
+    a misconfigured local model must never silently pin unusable
+    vectors that only explode at score time."""
+
+    # Gap-2 (Gate 31): pin the constant itself — the happy-path test
+    # builds its vector FROM this constant, so a wrong value would
+    # otherwise pass vacuously.
+    assert cma.EXPECTED_EMBED_DIM == 768
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"embeddings": [[0.1, 0.2]]}).encode("utf-8")
+
+    monkeypatch.setattr(cma.urllib.request, "urlopen", lambda req, timeout: _Resp())
+    try:
+        cma._ollama_embed_one("hello")
+    except ValueError as exc:
+        assert "malformed vector" in str(exc)
+        assert "dim=2" in str(exc)
+    else:
+        raise AssertionError("expected ValueError on wrong-dim vector")
+
+
+def test_ollama_embed_one_rejects_malformed_payload(monkeypatch):
+    """A payload without usable embeddings raises — corrupt responses
+    fail loud, never silently truncate to a wrong-length vector."""
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"unexpected": True}).encode("utf-8")
+
+    monkeypatch.setattr(cma.urllib.request, "urlopen", lambda req, timeout: _Resp())
+    try:
+        cma._ollama_embed_one("hello")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on malformed payload")
 
 
 def test_preflight_delimiter_scan_clean_corpus_silent(capsys):
@@ -673,36 +752,22 @@ def test_round_trip_capture_record_through_scorer():
     assert fidelity["dropped"] == 0
 
 
-def test_bedrock_embed_retry_logs_attempts(monkeypatch, capsys):
+def test_ollama_embed_retry_logs_attempts(monkeypatch, capsys):
     """Bot R2 (PR #135): each retry attempt logs a one-line stderr note
-    (attempt, error, delay) so a throttle storm doesn't look like a hang."""
+    (attempt, error, delay) so a dead endpoint doesn't look like a hang."""
 
-    class ThrottlingException(Exception):
-        pass
+    script: list = [urllib.error.URLError("connection refused"), [0.3]]
 
-    script = [ThrottlingException("slow down"), [0.3]]
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
 
-    class _Body:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def read(self):
-            return json.dumps(self._payload).encode("utf-8")
-
-    class _Client:
-        exceptions = SimpleNamespace(ThrottlingException=ThrottlingException)
-
-        def invoke_model(self, **kwargs):
-            action = script.pop(0)
-            if isinstance(action, Exception):
-                raise action
-            return {"body": _Body({"embedding": action})}
-
-    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
-    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
     monkeypatch.setattr(cma.time, "sleep", lambda s: None)
-    assert cma.bedrock_embed_texts(["hello"]) == [[0.3]]
+    assert cma.ollama_embed_texts(["hello"]) == [[0.3]]
     err = capsys.readouterr().err
-    assert "bedrock embed retry 1/6" in err
-    assert "ThrottlingException" in err
+    assert "ollama embed retry 1/6" in err
+    assert "URLError" in err
     assert "sleeping 2s" in err
