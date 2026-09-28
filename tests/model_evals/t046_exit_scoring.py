@@ -55,6 +55,11 @@ def _verify_pin():
 
 def main():
     _verify_pin()
+    # Pin the scorer's nearest-rank p95 contract: a future mas.p95
+    # refactor that would silently move every percentile in the report
+    # must fail loudly here (SystemExit, not assert — must survive -O).
+    if mas.p95(list(range(1, 21))) != 19:
+        raise SystemExit("p95 smoke check failed: mas.p95 diverged from nearest-rank")
     with open(PIN) as f:
         pin = json.load(f)
     with open(BASE) as f:
