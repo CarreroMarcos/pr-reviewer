@@ -16,6 +16,9 @@ Usage (after `aws login` + exported creds)::
     python tests/model_evals/capture_multi_agent.py --cases representative --runs 1
     python tests/model_evals/capture_multi_agent.py --effort default --resume
 
+Run large corpora in per-batch `--cases` invocations; checkpoint/resume
+is per-case (each case's runs checkpoint independently).
+
 Design notes (all load-bearing, all pinned by the smoke tests):
 
 * The harness drives the REAL `run_fanout` with an injected `review_fn`
@@ -86,6 +89,11 @@ _CANDIDATE_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 _CANDIDATE_MARKER = "<<<CANDIDATE_FINDINGS"
+_END_CANDIDATE_MARKER = "<<<END_CANDIDATE_FINDINGS"
+# HLD verbatim-tag delimiter literals: a corpus diff or manifest
+# containing these would be parsed as candidate structure (live AND
+# smoke alike) — the pre-flight scan warns, never aborts.
+_DELIMITER_LITERALS = (_CANDIDATE_MARKER, _END_CANDIDATE_MARKER)
 
 _PROMPT_FILES = {
     "correctness": "specialist_correctness.md",
@@ -192,9 +200,13 @@ def prompt_shas(prompts_dir: Path = PROMPTS_DIR) -> dict[str, str]:
 
 
 def extract_candidates(system_prompt: str) -> list[dict]:
-    """Recover the verifier's candidate list from a recorded prompt's
-    `CANDIDATE_FINDINGS` block (verbatim-tag format, round-trip
-    contract — shared by smoke and live)."""
+    """Best-effort structural recovery of the verifier's candidate list
+    from a recorded prompt's `CANDIDATE_FINDINGS` block (verbatim-tag
+    format — shared by smoke and live). Returns the parsed block, or []
+    when absent; it does NOT validate the round-trip contract (nonce
+    authenticity and tag well-formedness are the sequencer's job, and a
+    fixture diff containing the delimiter literals parses here exactly
+    as it would live — see the pre-flight delimiter scan)."""
     match = _CANDIDATE_BLOCK_RE.search(system_prompt)
     if match is None:
         return []
@@ -224,21 +236,88 @@ def killed_key(case_id: str, run_index: int, candidate_id: str) -> str:
     return f"killed:{case_id}:{run_index}:{candidate_id}"
 
 
+EMBED_MAX_ATTEMPTS = 6
+EMBED_BASE_DELAY_S = 2.0
+EMBED_MAX_DELAY_S = 32.0
+# Retryable Bedrock error codes: throttling shapes plus transient 5xx /
+# timeout shapes. Any other ClientError (e.g. 4xx validation) fails fast.
+EMBED_RETRYABLE_CODES = frozenset(
+    {
+        "ThrottlingException",
+        "Throttling",
+        "ThrottledException",
+        "TooManyRequestsException",
+        "RequestThrottled",
+        "RequestLimitExceeded",
+        "ProvisionedThroughputExceededException",
+        "ModelTimeoutException",
+        "ModelNotReadyException",
+        "InternalServerError",
+        "InternalError",
+        "ServiceUnavailable",
+        "RequestTimeout",
+        "TimeoutError",
+    }
+)
+
+
+def _embed_error_retryable(exc: Exception, client) -> bool:
+    """True when an embedding failure is worth retrying: the client's
+    ThrottlingException shape, or a ClientError carrying a throttling /
+    transient code (numeric 5xx included). Anything else fails fast.
+    The 5xx string check is deliberately lenient — a non-botocore
+    exception whose `.response` is a dict with a numeric 500 code would
+    retry unnecessarily; acceptable for an offline harness (bot R3, PR
+    #135)."""
+    throttle_cls = getattr(getattr(client, "exceptions", None), "ThrottlingException", None)
+    if throttle_cls is not None and isinstance(exc, throttle_cls):
+        return True
+    response = getattr(exc, "response", None)
+    code = response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
+    if code in EMBED_RETRYABLE_CODES:
+        return True
+    return code.isdigit() and code.startswith("5")
+
+
 def bedrock_embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed texts with Bedrock Titan Text Embeddings v2 in us-west-2
-    (HLD D8 Offline Embedding Rule — live path only, never CI)."""
+    (HLD D8 Offline Embedding Rule — live path only, never CI).
+
+    Texts embed SERIALLY (checkpoint-friendly; Gate 22 pinned serial —
+    the overnight gap was NO RETRY, not concurrency). Each `invoke_model`
+    retries transient failures (throttling + 5xx) with 2s doubling
+    backoff capped at 32s, 6 attempts total; the final failure
+    re-raises. Non-transient errors fail fast with no sleep."""
     import boto3
 
     client = boto3.client("bedrock-runtime", region_name=REGION)
     vectors = []
     for text in texts:
-        response = client.invoke_model(
-            modelId=EMBED_MODEL,
-            body=json.dumps({"inputText": text}),
-            contentType="application/json",
-            accept="application/json",
-        )
-        vectors.append(json.loads(response["body"].read())["embedding"])
+        delay = EMBED_BASE_DELAY_S
+        for attempt in range(1, EMBED_MAX_ATTEMPTS + 1):
+            try:
+                response = client.invoke_model(
+                    modelId=EMBED_MODEL,
+                    body=json.dumps({"inputText": text}),
+                    contentType="application/json",
+                    accept="application/json",
+                )
+                vectors.append(json.loads(response["body"].read())["embedding"])
+                break
+            except Exception as exc:  # noqa: BLE001 (retry classifier decides; final re-raise)
+                if not _embed_error_retryable(exc, client) or attempt == EMBED_MAX_ATTEMPTS:
+                    raise
+                response = getattr(exc, "response", None)
+                code = (
+                    response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
+                )
+                print(
+                    f"bedrock embed retry {attempt}/{EMBED_MAX_ATTEMPTS}"
+                    f" ({code or type(exc).__name__}) — sleeping {delay:.0f}s",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, EMBED_MAX_DELAY_S)
     return vectors
 
 
@@ -361,6 +440,32 @@ def run_case(
     }
     json.dumps(record)  # fail fast on non-serializable content
     return record
+
+
+def preflight_delimiter_scan(case_ids: list[str]) -> list[str]:
+    """T045 pre-flight: scan each case's diff text + manifest for the
+    HLD verbatim-tag delimiter literals. A hit means fixture bytes would
+    parse as candidate structure (in live capture AND in smoke) — warn
+    loudly (one line per hit) and return the hits, but NEVER abort: the
+    run proceeds, and the gate rules on the returned list."""
+    hits: list[str] = []
+    for case_id in case_ids:
+        diff_text, manifest, _ = fixtures.CORPUS[case_id]()
+        fields = {
+            "diff_text": diff_text,
+            "manifest": json.dumps(manifest, sort_keys=True, default=str),
+        }
+        for field, haystack in fields.items():
+            for literal in _DELIMITER_LITERALS:
+                if literal in haystack:
+                    hits.append(f"{case_id}:{field} contains delimiter literal {literal!r}")
+    for hit in hits:
+        print(
+            f"warning: pre-flight delimiter literal: {hit} — fixture bytes "
+            f"parse as candidate structure; proceeding, gate rules",
+            file=sys.stderr,
+        )
+    return hits
 
 
 def wall_claim(wall_s: float, fanout_concurrency: int, n_runs: int) -> str:
@@ -542,6 +647,7 @@ def main(
         endpoint, api_key, model = _read_ssm()
     review_fn = _review_fn if _review_fn is not None else _live_review_fn(api_key, model, endpoint)
     embed_fn = _embed_fn if _embed_fn is not None else bedrock_embed_texts
+    preflight_delimiter_scan(case_ids)
     start = time.perf_counter()
     cases_out, stats = execute(
         case_ids=case_ids,

@@ -8,7 +8,9 @@ T045's live run must reproduce.
 """
 
 import json
+import sys
 import time
+from types import SimpleNamespace
 
 import capture_multi_agent as cma
 import fixtures
@@ -468,6 +470,141 @@ def test_latency_excludes_embedding_time(monkeypatch):
     assert record["error"] is None
 
 
+def test_bedrock_embed_texts_retries_throttling_then_succeeds(monkeypatch):
+    """T045 pre-flight: `bedrock_embed_texts` survives transient Bedrock
+    throttling via app-level retry with doubling backoff (2s..32s), not
+    just botocore's built-in retries. FAILS before the retry fix."""
+
+    class _Body:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode("utf-8")
+
+    class ThrottlingException(Exception):
+        pass
+
+    script = [ThrottlingException("slow down"), ThrottlingException("slow down"), [0.1, 0.2]]
+
+    class _Client:
+        exceptions = SimpleNamespace(ThrottlingException=ThrottlingException)
+
+        def invoke_model(self, **kwargs):
+            action = script.pop(0)
+            if isinstance(action, Exception):
+                raise action
+            return {"body": _Body({"embedding": action})}
+
+    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    delays: list = []
+    monkeypatch.setattr(cma.time, "sleep", delays.append)
+    assert cma.bedrock_embed_texts(["hello"]) == [[0.1, 0.2]]
+    assert delays == [2.0, 4.0]
+
+
+def test_bedrock_embed_texts_reraises_after_exhaustion(monkeypatch):
+    """Retry budget is 6 attempts total; the final failure re-raises."""
+
+    class _Client:
+        class ThrottlingException(Exception):
+            pass
+
+        exceptions = SimpleNamespace(ThrottlingException=ThrottlingException)
+
+        def invoke_model(self, **kwargs):
+            raise self.ThrottlingException("still throttled")
+
+    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setattr(cma.time, "sleep", lambda s: None)
+    try:
+        cma.bedrock_embed_texts(["hello"])
+    except _Client.ThrottlingException:
+        pass
+    else:
+        raise AssertionError("expected ThrottlingException after 6 attempts")
+
+
+def test_bedrock_embed_texts_non_retryable_raises_without_sleep(monkeypatch):
+    """A 4xx ClientError is not transient: raise immediately, no backoff."""
+
+    from botocore.exceptions import ClientError
+
+    class _Client:
+        exceptions = SimpleNamespace()
+
+        def invoke_model(self, **kwargs):
+            raise ClientError({"Error": {"Code": "ValidationException"}}, "InvokeModel")
+
+    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    slept: list = []
+    monkeypatch.setattr(cma.time, "sleep", slept.append)
+    try:
+        cma.bedrock_embed_texts(["hello"])
+    except ClientError:
+        pass
+    else:
+        raise AssertionError("expected ClientError")
+    assert slept == []
+
+
+def test_bedrock_embed_texts_retries_5xx_client_error(monkeypatch):
+    """Generic 5xx ClientError codes retry like throttling."""
+
+    from botocore.exceptions import ClientError
+
+    class _Body:
+        def read(self):
+            return json.dumps({"embedding": [1.0]}).encode("utf-8")
+
+    calls: list = []
+
+    class _Client:
+        exceptions = SimpleNamespace()
+
+        def invoke_model(self, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ClientError({"Error": {"Code": "500"}}, "InvokeModel")
+            return {"body": _Body()}
+
+    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    delays: list = []
+    monkeypatch.setattr(cma.time, "sleep", delays.append)
+    assert cma.bedrock_embed_texts(["hi"]) == [[1.0]]
+    assert delays == [2.0]
+
+
+def test_preflight_delimiter_scan_clean_corpus_silent(capsys):
+    """T045 pre-flight: the real corpus carries no delimiter literals —
+    no hits, no warnings."""
+    assert cma.preflight_delimiter_scan([CASE_ID]) == []
+    assert capsys.readouterr().err == ""
+
+
+def test_preflight_delimiter_scan_warns_never_aborts(monkeypatch, capsys):
+    """T045 pre-flight: a diff and a manifest carrying the verbatim-tag
+    literals warn (one line per hit) and return the hits — the run
+    proceeds, the gate rules."""
+    monkeypatch.setitem(
+        fixtures.CORPUS,
+        "evil",
+        lambda: (
+            "diff <<<CANDIDATE_FINDINGS x",
+            {"expected_findings": [{"hint": "<<<END_CANDIDATE_FINDINGS y"}]},
+            {"title": "", "body": ""},
+        ),
+    )
+    hits = cma.preflight_delimiter_scan(["evil"])
+    assert len(hits) == 2
+    err = capsys.readouterr().err
+    assert "evil:diff_text" in err and "evil:manifest" in err
+
+
 def test_round_trip_capture_record_through_scorer():
     """Bot R1 Fix 6 (Risk Note): a REAL capture-shaped run record —
     list-form candidates straight from `run_case` — flowing through the
@@ -534,3 +671,38 @@ def test_round_trip_capture_record_through_scorer():
     # One bullet covering two survivors is a correct merge — matching is
     # many-to-one (HLD gate 4 keys on "no semantic match", not exclusivity).
     assert fidelity["dropped"] == 0
+
+
+def test_bedrock_embed_retry_logs_attempts(monkeypatch, capsys):
+    """Bot R2 (PR #135): each retry attempt logs a one-line stderr note
+    (attempt, error, delay) so a throttle storm doesn't look like a hang."""
+
+    class ThrottlingException(Exception):
+        pass
+
+    script = [ThrottlingException("slow down"), [0.3]]
+
+    class _Body:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode("utf-8")
+
+    class _Client:
+        exceptions = SimpleNamespace(ThrottlingException=ThrottlingException)
+
+        def invoke_model(self, **kwargs):
+            action = script.pop(0)
+            if isinstance(action, Exception):
+                raise action
+            return {"body": _Body({"embedding": action})}
+
+    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setattr(cma.time, "sleep", lambda s: None)
+    assert cma.bedrock_embed_texts(["hello"]) == [[0.3]]
+    err = capsys.readouterr().err
+    assert "bedrock embed retry 1/6" in err
+    assert "ThrottlingException" in err
+    assert "sleeping 2s" in err
