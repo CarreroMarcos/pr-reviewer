@@ -26,7 +26,7 @@ Never add runtime deps other than boto3. If `pyproject.toml` changes, `uv lock` 
 
 ## Layout (do not invent folders)
 
-HLD owns the tree: `lambda/common/` (shared contract), thin `lambda/ingress_handler.py` + `lambda/worker_handler.py`, `terraform/`, `tests/{unit,state_machine,contracts,model_evals,integration}/`, `prompts/`, `docs/`, `specs/001-pr-reviewer/`. Doc authority: HLD owns architecture (current truth); `docs/DECISIONS.md` owns history/why (append-only); runbooks own procedure; specs own task contracts. Precedence on conflict: HLD wins current behavior, DECISIONS wins why/history; disagreements are Needs-input questions, never silent edits.
+HLD owns the tree: `lambda/common/` (shared contract), thin `lambda/ingress_handler.py` + `lambda/worker_handler.py`, `terraform/`, `tests/{unit,state_machine,contracts,model_evals,integration}/`, `prompts/`, `docs/`, `specs/` (001 base reviewer, 004 multi-agent review). Doc authority: HLD owns architecture (current truth); `docs/DECISIONS.md` owns history/why (append-only); runbooks own procedure; specs own task contracts. Precedence on conflict: HLD wins current behavior, DECISIONS wins why/history; disagreements are Needs-input questions, never silent edits.
 Runtime: Python 3.12 stdlib + `boto3` only. No model tools.
 
 ## Jira (MCP)
@@ -36,7 +36,7 @@ Forbidden: create issue, edit summary/description/ACs, delete, Cancelled (human 
 Done is agent-settable only through the Oracle review gate (below) — never directly.
 Call mechanics (discover/executeRead wrapping, response shapes, resume after failure): `docs/process/jira-mcp-recipes.md`.
 
-Jira description is a pointer. Source of truth is `specs/001-pr-reviewer/tasks.md` + spec/HLD.
+Jira description is a pointer. Source of truth is `specs/<spec-id>/tasks.md` (currently 004 — the active JQL ticket names its spec) + spec/HLD.
 
 Statuses in this space (names must match; the first column is **To Do**, not Ready):
 
@@ -167,7 +167,9 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   Tag exactly one commit (`git tag tf-<reason> <sha>`, push that tag
   only); never `git push --tags`. The push itself starts the HCP run and
   the apply happens **automatically** — there is no manual UI approval
-  step (Mars, 2026-09-26).
+  step (Mars, 2026-09-26). Bundle deploy-coupled PRs (e.g. T068+T069 in
+  spec 004: zip packaging + the env/grant that arms it) into ONE tag
+  ask — a single apply ships them together (2026-09-27).
 - **HCP workspace must define `operator_principal_arn` (Mars, 2026-09-26):**
   the HCP workspace VARIABLE is the single source of truth — set it there to
   the live operator principal (verification example:
@@ -186,7 +188,9 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   `aws --region us-west-2 logs filter-log-events --log-group-name
   /aws/lambda/pr-reviewer-worker --start-time <epoch-ms>`, then grep
   `error_class` / `status` (`retry_queued` redelivers, `discarded_error`
-  is terminal).
+  is terminal). Fields passed as logger `extra` are dropped by the log
+  formatter — `error_class` may not appear in any line at all; pull the
+  raw window and read the emitting code (2026-09-27).
 - **Clean shell after cred export (2026-09-20):** exported AWS session creds
   (`aws configure export-credentials`) make 8 fake-AWS integration tests
   error — run `capture.py`/terraform and full pytest in separate shells.
@@ -212,6 +216,11 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   sent T011's start/PR comments + In Review to SPR-94 (T010a). Always read the
   live ticket summary before commenting or transitioning; pick next work via
   the JQL, never a cached key map.
+- **Out-of-band IAM grants are temporary parity (2026-09-27):** an
+  emergency Mars-verbatim grant un-blocks production, but the next HCP
+  apply reconciles it away — land the durable fix (ticket + PR + tag)
+  before that apply, and add a contract pin so the gap can't silently
+  return.
 - **Living document (Mars, 2026-09-20):** short actionable gotchas discovered
   during work graduate into this file — one bullet, dated, attributed.
   Session notes live in the git-ignored deepwork progress file
