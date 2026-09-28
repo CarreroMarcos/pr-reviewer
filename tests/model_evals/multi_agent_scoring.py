@@ -180,8 +180,6 @@ def precision_delta(
     for case_id in cases:
         multi_runs = multi_prec[case_id] or [0.0]
         single_runs = single_prec[case_id] or [0.0]
-        multi_runs = multi_prec[case_id] or [0.0]
-        single_runs = single_prec[case_id] or [0.0]
         total += sum(multi_runs) / len(multi_runs) - sum(single_runs) / len(single_runs)
     return total / len(cases)
 

@@ -264,7 +264,11 @@ EMBED_RETRYABLE_CODES = frozenset(
 def _embed_error_retryable(exc: Exception, client) -> bool:
     """True when an embedding failure is worth retrying: the client's
     ThrottlingException shape, or a ClientError carrying a throttling /
-    transient code (numeric 5xx included). Anything else fails fast."""
+    transient code (numeric 5xx included). Anything else fails fast.
+    The 5xx string check is deliberately lenient — a non-botocore
+    exception whose `.response` is a dict with a numeric 500 code would
+    retry unnecessarily; acceptable for an offline harness (bot R3, PR
+    #135)."""
     throttle_cls = getattr(getattr(client, "exceptions", None), "ThrottlingException", None)
     if throttle_cls is not None and isinstance(exc, throttle_cls):
         return True
