@@ -4,22 +4,29 @@ Recomputes every number in
 `specs/004-multi-agent-review/exit-report-phase0.md` from the completed
 24x3 multi-agent pin: D8 five-gate full-mode scoring (through the
 enforced `compute_ab_deltas` entry), wrongful-kill arm attribution, and
-per-stage latency extraction from run events. Writes
-`tests/model_evals/results/t046-scoring.json` (local artifact, untracked
-per the evidence posture — the report embeds the full tables).
+per-stage latency extraction from run events. Verifies the pin's sha256
+against the tracked manifest before scoring, so a mutated capture-box
+artifact fails loudly instead of feeding wrong verdicts to the report.
+Writes `tests/model_evals/results/t046-scoring.json` (local artifact,
+untracked per the evidence posture — the report embeds the full tables).
 
 NEVER in any request-serving path. Stdlib only; reads the pin + baseline
-pins, calls `multi_agent_scoring` + `scoring` — the same functions the
-interim path and the tests use. No network.
+pins and calls `multi_agent_scoring` / `scoring` — the same functions the
+interim path and the tests use (percentiles go through the scorer's
+canonical nearest-rank `p95`, so report numbers cannot silently diverge
+from it). No network. Standalone CLI; the sys.path inserts are guarded so
+an accidental import never reorders a healthy path.
 """
 
+import hashlib
 import json
 import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_ROOT / "tests" / "model_evals"))
-sys.path.insert(0, str(_ROOT / "lambda"))
+for _p in (str(_ROOT / "tests" / "model_evals"), str(_ROOT / "lambda")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import fixtures  # noqa: E402
 import multi_agent_scoring as mas  # noqa: E402
@@ -27,17 +34,31 @@ import scoring  # noqa: E402
 
 PIN = _ROOT / "tests" / "model_evals" / "pinned_multi_agent.json"
 BASE = _ROOT / "tests" / "model_evals" / "pinned_outputs.json"
+MANIFEST = _ROOT / "tests" / "model_evals" / "results" / "multi-pin-manifest.json"
 OUT = _ROOT / "tests" / "model_evals" / "results" / "t046-scoring.json"
 
 
-def p95(xs):
-    xs = sorted(xs)
-    return xs[int(len(xs) * 0.95)] if xs else None
+def _verify_pin():
+    """Fail loudly if the capture-box pin no longer matches the tracked
+    manifest pointer (the driver is the report's only line of defense
+    against a mutated untracked artifact)."""
+    manifest = json.loads(MANIFEST.read_text())
+    expected = manifest["pin"]
+    raw = PIN.read_bytes()
+    got_sha = hashlib.sha256(raw).hexdigest()
+    if got_sha != expected["sha256"] or len(raw) != expected["bytes"]:
+        raise SystemExit(
+            f"pin integrity failure: sha256 {got_sha[:12]}... / {len(raw)} bytes"
+            f" != manifest {expected['sha256'][:12]}... / {expected['bytes']} bytes"
+        )
 
 
 def main():
-    pin = json.load(open(PIN))
-    base = json.load(open(BASE))
+    _verify_pin()
+    with open(PIN) as f:
+        pin = json.load(f)
+    with open(BASE) as f:
+        base = json.load(f)
 
     multi_hits, multi_prec, single_hits, single_prec = {}, {}, {}, {}
     comments, survivors, kill_runs, vectors = {}, [], [], {}
@@ -76,9 +97,9 @@ def main():
             if starts and comps:
                 stage["fanout_ms"].append(max(comps) - min(starts))
             if comps and vd:
-                stage["verify_ms"].append(vd[0] - max(comps))
+                stage["verify_ms"].append(max(vd) - max(comps))
             if vd and rs:
-                stage["synth_ms"].append(rs[0] - vd[0])
+                stage["synth_ms"].append(rs[-1] - max(vd))
         multi_hits[cid] = mh
         multi_prec[cid] = mp
         if cid in base["cases"]:
@@ -97,6 +118,10 @@ def main():
     )
     fidelity = mas.fidelity_report(survivors=survivors, comments=comments, vectors=vectors)
 
+    # Per-(case, run) calls harvest only forbidden_hits — robust_comments
+    # keys one comment per case, so each run must be checked on its own.
+    # fabricated_total=0 here is inert for that purpose; the corpus-wide
+    # total is combined into the final floors dict below.
     forbidden_hits = []
     robust = {cid: c for cid, c in pin["cases"].items() if c["manifest"].get("forbidden_strings")}
     for cid, c in robust.items():
@@ -117,7 +142,7 @@ def main():
     match_arms = []
     for w in kill["matches"]:
         cid, ri, kid = w["case_id"], w["run_index"], w["candidate_id"]
-        run = pin["cases"][cid]["runs"][ri]
+        run = next(r for r in pin["cases"][cid]["runs"] if r["run_index"] == ri)
         cand = next((c for c in run["candidates"] if c["candidate_id"] == kid), None)
         exp = pin["cases"][cid]["manifest"].get("expected_findings", [])
         arm, detail = "none", None
@@ -148,7 +173,7 @@ def main():
             {"case_id": cid, "run_index": ri, "candidate_id": kid, "arm": arm, "detail": detail}
         )
 
-    run_p95_ms = p95(run_latencies)
+    run_p95_ms = mas.p95(run_latencies)
     result = mas.evaluate_ab(
         d=deltas["recall_delta"],
         p=deltas["precision_delta"],
@@ -171,7 +196,7 @@ def main():
             "p95": run_p95_ms,
             "max": max(run_latencies),
         },
-        "stage_ms_p95": {k: p95(v) for k, v in stage.items()},
+        "stage_ms_p95": {k: mas.p95(v) for k, v in stage.items()},
         "stage_ms_max": {k: max(v) if v else None for k, v in stage.items()},
         "subtle_ids": subtle_ids,
         "robust_cases": sorted(robust),
@@ -190,7 +215,8 @@ def main():
         "floors": floors,
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    json.dump(result, open(OUT, "w"), indent=1, default=str)
+    with open(OUT, "w") as f:
+        json.dump(result, f, indent=1, default=str)
     print("verdicts:", json.dumps(result["verdicts"]))
     print("effort:", result["effort"])
     print("metrics:", json.dumps(result["metrics"]))
