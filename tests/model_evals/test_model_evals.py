@@ -305,4 +305,6 @@ def test_capture_record_and_continue_on_transient_failure(tmp_path, monkeypatch,
         "error": "TimeoutError: GLM read timed out",
     }
     assert pinned["cases"]["ok-case"]["output"].startswith("## Findings")
-    assert "recorded, continuing" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "recorded, continuing" in err
+    assert "WARNING: 1/2 cases errored" in err

@@ -432,3 +432,27 @@ def test_ab_case_symmetry_fails_on_divergence():
         assert "recall-only=['b']" in str(exc)
     else:
         raise AssertionError("expected extras-set asymmetry to raise ValueError")
+
+
+def test_compute_ab_deltas_enforces_symmetry():
+    """Bot R2 (PR #135): the enforced A/B entry point runs the extras-set
+    symmetry gate before computing either delta — asymmetric inputs raise
+    ValueError; symmetric inputs return both deltas."""
+    hits = {"a": [1], "b": [0]}
+    prec = {"a": [0.5], "b": [0.5]}
+    assert mas.compute_ab_deltas(hits, hits, prec, prec, 2) == {
+        "recall_delta": 0.0,
+        "precision_delta": 0.0,
+    }
+    try:
+        mas.compute_ab_deltas(
+            {"a": [1], "b": [0]},
+            {"a": [1], "b": [1]},
+            {"a": [0.5]},
+            {"a": [0.5], "b": [0.5]},
+            2,
+        )
+    except ValueError as exc:
+        assert "recall-only=['b']" in str(exc)
+    else:
+        raise AssertionError("expected asymmetric A/B inputs to raise ValueError")

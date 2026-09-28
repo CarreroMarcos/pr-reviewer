@@ -180,8 +180,28 @@ def precision_delta(
     for case_id in cases:
         multi_runs = multi_prec[case_id] or [0.0]
         single_runs = single_prec[case_id] or [0.0]
+        multi_runs = multi_prec[case_id] or [0.0]
+        single_runs = single_prec[case_id] or [0.0]
         total += sum(multi_runs) / len(multi_runs) - sum(single_runs) / len(single_runs)
     return total / len(cases)
+
+
+def compute_ab_deltas(
+    multi_hits: dict[str, list[int]],
+    single_hits: dict[str, list[int]],
+    multi_prec: dict[str, list[float]],
+    single_prec: dict[str, list[float]],
+    n_defects: int,
+) -> dict[str, float]:
+    """Enforced A/B entry point (bot R2, PR #135): runs the extras-set
+    symmetry gate BEFORE computing either delta, so a report-side consumer
+    cannot judge mismatched case sets. `recall_delta`/`precision_delta`
+    stay importable for tests; the T046 exit report calls THIS."""
+    assert_ab_case_symmetry(multi_hits, single_hits, multi_prec, single_prec)
+    return {
+        "recall_delta": recall_delta(multi_hits, single_hits, n_defects),
+        "precision_delta": precision_delta(multi_prec, single_prec),
+    }
 
 
 def recall_verdict(d: float, d2: float | None = None) -> str:

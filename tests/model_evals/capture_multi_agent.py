@@ -303,6 +303,15 @@ def bedrock_embed_texts(texts: list[str]) -> list[list[float]]:
             except Exception as exc:  # noqa: BLE001 (retry classifier decides; final re-raise)
                 if not _embed_error_retryable(exc, client) or attempt == EMBED_MAX_ATTEMPTS:
                     raise
+                response = getattr(exc, "response", None)
+                code = (
+                    response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
+                )
+                print(
+                    f"bedrock embed retry {attempt}/{EMBED_MAX_ATTEMPTS}"
+                    f" ({code or type(exc).__name__}) — sleeping {delay:.0f}s",
+                    file=sys.stderr,
+                )
                 time.sleep(delay)
                 delay = min(delay * 2, EMBED_MAX_DELAY_S)
     return vectors

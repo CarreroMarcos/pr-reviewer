@@ -671,3 +671,38 @@ def test_round_trip_capture_record_through_scorer():
     # One bullet covering two survivors is a correct merge — matching is
     # many-to-one (HLD gate 4 keys on "no semantic match", not exclusivity).
     assert fidelity["dropped"] == 0
+
+
+def test_bedrock_embed_retry_logs_attempts(monkeypatch, capsys):
+    """Bot R2 (PR #135): each retry attempt logs a one-line stderr note
+    (attempt, error, delay) so a throttle storm doesn't look like a hang."""
+
+    class ThrottlingException(Exception):
+        pass
+
+    script = [ThrottlingException("slow down"), [0.3]]
+
+    class _Body:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode("utf-8")
+
+    class _Client:
+        exceptions = SimpleNamespace(ThrottlingException=ThrottlingException)
+
+        def invoke_model(self, **kwargs):
+            action = script.pop(0)
+            if isinstance(action, Exception):
+                raise action
+            return {"body": _Body({"embedding": action})}
+
+    fake_boto3 = SimpleNamespace(client=lambda *a, **k: _Client())
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setattr(cma.time, "sleep", lambda s: None)
+    assert cma.bedrock_embed_texts(["hello"]) == [[0.3]]
+    err = capsys.readouterr().err
+    assert "bedrock embed retry 1/6" in err
+    assert "ThrottlingException" in err
+    assert "sleeping 2s" in err

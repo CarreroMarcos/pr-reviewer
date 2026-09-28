@@ -240,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"capture FAILED for {name}: {exc} — recorded, continuing", file=sys.stderr)
         finally:
             latencies[name] = int((time.perf_counter() - start) * 1000)
-    if not variant and not any("error" not in cases.get(name, {}) for name in wanted):
+    n_err = sum(1 for name in wanted if "error" in cases.get(name, {}))
+    if not variant and n_err == len(wanted):
         # Vacuous-pin guard (bot R1 MEDIUM, PR #135): record-and-continue
         # keeps per-case diagnostics, but a run where EVERY case failed
         # must write nothing — an all-empty aggregate must never pass
@@ -251,6 +252,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    if not variant and n_err:
+        # Louder near-vacuous signal (bot R2 LOW, PR #135): a mostly-failed
+        # re-baseline must not slide in quietly; floors still arbitrate.
+        print(
+            f"WARNING: {n_err}/{len(wanted)} cases errored in this"
+            " re-baseline — floors must refuse the pin if the misses matter",
+            file=sys.stderr,
+        )
     wall_s = time.perf_counter() - run_start
     scored = [name for name in fixtures.SEED_SCORING_IDS if "output" in cases.get(name, {})]
     scored_metrics = [
