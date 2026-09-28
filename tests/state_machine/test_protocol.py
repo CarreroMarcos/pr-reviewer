@@ -366,6 +366,11 @@ def test_widened_lease_rejects_mid_review_redelivery():
     the two leases) — must NOT steal the claim. Under the old lease this
     arrival found an expired row and claimed it, racing the live review to
     publish (the steal-window residual D9 records)."""
+    # Non-degeneracy: the midpoint arrival below pins the widened window only
+    # if the lease actually moved past the pre-T047 value — at equality the
+    # arrival lands exactly on the strict (`claim_until < now`) expiry edge
+    # and the test would pass vacuously.
+    assert CLAIM_LEASE_SECONDS > PRE_T047_LEASE_S, "lease not widened past pre-T047 window"
     h = Harness(live_shas=[SHA_B])
     before = _seed(h.table, head=SHA_B, gen=2, owner=GUID_OTHER, status="CLAIMED")
     arrival = NOW + (PRE_T047_LEASE_S + CLAIM_LEASE_SECONDS) // 2
