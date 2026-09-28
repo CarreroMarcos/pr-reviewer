@@ -420,7 +420,7 @@ def test_ab_case_symmetry_passes_on_shared_set():
 
 def test_ab_case_symmetry_fails_on_divergence():
     """T045 pre-flight: a case present on one side only (here `b` drops
-    out of the precision extras) trips the assert naming both directions."""
+    out of the precision extras) raises ValueError naming both directions."""
     try:
         mas.assert_ab_case_symmetry(
             {"a": [1], "b": [0]},
@@ -428,7 +428,7 @@ def test_ab_case_symmetry_fails_on_divergence():
             {"a": [0.5]},
             {"a": [0.5], "b": [0.5]},
         )
-    except AssertionError as exc:
+    except ValueError as exc:
         assert "recall-only=['b']" in str(exc)
     else:
-        raise AssertionError("expected extras-set asymmetry to trip the assert")
+        raise AssertionError("expected extras-set asymmetry to raise ValueError")

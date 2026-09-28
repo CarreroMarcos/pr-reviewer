@@ -18,8 +18,9 @@ continues — a transient timeout must not void a 72-call run (record-and-contin
 T045 pre-flight). The empty output scores 0 through the standard functions,
 so errored defect cases fail the quality floors mechanically (no silent
 partial pin); total failures (SSM/creds) still raise before the loop with
-nothing written. Variant behavior (`--tag`): per-case
-errors are recorded as `{"error": ...}` and the batch continues; per-case
+nothing written — and a run where EVERY case fails writes nothing at all
+(vacuous-pin guard). Variant (`--tag`) runs record errors without an
+`output` key (its aggregate counts errors separately); per-case
 `latency_ms` and run latency stats land in the results file.
 """
 
@@ -239,6 +240,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"capture FAILED for {name}: {exc} — recorded, continuing", file=sys.stderr)
         finally:
             latencies[name] = int((time.perf_counter() - start) * 1000)
+    if not variant and not any("error" not in cases.get(name, {}) for name in wanted):
+        # Vacuous-pin guard (bot R1 MEDIUM, PR #135): record-and-continue
+        # keeps per-case diagnostics, but a run where EVERY case failed
+        # must write nothing — an all-empty aggregate must never pass
+        # floors by vacuity.
+        print(
+            "capture FAILED for every case — refusing to write a vacuous pin"
+            " (per-case diagnostics above); nothing written",
+            file=sys.stderr,
+        )
+        return 1
     wall_s = time.perf_counter() - run_start
     scored = [name for name in fixtures.SEED_SCORING_IDS if "output" in cases.get(name, {})]
     scored_metrics = [

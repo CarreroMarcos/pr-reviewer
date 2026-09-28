@@ -137,11 +137,14 @@ def assert_ab_case_symmetry(
     A/B dicts BEFORE computing deltas."""
     recall_cases = set(multi_hits) & set(single_hits)
     precision_cases = set(multi_prec) & set(single_prec)
-    assert recall_cases == precision_cases, (
-        "recall/precision extras-set asymmetry: "
-        f"recall-only={sorted(recall_cases - precision_cases)} "
-        f"precision-only={sorted(precision_cases - recall_cases)}"
-    )
+    if recall_cases != precision_cases:
+        # ValueError, not assert: this gate must survive `python -O`
+        # (bot R1 LOW, PR #135).
+        raise ValueError(
+            "recall/precision extras-set asymmetry: "
+            f"recall-only={sorted(recall_cases - precision_cases)} "
+            f"precision-only={sorted(precision_cases - recall_cases)}"
+        )
     return recall_cases
 
 
