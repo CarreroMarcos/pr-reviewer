@@ -194,6 +194,9 @@ def test_worker_unreserved():
 def test_twelve_env_vars_with_t005_defaults():
     env = _worker_env_map()
     assert env.pop("GLM_ALLOWED_HOSTS") == "api.z.ai"  # pre-existing, untouched
+    # Archive contract target (T030, wired live by T069): read directly
+    # by worker_handler (os.environ), not through common.config.
+    assert env.pop("ARCHIVE_BUCKET") == "pr-reviewer-archives"
     assert env == EXPECTED_ENV
 
 
