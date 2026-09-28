@@ -51,8 +51,8 @@ Flagged interpretations for the review gate:
   mismatch-discards-leave-the-record-unchanged invariant on paths that
   establish (b) and then discard at claim.
 * Fence mismatch after claim leaves the record CLAIMED (no release write):
-  HLD §3.3 step 4 says only "Mismatch → discard as stale"; the 180 s lease
-  expiry (HLD §3.2) is the recovery path.
+  HLD §3.3 step 4 says only "Mismatch → discard as stale"; the claim lease
+  expiry (HLD §3.2, widened to the review budget by T047) is the recovery path.
 * A superseded establish records the observation: `last_seen_sha` advances
   to the incoming SHA via `build_advance_last_seen_expressions` (HLD §3.3
   step 1 — the most recently observed webhook SHA is recorded regardless

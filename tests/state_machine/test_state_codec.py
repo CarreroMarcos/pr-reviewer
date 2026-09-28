@@ -14,6 +14,12 @@ machine-readable `field`/`reason`, mirroring `common.envelope.EnvelopeError`.
 
 import pytest
 
+from common.config import (
+    DEFAULT_BUDGET_MARGIN_S,
+    DEFAULT_SYNTHESIZER_WAIT_FOR_S,
+    DEFAULT_VERIFIER_WAIT_FOR_S,
+    DEFAULT_WAVE_WAIT_FOR_S,
+)
 from common.state import (
     CLAIM_LEASE_SECONDS,
     DELIVERY_TTL_SECONDS,
@@ -95,8 +101,25 @@ def test_build_delivery_item_shape():
     assert item == {"pk": f"delivery:{GUID}", "ttl": NOW + 604800}
 
 
-def test_claim_lease_is_180s():
-    assert CLAIM_LEASE_SECONDS == 180
+def test_claim_lease_is_widened_to_review_budget():
+    """T047 (HLD D9 Per-PR claim lease): widened 180 → 780 to cover the
+    multi-agent review budget; the literal pin makes a silent revert to the
+    pre-T047 value impossible."""
+    assert CLAIM_LEASE_SECONDS == 780
+
+
+def test_claim_lease_covers_multi_agent_review_budget():
+    """T047 (HLD D9): the claim lease must stay ≥ the multi-agent review
+    budget (elapsed-budget gate-1 total). A future D9 re-tune that outgrows
+    the lease fails here loudly instead of silently reopening the steal
+    window between lease expiry and claim."""
+    budget = (
+        DEFAULT_WAVE_WAIT_FOR_S
+        + DEFAULT_VERIFIER_WAIT_FOR_S
+        + DEFAULT_SYNTHESIZER_WAIT_FOR_S
+        + DEFAULT_BUDGET_MARGIN_S
+    )
+    assert CLAIM_LEASE_SECONDS >= budget
 
 
 # --- round-trips -----------------------------------------------------------
