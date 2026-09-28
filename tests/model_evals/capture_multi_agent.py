@@ -561,10 +561,25 @@ def _read_ssm() -> tuple[str, str, str]:
 
 def _live_review_fn(api_key: str, model: str, endpoint: str):
     """Production-faithful leg caller: direct `llm.review_diff` with the
-    hydrated credentials (same call the worker's stages make)."""
+    hydrated credentials (same call the worker's stages make).
+
+    `run_fanout` passes api_key/model/endpoint explicitly on every call
+    (lambda/common/fanout.py:178-180), so caller kwargs merge OVER the
+    pre-bound closure creds (identical values today; explicit beats
+    implicit if either side ever diverges). The pre-bind originally
+    double-bound those kwargs — TypeError per leg in ~0ms, invisible to
+    the stub smoke (stub legs accept **kwargs) and to CI (no external
+    calls); first exercised by the first live capture 2026-09-28."""
 
     def _call(**kwargs):
-        return review_diff(api_key=api_key, model=model, endpoint=endpoint, **kwargs)
+        return review_diff(
+            **{
+                "api_key": api_key,
+                "model": model,
+                "endpoint": endpoint,
+                **kwargs,
+            }
+        )
 
     return _call
 
@@ -708,10 +723,18 @@ def main(
     )
     done = stats["runs_completed"]
     skipped = stats["runs_skipped"]
+    # Errored runs counted over the WHOLE pin (merged, resumed included):
+    # "pinned_multi_agent.json complete" means zero errored runs anywhere
+    # in it. __main__ exits 1 iff this is nonzero — a garbage pin must
+    # never look like a clean capture (2026-09-28: a 72-shell all-errored
+    # pin exited 1 only by the SystemExit(dict) accident, and a CLEAN
+    # capture exited 1 by the same accident).
+    errored = sum(1 for rec in merged.values() for run in rec["runs"] if run.get("error"))
     print(f"pinned {done} runs ({skipped} resumed) -> {output_path}")
     print(pinned["meta"]["wall_clock_note"])
-    return stats
+    print(f"stats: runs_completed={done} runs_skipped={skipped} runs_errored={errored}")
+    return {**stats, "runs_errored": errored}
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(1 if main()["runs_errored"] else 0)
