@@ -221,6 +221,8 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   apply reconciles it away — land the durable fix (ticket + PR + tag)
   before that apply, and add a contract pin so the gap can't silently
   return.
+- **TFC plan/apply role split — new resource types need plan-role reads (orchestrator, 2026-09-27):** the HCP workspace plans assume `pr-reviewer-hcp-plan` (Lambda-reads-only), separate from `pr-reviewer-hcp-apply`. A NEW AWS resource type must get its read battery granted on the plan role too, and Terraform reveals denials one graph-wave at a time (each run names only what it reached) — grant the full read battery up front (16 S3 reads; surgical 3-action grants took 3 runs to converge).
+- **IAM silently accepts dead action strings (orchestrator, 2026-09-27):** `put-role-policy` does not validate action-name existence — naive spellings like `s3:GetBucketEncryption` (real name: `s3:GetEncryptionConfiguration`) store fine and 403 at run time. The policy-gen dataset's dataset-verified action names are the check, not the API.
 - **Living document (Mars, 2026-09-20):** short actionable gotchas discovered
   during work graduate into this file — one bullet, dated, attributed.
   Session notes live in the git-ignored deepwork progress file
