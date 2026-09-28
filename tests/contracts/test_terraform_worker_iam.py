@@ -6,8 +6,9 @@ and the gap was invisible to every suite — state-machine tests run an
 in-memory table, so authorization is never exercised. This pin keeps
 the worker role's state-table grant in lockstep with the table
 operations the lambda code actually performs: a call without a grant
-is the crash class (AccessDenied mid-review); a grant without a call
-is a dead privilege. Both fail loudly here.
+is the crash class (AccessDenied mid-review) and fails loudly; a
+grant outside the conscious map fails loudly; a mapped-but-uncalled
+grant is an allowed, visible residual (see below).
 
 Known blind spots (a tripwire, not a proof): the scan is textual, so
 occurrences inside comments or string literals count as call sites
@@ -18,7 +19,11 @@ non-table actions (SSM, SQS, S3) are other surfaces with their own
 contracts. Dead-privilege detection is map-level: a granted action
 the worker code never calls (PutItem today — the delivery write lives
 in ingress) is allowed as a consciously mapped residual, while a
-grant outside the map fails.
+grant outside the map fails. The `\\n}` resource anchor assumes no
+column-0 `}` inside the body (terraform fmt output satisfies this);
+a future here-doc would truncate the match, dropping actions, which
+fails the missing-grant test in the safe direction — robust HCL
+block parsing for the contract suite is SPR-155's scope.
 """
 
 import re
