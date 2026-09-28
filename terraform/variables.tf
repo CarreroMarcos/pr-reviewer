@@ -63,7 +63,10 @@ variable "llm_usd_per_million_tokens" {
 variable "daily_llm_spend_budget_usd" {
   description = "Daily LLM spend budget in USD; the spend alarm fires above it (config-driven budget, HLD §4.3)."
   type        = number
-  default     = 5
+  # Mars, 2026-09-27 (T034): observed 1-call baseline peaked at $0.23/day
+  # (Sep 13–27 token metric); ×5 ≈ $1.17, rounded to a $1 budget ⇒ $5/day
+  # alarm with headroom for the multi-agent pilot.
+  default = 1
 }
 
 variable "operator_principal_arn" {
