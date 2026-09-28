@@ -57,7 +57,7 @@ def _clean_env(monkeypatch):
 def test_defaults_when_env_unset():
     cfg = multi_agent_config()
     assert cfg.multi_agent == 0
-    assert cfg.multi_agent_phase0 == 0
+    assert cfg.multi_agent_phase0 == 1
     assert cfg.fanout_concurrency == 3
     assert cfg.mutex_lease_ttl_s == 900
     assert cfg.reasoning_max_chars == 4000
@@ -72,7 +72,7 @@ def test_defaults_when_env_unset():
 
 def test_default_constants_pin_checklist_item_7():
     assert DEFAULT_MULTI_AGENT == 0
-    assert DEFAULT_MULTI_AGENT_PHASE0 == 0
+    assert DEFAULT_MULTI_AGENT_PHASE0 == 1
     assert DEFAULT_FANOUT_CONCURRENCY == 3
     assert DEFAULT_MUTEX_LEASE_TTL_S == 900
     assert DEFAULT_REASONING_MAX_CHARS == 4000
@@ -124,7 +124,7 @@ def test_set_values_parsed(monkeypatch):
     ("env", "field", "default"),
     [
         ("MULTI_AGENT", "multi_agent", 0),
-        ("MULTI_AGENT_PHASE0", "multi_agent_phase0", 0),
+        ("MULTI_AGENT_PHASE0", "multi_agent_phase0", 1),
         ("FANOUT_CONCURRENCY", "fanout_concurrency", 3),
         ("MUTEX_LEASE_TTL_S", "mutex_lease_ttl_s", 900),
         ("REASONING_MAX_CHARS", "reasoning_max_chars", 4000),

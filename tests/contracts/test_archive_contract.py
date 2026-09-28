@@ -422,7 +422,13 @@ def drive_record(
     fanout_behavior=None,
     monkeypatch=None,
 ):
-    """Drive one record through `_process_record` with archive wiring on."""
+    """Drive one record through `_process_record` with archive wiring on.
+
+    Pins `MULTI_AGENT_PHASE0=0`: this helper drives the legacy single-pass
+    scenario, and the deployed default is 1 since T043 (shadow-path
+    contract tests set the flag explicitly).
+    """
+    monkeypatch.setenv("MULTI_AGENT_PHASE0", "0")
     if multi_agent:
         monkeypatch.setenv("MULTI_AGENT", "1")
 

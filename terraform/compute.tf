@@ -116,7 +116,7 @@ resource "aws_lambda_function" "worker" {
       # tests/contracts/test_terraform_multi_agent.py). REASONING_EFFORT
       # stays "low" PROVISIONAL — Phase-0 data picks the ship config.
       MULTI_AGENT            = "0"
-      MULTI_AGENT_PHASE0     = "0"
+      MULTI_AGENT_PHASE0     = "1"
       FANOUT_CONCURRENCY     = "3"
       MUTEX_LEASE_TTL_S      = "900"
       REASONING_MAX_CHARS    = "4000"
