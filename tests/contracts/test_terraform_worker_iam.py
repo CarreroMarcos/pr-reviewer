@@ -25,7 +25,14 @@ import re
 from pathlib import Path
 
 TERRAFORM_DIR = Path(__file__).resolve().parent.parent.parent / "terraform"
-IAM_TF = (TERRAFORM_DIR / "iam.tf").read_text(encoding="utf-8")
+try:
+    IAM_TF = (TERRAFORM_DIR / "iam.tf").read_text(encoding="utf-8")
+except OSError as exc:
+    raise RuntimeError(
+        "cannot read terraform/iam.tf relative to tests/contracts — this "
+        "contract assumes the repo layout (repo root two levels up); if the "
+        "layout moved, update TERRAFORM_DIR here"
+    ) from exc
 LAMBDA_DIR = Path(__file__).resolve().parent.parent.parent / "lambda"
 
 # Every dynamodb table method the code could call → the IAM action it
@@ -71,18 +78,22 @@ def _worker_policy_block():
     name, not inferred from action contents (role association must not
     drift if another statement gains a coincidental action)."""
     match = re.search(r'resource "aws_iam_role_policy" "worker" \{(.*?)\n\}', IAM_TF, re.DOTALL)
-    return match.group(1) if match else ""
+    assert match is not None, (
+        "worker policy block not found in iam.tf — the scan broke "
+        "(resource renamed, or the file reformatted past the \\n} anchor)"
+    )
+    return match.group(1)
 
 
 def _worker_state_table_actions():
-    """Actions of the worker's state-table statement (the grant block
-    within the worker policy that contains dynamodb actions)."""
+    """Union of dynamodb actions across ALL statements of the worker
+    policy — a second (differently-scoped) dynamodb statement must not
+    escape the pin."""
     block = _worker_policy_block()
+    actions: set[str] = set()
     for action_block in re.findall(r"Action\s*=\s*\[(.*?)\]", block, re.DOTALL):
-        actions = set(re.findall(r'"(dynamodb:[A-Za-z]+)"', action_block))
-        if actions:
-            return actions
-    return set()
+        actions |= set(re.findall(r'"(dynamodb:[A-Za-z]+)"', action_block))
+    return actions
 
 
 def _required_actions():
