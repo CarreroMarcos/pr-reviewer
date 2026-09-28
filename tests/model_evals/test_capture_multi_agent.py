@@ -566,7 +566,7 @@ def test_ollama_embed_one_posts_model_and_parses_embeddings(monkeypatch):
             return False
 
         def read(self):
-            return json.dumps({"embeddings": [[0.1, 0.2]]}).encode("utf-8")
+            return json.dumps({"embeddings": [[0.1] * cma.EXPECTED_EMBED_DIM]}).encode("utf-8")
 
     def fake_urlopen(req, timeout):
         captured["method"] = req.get_method()
@@ -576,10 +576,35 @@ def test_ollama_embed_one_posts_model_and_parses_embeddings(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(cma.urllib.request, "urlopen", fake_urlopen)
-    assert cma._ollama_embed_one("hello") == [0.1, 0.2]
+    assert cma._ollama_embed_one("hello") == [0.1] * cma.EXPECTED_EMBED_DIM
     assert captured["method"] == "POST"
     assert captured["url"] == cma.OLLAMA_URL + "/api/embed"
     assert captured["body"] == {"model": cma.OLLAMA_MODEL, "input": ["hello"]}
+
+
+def test_ollama_embed_one_rejects_wrong_dim_vector(monkeypatch):
+    """Bot R1 (#136): a wrong-dimension vector fails loud at the seam —
+    a misconfigured local model must never silently pin unusable
+    vectors that only explode at score time."""
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"embeddings": [[0.1, 0.2]]}).encode("utf-8")
+
+    monkeypatch.setattr(cma.urllib.request, "urlopen", lambda req, timeout: _Resp())
+    try:
+        cma._ollama_embed_one("hello")
+    except ValueError as exc:
+        assert "malformed vector" in str(exc)
+        assert "dim=2" in str(exc)
+    else:
+        raise AssertionError("expected ValueError on wrong-dim vector")
 
 
 def test_ollama_embed_one_rejects_malformed_payload(monkeypatch):

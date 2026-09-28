@@ -83,6 +83,7 @@ from common.llm import review_diff  # noqa: E402
 REGION = "us-west-2"
 OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "nomic-embed-text"
+EXPECTED_EMBED_DIM = 768  # nomic-embed-text; a wrong-dim vector means a misconfigured endpoint
 FANOUT_CONCURRENCY_PIN = 3
 OFFLINE_REMAINING_MS = 850_000
 RUNS_PER_CASE = 3
@@ -301,6 +302,13 @@ def _ollama_embed_one(text: str) -> list[float]:
     vectors = payload.get("embeddings")
     if not vectors or not isinstance(vectors, list) or not isinstance(vectors[0], list):
         raise ValueError(f"ollama /api/embed returned no usable embeddings: {str(payload)[:120]}")
+    vector = vectors[0]
+    if len(vector) != EXPECTED_EMBED_DIM or not all(isinstance(x, (int, float)) for x in vector):
+        raise ValueError(
+            f"ollama /api/embed returned a malformed vector: dim={len(vector)}"
+            f" (expected {EXPECTED_EMBED_DIM}, all-numeric required)"
+            f" — misconfigured local model must never pin unusable vectors"
+        )
     return vectors[0]
 
 
