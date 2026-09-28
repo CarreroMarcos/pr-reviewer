@@ -31,7 +31,10 @@ from typing import Any
 
 STATUSES = frozenset({"CLAIMED", "ACTIVE"})
 
-CLAIM_LEASE_SECONDS = 180  # HLD §3.2 / §7.2: fixed lease, claim → finalize
+# HLD D9 (T047): ≥ the multi-agent review budget (gate-1 total
+# 300+240+180+60); widened from 180, which predated the 240s socket budget.
+# Fixed lease, claim → finalize.
+CLAIM_LEASE_SECONDS = 780
 DELIVERY_TTL_SECONDS = 7 * 24 * 3600  # HLD §2.4 item type 1: delivery TTL 7 days
 
 INT64_MAX = 2**63 - 1
@@ -333,7 +336,7 @@ def build_finalize_expressions(
     # Lease lifecycle ends AT finalize (HLD §3.2: "held only from claim
     # through finalize"). Leaving it set kept every same-SHA redelivery —
     # e.g. a quick reopen, acceptance (k) — DISCARDED_CLAIM_HELD for the
-    # full 180s (surfaced live by the T035 acceptance run).
+    # full lease (surfaced live by the T035 acceptance run).
     # Owner-guarded release (SPR-63): the REMOVE drops claim_owner/claim_until
     # only while the caller still holds the lease (`claim_owner = :owner`),
     # so a delayed older finalize can neither clear a newer claim's lease

@@ -28,7 +28,8 @@ Mapping (§3.3 step / failure mode → test):
   `test_establish_retry_different_sha_discards_superseded`
 * mode 7 read-then-PATCH stale write → `test_fence_mismatch_discards_stale_without_publish`,
   `test_finalize_conflict_never_overwrites_newer`
-* mode 8 first-post race (180 s lease) → `test_claim_fails_on_live_lease_held`
+* mode 8 first-post race (claim lease) → `test_claim_fails_on_live_lease_held`,
+  `test_widened_lease_rejects_mid_review_redelivery`
 * mode 9 worker death mid-claim (expiry + takeover) → `test_claim_succeeds_on_expired_lease`
 * mode 10 duplicate comments during recovery → `test_duplicate_delivery_publishes_once`
   (protocol side: claim exclusivity ⇒ exactly one publish; full marker-based
@@ -356,6 +357,32 @@ def test_claim_fails_on_live_lease_held():
     assert not any(entry[0] == "fence" for entry in h.calls)
     assert not any(entry[0] == "publish" for entry in h.calls)
     assert h.table.items[PK] == before
+
+
+def test_widened_lease_rejects_mid_review_redelivery():
+    """T047 (HLD D9): a same-head redelivery landing mid-review — inside the
+    widened lease but past the pre-T047 180 s one — must NOT steal the claim.
+    Under the old lease this arrival found an expired row and claimed it,
+    racing the live review to publish (the steal-window residual D9 records)."""
+    h = Harness(live_shas=[SHA_B])
+    before = _seed(h.table, head=SHA_B, gen=2, owner=GUID_OTHER, status="CLAIMED")
+    outcome = h.run(incoming_sha=SHA_B, now=lambda: NOW + 400)
+    assert outcome.kind == OutcomeKind.DISCARDED_CLAIM_HELD
+    assert not any(entry[0] == "fence" for entry in h.calls)
+    assert not any(entry[0] == "publish" for entry in h.calls)
+    assert h.table.items[PK] == before
+
+
+def test_widened_lease_still_expires_for_takeover():
+    """T047: the widened lease is a window, not a lock — one second past its
+    edge a contender takes over (crash recovery unregressed; takeover never
+    bumps generation, finalize releases the lease)."""
+    h = Harness(live_shas=[SHA_B])
+    _seed(h.table, head=SHA_B, gen=2, owner=GUID_OTHER, status="CLAIMED")
+    outcome = h.run(incoming_sha=SHA_B, now=lambda: NOW + CLAIM_LEASE_SECONDS + 5)
+    assert outcome.kind == OutcomeKind.PUBLISHED
+    assert "claim_owner" not in h.table.items[PK]
+    assert h.table.items[PK]["generation"] == 2
 
 
 def test_fence_after_claim_before_publish():
