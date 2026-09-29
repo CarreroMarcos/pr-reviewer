@@ -36,10 +36,6 @@ import boto3
 import pytest
 from moto import mock_aws
 
-# Lazy client creation inside the handler needs a region at first call;
-# tests run before any AWS env exists (mars-law clean shell).
-os.environ.setdefault("AWS_DEFAULT_REGION", "us-west-2")
-
 import viewer_handler  # noqa: E402
 
 REGION = "us-west-2"
@@ -69,6 +65,10 @@ def _event(raw_path: str, token: str | None = None, method: str = "GET") -> dict
 
 @pytest.fixture(scope="module")
 def aws():
+    # Lazy client creation inside the handler needs a region at first
+    # call; tests run before any AWS env exists (mars-law clean shell).
+    # Fixture-scoped, not import-time — no process-env leak (bot R2).
+    os.environ.setdefault("AWS_DEFAULT_REGION", REGION)
     with mock_aws():
         ssm = boto3.client("ssm", region_name=REGION)
         ssm.put_parameter(Name="/pr-reviewer/replay-token", Type="SecureString", Value=TOKEN)

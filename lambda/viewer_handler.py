@@ -121,11 +121,17 @@ def _authorized(headers: dict) -> bool:
 def _serve_s3(key: str) -> dict:
     ext = key.rsplit(".", 1)[-1].lower()
     content_type = _CONTENT_TYPES.get(f".{ext}", "application/octet-stream")
+    s3 = _client("s3")
     try:
-        obj = _client("s3").get_object(Bucket=ARCHIVES_BUCKET, Key=key)
-    except _client("s3").exceptions.NoSuchKey:
+        obj = s3.get_object(Bucket=ARCHIVES_BUCKET, Key=key)
+    except s3.exceptions.NoSuchKey:
         return _not_found()
-    return _response(200, obj["Body"].read().decode("utf-8"), content_type)
+    try:
+        return _response(200, obj["Body"].read().decode("utf-8"), content_type)
+    except UnicodeDecodeError:
+        # Corrupt/foreign object: treat as absent — the API surface stays
+        # {200, 401, 404} and "unreadable" never leaks a 500 (bot R2).
+        return _not_found()
 
 
 def _serve_latest(pr: int) -> dict:
@@ -170,7 +176,7 @@ def _route(event: dict) -> dict:
     if _STATIC_RE.fullmatch(path):
         return _serve_s3(path)
 
-    if _STATIC_RE.fullmatch(path) is None and _SHELL_RE.fullmatch(path):
+    if _SHELL_RE.fullmatch(path):
         return _serve_s3("static/index.html")
 
     latest = _LATEST_RE.fullmatch(path)
