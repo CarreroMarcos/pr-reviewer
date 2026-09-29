@@ -962,7 +962,7 @@ _PROMPT_SHAS = {
     "specialist_correctness": "b457e4a648092ae2eed81e72b944d5f60dc8d27fd82191148a917ba4d84a0b51",
     "specialist_security": "b744e49f9c158bbe683164c778d9391366e8b0a6a4951e9d244da8dabd0ec3f1",
     "specialist_tests": "0400f8fcd3c830b5cba58b08bad2d706d6cd327bc4da789efcfa726ed5530e02",
-    "verifier": "9cf782e33a53e0bc07c8ed2d7320c65585a66714d4a72808dd18e64213b98eb1",
+    "verifier": "e27f2c7ad46a36014265bcd6369d13d54942dc71220279c8916dbcbf99b52e26",
     # Pinned since 2026-09-29 (T070): the synthesizer is security-load-bearing
     # (floors-gate owner for injection laundering) — its sha is pinned so any
     # edit forces a conscious update. No trap arms depend on this stage.
