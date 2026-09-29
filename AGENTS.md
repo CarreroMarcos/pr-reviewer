@@ -130,7 +130,7 @@ Verdicts: **APPROVE** → squash-merge on green CI, comment `Oracle: APPROVE. Me
 
 ### Jira hygiene
 
-- **Namespace non-001 spec ids (`004-T001`); 001 keeps bare ids (2026-09-27):** the sync's idempotency key matches `Spec Task ID` by JQL `~`, so a bare-id run for a second spec overwrites the first spec's tickets in place. Run 001 re-syncs before namespaced tickets exist; a double-hit 001 re-sync exits safely rather than corrupting.
+- **Namespace non-001 spec ids (`004-T001`); 001 keeps bare ids (2026-09-27):** the sync's idempotency key matches `Spec Task ID` by JQL `~`, so a bare-id run for a second spec overwrites the first spec's tickets in place (54 tickets hit 2026-09-27; incident detail in DECISIONS.md). Run 001 re-syncs before namespaced tickets exist; a double-hit 001 re-sync exits safely rather than corrupting; recovery is `SPEC=001 SCOPE=all`.
 - **Read the live ticket summary before every comment/transition (2026-09-26):** stale key↔T-id maps misroute Jira writes; the JQL is the identity source.
 
 ### Living document (Mars, 2026-09-20)
