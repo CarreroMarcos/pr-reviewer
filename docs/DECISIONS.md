@@ -225,5 +225,5 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 
 **Ruling:** Q11 RESOLVED 2026-09-26 (Mars): SQS redrive — update `maxReceiveCount` from 5 to 3 in `terraform/messaging.tf`.
 **As implemented:** the work-queue redrive config in `terraform/messaging.tf` (`maxReceiveCount = 3`); operator redrive procedure lives in `docs/runbook-redrive.md`. (Landed via #89/`ca553ad`.)
-**Known drift:** `docs/HLD.md` §7.3 still cites the spec-002-era "maxReceiveCount 5" for `pr-reviewer-work` — refresh owed at the next HLD touch, owned by the spec-conformance sweep (T059/SPR-147); recorded here so the drift is findable.
+**Known drift:** `docs/HLD.md` §§2/4/6/7 still cite the spec-002-era "maxReceiveCount 5" for `pr-reviewer-work` (five cites: §2 diag/table/text, §4 table, §6 table, §7 BOM) — refresh owed at the next HLD touch, owned by the spec-conformance sweep (T059/SPR-147); recorded here so the drift is findable.
 **Current truth:** `terraform/messaging.tf`, `docs/runbook-redrive.md`.
