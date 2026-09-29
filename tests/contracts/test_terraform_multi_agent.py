@@ -425,3 +425,18 @@ def test_viewer_role_policy_ssm_token_and_no_kms_decrypt():
     assert "kms:Decrypt" not in block, "superseded kms:Decrypt grant present in policy"
     viewer_code = re.sub(r"(?m)^\s*(?:#|//).*$", "", VIEWER_TF)
     assert "kms:Decrypt" not in viewer_code, "kms:Decrypt granted in viewer.tf code"
+
+
+def test_no_kms_actions_anywhere_in_terraform():
+    """Gate 39 F2 hardening: the superseded decrypt clause cannot return
+    via variant spellings or out-of-block grants — case-insensitive
+    `kms:` prefix scan over every .tf file's comment-stripped code.
+    iam.tf note #6 is the standing truth (NO kms grants stack-wide); a
+    future customer-managed-key ruling amends DECISIONS and this pin in
+    the same change."""
+    for tf in sorted(TERRAFORM_DIR.glob("*.tf")):
+        code = re.sub(r"(?m)^\s*(?:#|//).*$", "", tf.read_text(encoding="utf-8"))
+        assert re.search(r"kms:", code, re.IGNORECASE) is None, (
+            f"kms: action present in {tf.name} — KMS grants require a "
+            "Mars ruling amending DECISIONS 2026-09-28 first"
+        )
