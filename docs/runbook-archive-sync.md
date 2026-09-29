@@ -25,7 +25,9 @@ aws s3 sync s3://pr-reviewer-archives/runs/ ~/.pr-reviewer/archives/ --exclude "
 Run it from a shell with an AWS session that can read the archives bucket.
 Least-privilege scope is `s3:ListBucket` on `pr-reviewer-archives` plus
 `s3:GetObject` on `arn:aws:s3:::pr-reviewer-archives/runs/*` — don't reach
-for broader credentials than that. The command is
+for broader credentials than that. Preview the copy before running for
+real with `--dryrun`; any profile holding that read scope works (set
+`AWS_PROFILE` if yours is non-default). The command is
 idempotent — `s3 sync` copies only new or changed objects, so re-running
 pulls just the runs that landed since the last sync.
 
@@ -39,7 +41,9 @@ the `static/` viewer assets — is excluded on purpose.
 ## Consumers
 
 - The replay viewer (`static/`, T055) and local evaluation/corpus tooling
-  read this tree; no S3 calls needed once synced.
+  read this tree; no S3 calls needed once synced. Note the sync excludes
+  viewer assets by design — a fresh machine gets `static/` from the
+  repository checkout, not from the archive.
 
 ## Why not a script
 
