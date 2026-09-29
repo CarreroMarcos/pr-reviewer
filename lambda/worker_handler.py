@@ -94,7 +94,7 @@ from common import archive as archive_mod
 from common import mutex as mutex_mod
 from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
 from common.config import ConfigError, ConfigProvider, multi_agent_config
-from common.diff import DiffError, fetch_diff, fetch_pr_head_sha
+from common.diff import DiffError, fetch_diff, fetch_pr_head_sha, post_image_lengths
 from common.envelope import Envelope, EnvelopeError, validate_envelope
 from common.events import (
     checkpoint,
@@ -1056,11 +1056,17 @@ def _make_review(
                 },
                 verifier_template=prompts["verifier"],
                 synth_template=prompts["synthesizer"],
-                # Post-image lengths have no pipeline source (the /files
-                # entries carry counts, not totals): the clamp passes
-                # everything through and the verifier re-anchors per HLD
-                # :535-537. The mapping itself is always real — never None.
-                file_lengths={},
+                # Post-image lengths are hunk-derived from the diff
+                # envelope (`post_image_lengths`): the bound is the last
+                # post-image line visible in the reviewed diff, not the full
+                # file length — findings beyond it are unanchored by
+                # construction and clamping+flagging them is the designed
+                # honesty (coordinates_clamped_n already surfaces on
+                # agent_completed per spec-HLD :535-537). Files with no
+                # computable span are omitted — the clamp passes absent
+                # files through untouched by design, so omission is safe.
+                # The mapping itself is always real — never None.
+                file_lengths=post_image_lengths(diff_result),
                 allowed_hosts=allowed_hosts,
             )
         except FanoutDegraded as exc:

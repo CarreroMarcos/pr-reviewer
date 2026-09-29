@@ -429,3 +429,32 @@ def fetch_diff(
         title=title,
         body=body,
     )
+
+
+# Hunk headers are the only post-image line source the `/files`
+# envelope carries: `@@ -old[,count] +new[,count] @@` (a bare count
+# means 1). Zero-count new sides (pure deletions) span nothing.
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+
+
+def post_image_lengths(diff: DiffResult) -> dict[str, int]:
+    """Derive per-file post-image lengths from the diff envelope hunks.
+
+    Length = max(new_start + new_count − 1) over the file's hunks
+    (exact for added files whose hunks cover the whole file). Files
+    with no computable span (no hunks, patch absent) are OMITTED —
+    `clamp_to_post_image` passes absent files through untouched by
+    design, so omission is safe. Never returns None.
+    """
+    lengths: dict[str, int] = {}
+    for entry in diff.files:
+        peak = 0
+        for match in _HUNK_RE.finditer(entry.patch):
+            start = int(match.group(1))
+            count = int(match.group(2)) if match.group(2) is not None else 1
+            if count < 1:
+                continue
+            peak = max(peak, start + count - 1)
+        if peak > 0:
+            lengths[entry.filename] = peak
+    return lengths

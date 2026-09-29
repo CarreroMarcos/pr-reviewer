@@ -25,9 +25,10 @@ Gate-13 forward contracts pinned here:
    escape), `run_review` publishes through the degrade, and `handler`
    completes the record with the fallback comment posted.
 4. Production threading (captured-stub rows): real `file_lengths`
-   mapping (explicit `{}`, never None — post-image lengths have no
-   pipeline source yet, so the clamp passes through; the verifier
-   re-anchors per HLD :535-537), `creds.current()` snapshot kwargs,
+   mapping (hunk-derived via `post_image_lengths`, never None — the
+   bound is the reviewed-span peak; absent-span files are omitted and
+   pass the clamp untouched; the verifier re-anchors per HLD
+   :535-537), `creds.current()` snapshot kwargs,
    production `prompts/*.md` templates in FIXED specialty order, and a
    FRESH caller-owned events list per invocation.
 5. Mutex-release ordering: NO surface exists yet (`lambda/common/mutex.py`
@@ -423,7 +424,7 @@ def test_closure_threads_production_seams(multi_agent, stubbed_fanout):
     closure(SHA_B, 0)
     call = stub.calls[0]
     # Forward contract 4, every seam explicit:
-    assert call["file_lengths"] == {}  # real mapping, never None (lengths unwired)
+    assert call["file_lengths"] == {"src/main.py": 2}  # hunk-derived, never None
     assert isinstance(call["file_lengths"], dict)
     assert call["residuals"] == []  # accepted-residuals file absent in repo
     assert call["api_key"] == "glm-key-value"  # creds.current() snapshot
@@ -437,6 +438,22 @@ def test_closure_threads_production_seams(multi_agent, stubbed_fanout):
     assert call["events"] is events  # the SAME caller-owned list, still fresh-owned
     assert call["run_id"] == RUN_ID
     assert call["context"].get_remaining_time_in_millis() == 900_000
+
+
+def test_closure_threads_nonempty_file_lengths_to_clamp(multi_agent, stubbed_fanout):
+    """T060 pin: a NON-EMPTY hunk-derived mapping reaches the fan-out
+    path (the clamp's input seam) — the `file_lengths={}` pass-through
+    era is over. The stub stands in for `run_fanout` (which forwards
+    the mapping to `clamp_to_post_image` unchanged), so capture here
+    proves the threading."""
+    stub = stubbed_fanout(REVIEW_BODY)
+    events = []
+    closure = make_closure(events)
+    closure(SHA_B, 0)
+    lengths = stub.calls[0]["file_lengths"]
+    assert isinstance(lengths, dict) and lengths  # non-empty, never None
+    # `"@@ -1,2 +1,2 @@..."` → new peak 1 + 2 − 1 = 2.
+    assert lengths == {"src/main.py": 2}
 
 
 def test_fresh_events_list_per_invocation(multi_agent, stubbed_fanout):
