@@ -64,8 +64,8 @@ The invariant is honest about distributed-systems reality: a database cannot ato
                                  ▼
                   ┌──────────────────────────────────┐
                   │        SQS WORK QUEUE            │
-                  │  Visibility: 5400s (6 × 900s)   │
-                  │  Retention: 4d │ maxReceiveCount 5 │
+                  │  Visibility: 1800s (2 × 900s)   │
+                  │  Retention: 4d │ maxReceiveCount 3 │
                   └──────────────┬───────────────────┘
                                  │ event source mapping (batch = 1)
                                  ▼
@@ -157,13 +157,13 @@ The worker **constructs** `diff_url` and `comments_url` from `repo_full_name` + 
 | Attribute | Specification |
 | :--- | :--- |
 | Queue | `pr-reviewer-work`, Standard |
-| Visibility timeout | 5400s = 6 × 900s Lambda timeout (6× invariant; history: DECISIONS 2026-09-19) |
+| Visibility timeout | 1800s = 2 × 900s Lambda timeout (2× invariant at base; Retry-After extensions may exceed — §2.3; was 6× = 5400s spec-002, rebalanced by spec-004; history: DECISIONS 2026-09-19) |
 | Message retention | 4 days |
-| Redrive policy | `maxReceiveCount = 5` → DLQ |
-| Event source mapping | `batch_size = 1` |
+| Redrive policy | `maxReceiveCount = 3` → DLQ |
+| Event source mapping | `batch_size = 1`, `scaling_config.maximum_concurrency = 2` (spec-004) |
 | Redrive allow policy | Source-queue policy explicitly permitting the **operator role** (and the `StartMessageMoveTask` principal) — without this policy the documented redrive path fails, a common implementation foot-gun |
 
-On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibility` rather than relying on the fixed base timeout. Retry ownership: the queue owns retries — the worker raises, visibility expiry redelivers, `maxReceiveCount 5` bounds total attempts; the only in-request retry is the single 401 credential re-fetch (§2.3 item 1).
+On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibility` rather than relying on the fixed base timeout. Retry ownership: the queue owns retries — the worker raises, visibility expiry redelivers, `maxReceiveCount 3` bounds total attempts; the only in-request retry is the single 401 credential re-fetch (§2.3 item 1).
 
 ### 2.3 Worker Lambda — Review Execution Engine
 
@@ -191,20 +191,20 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 | PATCH 404 + list readable + no marker-bearing comment | Comment deleted, none exists | Creation lease → POST → persist ID → re-check |
 | 403/404 on the list/GET itself | Token lost access / repo state changed / permissions | Non-retryable: log, complete, alert |
 | 429 with `Retry-After` or 403 secondary rate limit (per headers/body) | Transient throttling | Raise; adjust visibility per `Retry-After`; queue retries |
-| 5xx | Transitive provider error | Raise; queue retry to maxReceiveCount 5, then DLQ |
+| 5xx | Transitive provider error | Raise; queue retry to maxReceiveCount 3, then DLQ |
 | 401 | Credential expired/rotated | Invalidate cache, re-fetch SSM, retry once; then non-retryable |
 | LLM timeout / 429 / 5xx / structurally invalid output | Provider failure or unusable output | Raise for queue retry — the LLM call is side-effect-free, so queue retry is idempotent (no in-request retry: the 900 s budget would now fit one, but queue redrive remains the single retry path — spec-002); log `status=llm_error` with duration and token usage |
 | LLM request-construction fault — malformed credential/header material rejected at header validation, before the request is sent (e.g. control characters in the API key; deterministic, retry cannot succeed) | Client-side construction failure | Typed `LlmError("invalid_key")`; non-retryable: complete; publish the failure notice immediately per the D2 trigger table (contracts/canonical-comment.md); log `status=llm_error` with `error_class=invalid_key` and duration |
 | Assembled comment fails structural validation (§2.3 item 7) | Invalid output at the publish boundary | Non-retryable: complete and alert — invalid content is never published |
 
-**HTTP timeout policy:** GitHub: a single 10s socket timeout (stdlib urllib cannot express a connect/read split — the historical 2s/10s split is documented intent, never implemented; the unit suite pins the single 10s constant); LLM: connect 2s / read 45s, both constants implemented (llm.py) and re-derived against measured case latency at the §4.2 re-probe. The Lambda timeout (900s, spec-002) is a backstop.
+**HTTP timeout policy:** GitHub: a single 10s socket timeout (stdlib urllib cannot express a connect/read split — the historical 2s/10s split is documented intent, never implemented; the unit suite pins the single 10s constant); LLM: connect 2s / read 240s default (GLM_READ_TIMEOUT_S, env-tunable), constants implemented (llm.py) and re-derived against measured case latency at the §4.2 re-probe. The Lambda timeout (900s, spec-002) is a backstop.
 
 ### 2.4 DynamoDB State Store
 
 | Attribute | Specification |
 | :--- | :--- |
 | Table | `pr-reviewer-state`, partition key `pk` |
-| Billing mode | PROVISIONED (mandatory for Always Free 25 WCU / 25 RCU) |
+| Billing mode | PROVISIONED (Always Free envelope: 25 RCU / 25 WCU total — base table 20/20 + GSI `pr-runs-index` 5/5, spec-004 rebalance) |
 | Item type 1 | `pk = delivery:{guid}` — TTL 7 days |
 | Item type 2 | `pk = review:{repo_full_name}#{pr_number}` — state record (§3.1) |
 
@@ -255,7 +255,7 @@ Single evolving PR conversation comment (Issues Comments API) bearing the canoni
   "head_sha": "bbb...",
   "last_seen_sha": "bbb...",
   "claim_owner": "delivery-guid",
-  "claim_until": "epoch+180s",
+  "claim_until": "epoch+780s",
   "updated_at": "..."
 }
 ```
@@ -266,7 +266,7 @@ Single evolving PR conversation comment (Issues Comments API) bearing the canoni
 
 - **Current accepted revision:** the PR head SHA confirmed against GitHub's **live PR state** (via `GET /repos/{repo}/pulls/{n}`) and committed to the state record. SHAs are not orderable strings; the comparison function is **equality against the live PR head**, never SHA lexicographic or any other synthetic ordering.
 - **States:** `ABSENT → (establish) → CLAIMED → (POST succeeds) → ACTIVE`; next revision: `ACTIVE → (establish, generation + 1) → CLAIMED → ACTIVE`. `STALE` is not a stored state: a `CLAIMED` record with an expired lease is treated as stale and re-claimable (derived, §3.1).
-- **Claim lease: 180s**, decoupled from both the Lambda timeout (900s, spec-002) and queue visibility (5400s): it spans only claim through finalize (§3.3), far shorter than the timeout — crash takeover is covered by lease expiry, not lease length. The lease is held only from claim through finalize (§3.3): review precedes the claim and is side-effect-free, so no lease exists during the LLM stage and no heartbeat is needed. Duplicate concurrent reviews waste bounded LLM spend; fencing prevents duplicate publication.
+- **Claim lease: 780s**, decoupled from both the Lambda timeout (900s, spec-002) and queue visibility (1800s): it spans only claim through finalize (§3.3), shorter than the timeout by deliberate margin — crash takeover is covered by lease expiry, not lease length. The lease is held only from claim through finalize (§3.3): review precedes the claim and is side-effect-free, so no lease exists during the LLM stage and no heartbeat is needed. Duplicate concurrent reviews waste bounded LLM spend; fencing prevents duplicate publication.
 
 ### 3.3 Fenced Publication Protocol (Exact Order)
 
@@ -312,7 +312,7 @@ Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec
 
 ### 4.3 Observability
 
-Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 45s LLM read timeout. Alarms — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary — secondary in the unreserved era: the invocation-spike alarm is the primary flood signal); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop). Eight alarms shipped. Kill switch (restated for the unreserved era): set the worker's reserved concurrency to 0 — valid on an unreserved function; invocations refuse immediately — spend stops and queued work is retained up to the 4-day retention; disable the webhook (or the event source mapping) as well if ingress should stop enqueuing, since an active ingress against a dead worker grows the queue silently to retention expiry.
+Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 240s LLM read timeout. Alarms — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary — secondary in the unreserved era: the invocation-spike alarm is the primary flood signal); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop); worker-contention rate (D9 mutex signal, spec-004). Nine alarms shipped. Kill switch (restated for the unreserved era): set the worker's reserved concurrency to 0 — valid on an unreserved function; invocations refuse immediately — spend stops and queued work is retained up to the 4-day retention; disable the webhook (or the event source mapping) as well if ingress should stop enqueuing, since an active ingress against a dead worker grows the queue silently to retention expiry.
 
 ### 4.4 Testing & Verification Strategy
 
@@ -387,11 +387,11 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 5 | Admission-edge 429 loss | Unreserved: the account concurrency quota (10) is the only bound — a flood can starve the worker (accepted residual: spike alarm + kill switch); 3-day redelivery is recovery |
 | 6 | Out-of-order webhook delivery | Establish gated on live GitHub head (defined comparison); fence after claim |
 | 7 | Read-then-PATCH stale write | Conditional claim/finalize; fence-after-claim ordering |
-| 8 | First-post race | Claim state machine, 180s fixed lease (claim→finalize, no renewal) |
+| 8 | First-post race | Claim state machine, 780s fixed lease (claim→finalize, no renewal) |
 | 9 | Worker death mid-claim | Lease expiry + takeover |
 | 10 | Duplicate comments during recovery | Canonical marker + deterministic reconciliation |
-| 11 | Premature message redelivery | Visibility 5400s; ChangeMessageVisibility for Retry-After |
-| 12 | Transient provider failures | maxReceiveCount 5, then DLQ |
+| 11 | Premature message redelivery | Visibility 1800s; ChangeMessageVisibility for Retry-After |
+| 12 | Transient provider failures | maxReceiveCount 3, then DLQ |
 | 13 | PATCH 404 ambiguity | Explicit decision table (§2.3 item 8) |
 | 14 | DynamoDB throttling | Capacity derivation; worker pool account-quota-bounded (unreserved, 2026-09-15); ≤ 1 KB items |
 | 15 | Oversized envelope | < 1 KB metadata-only |
@@ -412,7 +412,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 ### 7.1 Terraform BOM
 
-`aws_lambda_function` ×2; `aws_lambda_function_url`; `aws_lambda_event_source_mapping` (batch 1); `aws_sqs_queue` ×2 + redrive policy (maxReceiveCount 5) + **redrive allow policy naming the operator role**; `aws_dynamodb_table` (provisioned 25/25); IAM roles ×3 with inline policies; `aws_cloudwatch_log_group` ×2 (7-day retention); 8 `aws_cloudwatch_metric_alarm` (incl. DLQ-depth and worker-invocation-spike) + SNS topic + 2 log metric filters; `archive_file` ×2. **Absent:** API Gateway, VPC, NAT, S3 backend (MVP), SSM parameter resources, Secrets Manager, EventBridge, Lambda async-invoke config.
+`aws_lambda_function` ×2; `aws_lambda_function_url`; `aws_lambda_event_source_mapping` (batch 1, `scaling_config.maximum_concurrency = 2`); `aws_sqs_queue` ×2 + redrive policy (maxReceiveCount 3) + **redrive allow policy naming the operator role**; `aws_dynamodb_table` (provisioned 20/20 + GSI 5/5); IAM roles ×3 with inline policies; `aws_cloudwatch_log_group` ×2 (7-day retention); 9 `aws_cloudwatch_metric_alarm` (incl. DLQ-depth, worker-invocation-spike, and contention-rate) + SNS topic + 2 log metric filters; `archive_file` ×2. **Absent:** API Gateway, VPC, NAT, S3 backend (MVP), SSM parameter resources, Secrets Manager, EventBridge, Lambda async-invoke config.
 
 **Repository layout & packaging:** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **both** deployment zips, and `lambda/ingress_handler.py` / `lambda/worker_handler.py` stay thin entry points. This is a shared contract, not an abstraction — no further layering until a third consumer exists (Rule of Three). Security-sensitive helpers (log redaction, input sanitization) and behaviorally-identical logic (marker construction, envelope validation) are single-implemented here from the first duplication — one implementation is a security requirement, not a style choice. The validator returns a typed envelope (stdlib `dataclass`), and public handlers carry type annotations (stdlib `typing`).
 
@@ -423,9 +423,9 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | Component | Value |
 | :--- | :--- |
 | Ingress reserved concurrency | none (unreserved, 2026-09-15 ruling) |
-| SQS visibility timeout | 5400s |
-| maxReceiveCount | 5 |
-| Claim lease | 180s, fixed (claim→finalize, no renewal), decoupled |
+| SQS visibility timeout | 1800s |
+| maxReceiveCount | 3 |
+| Claim lease | 780s, fixed (claim→finalize, no renewal), decoupled |
 | API version pin | `2026-03-10` (concrete value; `2022-11-28` supported to March 10, 2028) |
 | Fencing comparison | Defined: first-write, idempotent-equality, or live-head confirmation — never SHA ordering |
 | 404 handling | Explicit decision table |
