@@ -15,7 +15,13 @@ multi-agent infrastructure surface:
   checklist 3;
 * all 12 multi-agent env vars present with the T005 defaults, plus the
   naming pin (no bare `MARGIN_S` / `DEGRADED_BUDGET_MARGIN_S`), plus a
-  three-way cross-check against `common.config` defaults — checklist 7.
+  three-way cross-check against `common.config` defaults — checklist 7;
+* viewer role read policy (`aws_iam_role_policy.viewer`): `s3:GetObject`
+  on the archives bucket's `runs/*` + `static/*`, `dynamodb:Query`
+  scoped to the `pr-runs-index` GSI ARN, `ssm:GetParameter` on the
+  replay-token ARN, and NO `kms:Decrypt` anywhere (Mars ruling
+  2026-09-28 — §7's decrypt clause superseded by §2.6 mechanics,
+  DECISIONS) — HLD §7 Viewer IAM.
 
 (Alarm-shape assertions included: the daily LLM-spend alarm threshold
 derives from the budget variable × the 5-call factor — the Mars-set
@@ -34,6 +40,8 @@ STATE_TF = (TERRAFORM_DIR / "state.tf").read_text(encoding="utf-8")
 COMPUTE_TF = (TERRAFORM_DIR / "compute.tf").read_text(encoding="utf-8")
 OBSERVABILITY_TF = (TERRAFORM_DIR / "observability.tf").read_text(encoding="utf-8")
 VARIABLES_TF = (TERRAFORM_DIR / "variables.tf").read_text(encoding="utf-8")
+VIEWER_TF = (TERRAFORM_DIR / "viewer.tf").read_text(encoding="utf-8")
+IAM_TF = (TERRAFORM_DIR / "iam.tf").read_text(encoding="utf-8")
 
 # The 12 HLD §8 checklist-7 vars with the T005 defaults, exactly as they
 # appear in HCL (all quoted — Lambda env is strings, matching the
@@ -359,3 +367,76 @@ def test_contention_term_couples_emission_and_filter():
     pattern = re.search(r'^\s*pattern\s*=\s*"([^"]*)"', filt, re.MULTILINE)
     assert pattern is not None, "filter pattern not found"
     assert "concurrency_single_pass" in pattern.group(1)
+
+
+# --- T052: viewer role read policy (HLD §7 Viewer IAM) -------------------
+#
+# Mars ruling 2026-09-28 (DECISIONS, SPR-140 10419): §7's `kms:Decrypt`
+# clause is superseded by §2.6 mechanics — SecureStrings ride the AWS-
+# managed `aws/ssm` key and SSM decrypts server-side via WithDecryption
+# (iam.tf note #6, applied truth since T035). The absence pin below is
+# the enforcement: the superseded clause cannot silently return.
+
+
+def _viewer_policy_block() -> str:
+    return _resource_block(VIEWER_TF, "aws_iam_role_policy", "viewer")
+
+
+def test_viewer_role_policy_s3_getobject_runs_and_static():
+    """T052: s3:GetObject scoped to the archives bucket's runs/* and
+    static/* prefixes — static shell + archive serving only (HLD §7)."""
+    block = _viewer_policy_block()
+    assert re.search(r"role\s*=\s*aws_iam_role\.viewer\.id", block), (
+        "viewer policy does not attach to the viewer role"
+    )
+    assert '"s3:GetObject"' in block, "no s3:GetObject statement"
+    assert re.search(r"aws_s3_bucket\.archives\.arn\}/runs/\*", block), (
+        "s3:GetObject missing the runs/* prefix"
+    )
+    assert re.search(r"aws_s3_bucket\.archives\.arn\}/static/\*", block), (
+        "s3:GetObject missing the static/* prefix"
+    )
+
+
+def test_viewer_role_policy_dynamodb_query_gsi_only():
+    """T052: dynamodb:Query scoped to the pr-runs-index GSI ARN — the
+    viewer answers latest-run-per-PR queries, never base-table reads
+    (HLD §7)."""
+    block = _viewer_policy_block()
+    assert '"dynamodb:Query"' in block, "no dynamodb:Query statement"
+    assert re.search(r"aws_dynamodb_table\.state\.arn\}/index/pr-runs-index", block), (
+        "dynamodb:Query not scoped to the pr-runs-index GSI"
+    )
+
+
+def test_viewer_role_policy_ssm_token_and_no_kms_decrypt():
+    """T052: ssm:GetParameter on the replay-token ARN (the local map in
+    iam.tf pins the parameter path) and NO kms:Decrypt anywhere in the
+    viewer surface — SecureStrings need no per-key grant (§2.6
+    mechanics; superseded §7 clause must not return)."""
+    block = _viewer_policy_block()
+    assert '"ssm:GetParameter"' in block, "no ssm:GetParameter statement"
+    assert re.search(r"local\.ssm_parameter_arn\.replay_token", block), (
+        "ssm:GetParameter not scoped to the replay-token ARN local"
+    )
+    assert "parameter/pr-reviewer/replay-token" in IAM_TF, (
+        "iam.tf locals map does not pin the replay-token parameter path"
+    )
+    assert "kms:Decrypt" not in block, "superseded kms:Decrypt grant present in policy"
+    viewer_code = re.sub(r"(?m)^\s*(?:#|//).*$", "", VIEWER_TF)
+    assert "kms:Decrypt" not in viewer_code, "kms:Decrypt granted in viewer.tf code"
+
+
+def test_no_kms_actions_anywhere_in_terraform():
+    """Gate 39 F2 hardening: the superseded decrypt clause cannot return
+    via variant spellings or out-of-block grants — case-insensitive
+    `kms:` prefix scan over every .tf file's comment-stripped code.
+    iam.tf note #6 is the standing truth (NO kms grants stack-wide); a
+    future customer-managed-key ruling amends DECISIONS and this pin in
+    the same change."""
+    for tf in sorted(TERRAFORM_DIR.glob("*.tf")):
+        code = re.sub(r"(?m)^\s*(?:#|//).*$", "", tf.read_text(encoding="utf-8"))
+        assert re.search(r"kms:", code, re.IGNORECASE) is None, (
+            f"kms: action present in {tf.name} — KMS grants require a "
+            "Mars ruling amending DECISIONS 2026-09-28 first"
+        )
