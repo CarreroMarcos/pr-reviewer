@@ -52,6 +52,17 @@ resource "aws_lambda_function" "viewer" {
   timeout     = 30
   memory_size = 256
 
+  # Mechanical sequencing guard (bot review #1 on PR #144): the T051b
+  # placeholder must be un-deployable, not merely un-deployed — any
+  # plan/apply hard-fails while the packaged handler is the stub, so
+  # the T056 tag cannot precede T054 by convention alone.
+  lifecycle {
+    precondition {
+      condition     = !strcontains(file("${path.module}/../lambda/viewer_handler.py"), "NotImplementedError")
+      error_message = "viewer_handler.py is still the T051b placeholder — land T054 before any plan/apply."
+    }
+  }
+
   tags = {
     Owner = var.alert_owner
   }

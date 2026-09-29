@@ -26,13 +26,18 @@ def _viewer_tf() -> str:
 
 
 def _resource_block(source: str, kind: str, name: str) -> str:
+    # Terminator is a column-0 closing brace (MULTILINE ^}) — the fmt-
+    # guaranteed block boundary. The no-bleed assert catches a lazy match
+    # spanning into the next resource (bot review #1 on PR #144).
     m = re.search(
-        rf'resource "{re.escape(kind)}" "{re.escape(name)}" \{{(.*?)\n}}',
+        rf'resource "{re.escape(kind)}" "{re.escape(name)}" \{{(.*?)^}}',
         source,
-        re.DOTALL,
+        re.DOTALL | re.MULTILINE,
     )
     assert m is not None, f"{kind}.{name} not found"
-    return m.group(1)
+    block = m.group(1)
+    assert "resource " not in block, f"{kind}.{name} block bled into the next resource"
+    return block
 
 
 def test_viewer_lambda_exists():
@@ -74,3 +79,16 @@ def test_viewer_invoked_via_function_url_permission():
     assert re.search(r'action\s*=\s*"lambda:InvokeFunction"', block)
     assert re.search(r'principal\s*=\s*"\*"', block)
     assert re.search(r"invoked_via_function_url\s*=\s*true", block)
+
+
+def test_viewer_deploy_blocked_until_t054_handler():
+    """T051b guard (bot review #1, PR #144): the placeholder must be
+    mechanically un-deployable — the Lambda's plan-time precondition
+    hard-fails any plan/apply while the packaged handler is the stub,
+    so the T056 deploy tag cannot precede T054 by convention alone."""
+    block = _resource_block(_viewer_tf(), "aws_lambda_function", "viewer")
+    assert "precondition" in block, "no stub-deploy precondition on the viewer Lambda"
+    assert re.search(r"strcontains\(\s*file\(", block), (
+        "precondition does not inspect the packaged handler source"
+    )
+    assert "NotImplementedError" in block, "precondition does not gate on the placeholder marker"
