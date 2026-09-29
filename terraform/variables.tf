@@ -74,3 +74,11 @@ variable "operator_principal_arn" {
   type        = string
   default     = ""
 }
+
+variable "contention_rate_threshold" {
+  description = "Mutex-contention (concurrency_single_pass) log lines per 5 min above which the contention-rate alarm fires (HLD D9 operability item)."
+  type        = number
+  # Provisional implementer default (Mars approved the T048a/b scope
+  # 2026-09-28); tune from Phase-1 telemetry.
+  default = 10
+}

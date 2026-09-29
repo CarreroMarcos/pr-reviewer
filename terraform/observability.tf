@@ -80,6 +80,22 @@ resource "aws_cloudwatch_log_metric_filter" "worker_token_usage" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "worker_contention" {
+  name           = "pr-reviewer-worker-contention"
+  log_group_name = aws_cloudwatch_log_group.worker.name
+  # The contender logs the bare term at the contention path (T048b, Mars
+  # 2026-09-28) — the envelope event itself never reaches logs (fixed-field
+  # vocabulary). A bare-term pattern keeps the signal independent of the
+  # log formatter's field shapes.
+  pattern = "concurrency_single_pass"
+
+  metric_transformation {
+    name      = "ContentionCount"
+    namespace = "pr-reviewer/worker"
+    value     = "1"
+  }
+}
+
 # 1. DLQ depth > 0 — the primary failure signal (HLD §4.3).
 
 resource "aws_cloudwatch_metric_alarm" "dlq_depth" {
@@ -331,6 +347,39 @@ resource "aws_cloudwatch_metric_alarm" "worker_invocation_spike" {
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    Owner = var.alert_owner
+  }
+}
+
+# 9. Mutex contention rate (HLD D9; T048a/b, Mars 2026-09-28): contenders
+# run single-pass inline rather than queueing, so sustained contention is
+# the queue-pressure signal that Phase-1 contender-queuing (T049,
+# conditional) would relieve. Operability item, not a correctness gate.
+
+resource "aws_cloudwatch_metric_alarm" "contention_rate" {
+  alarm_name          = "pr-reviewer-contention-rate"
+  alarm_description   = "Mutex contention (concurrency_single_pass) above 10/5 min — sustained queue pressure; consider Phase-1 contender-queuing (HLD D9). Owner: ${var.alert_owner}."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = aws_cloudwatch_log_metric_filter.worker_contention.metric_transformation[0].name
+  namespace           = "pr-reviewer/worker"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = var.contention_rate_threshold
+  # notBreaching + a bare-term filter means a worker logging outage also
+  # silences this alarm (blind spot, bot review #1 on PR #142); the DLQ
+  # (#1) and invocation-spike (#8) alarms cover the outage path.
+  # evaluation_periods = 1 is deliberate at Phase 0 (bot review #2): a
+  # single 5-min window over threshold is page-worthy; recalibrate from
+  # Phase-1 telemetry alongside the threshold default.
+  treat_missing_data = "notBreaching"
+
+  # No ok_actions: an operability-only signal with evaluation_periods = 1
+  # flaps, and recovery notices would be noise (divergence from the T055
+  # convention is intentional here).
+  alarm_actions = [aws_sns_topic.alerts.arn]
 
   tags = {
     Owner = var.alert_owner
