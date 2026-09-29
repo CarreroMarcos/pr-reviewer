@@ -117,7 +117,7 @@ Verdicts: **APPROVE** → squash-merge on green CI, comment `Oracle: APPROVE. Me
 ### Deploys & IAM
 
 - **`tf-*` tags are the apply trigger (Mars, 2026-09-19/26/27):** push a `tf-*` tag only with Mars's explicit yes (ask at ≥90% confidence). Tag exactly one commit, push that tag only — the push starts the HCP run and the apply is automatic. Bundle deploy-coupled PRs (e.g. packaging + the env/grant that arms it) into one tag ask so a single apply ships them together.
-- **Keep `operator_principal_arn` set in the HCP workspace VARIABLE (Mars, 2026-09-26):** it is the single source of truth. Empty ⇒ terraform tries to rewrite the operator trust policy and dies on 403 (the apply role deliberately lacks `iam:UpdateAssumeRolePolicy`). Watch for a trailing space when pasting — invisible whitespace yields a phantom trust-policy diff and the same 403.
+- **Keep `operator_principal_arn` set in the HCP workspace VARIABLE (Mars, 2026-09-26):** it is the single source of truth; verify against the live workspace VARIABLE, never a doc example. Empty ⇒ terraform tries to rewrite the operator trust policy and dies on 403 (the apply role deliberately lacks `iam:UpdateAssumeRolePolicy`). Watch for a trailing space when pasting — invisible whitespace yields a phantom trust-policy diff and the same 403.
 - **Out-of-band IAM grants are temporary parity (2026-09-27):** land the durable fix (ticket + PR + tag) and a contract pin before the next apply reconciles the grant away.
 - **New AWS resource type ⇒ grant the full read battery on `pr-reviewer-hcp-plan` up front (2026-09-27):** Terraform reveals denials one graph-wave at a time; surgical grants took 3 runs to converge (16 S3 reads).
 - **Treat the IAM API's silence as unverified (2026-09-27):** `put-role-policy` stores misspelled action strings (`s3:GetBucketEncryption`) that 403 at runtime — use the policy-gen dataset's verified action names, not the API, as the check.
@@ -130,7 +130,7 @@ Verdicts: **APPROVE** → squash-merge on green CI, comment `Oracle: APPROVE. Me
 
 ### Jira hygiene
 
-- **Namespace non-001 spec ids (`004-T001`); 001 keeps bare ids (2026-09-27):** the sync's idempotency key matches `Spec Task ID` by JQL `~`, so a bare-id run for a second spec overwrites the first spec's tickets in place. Run 001 re-syncs before namespaced tickets exist.
+- **Namespace non-001 spec ids (`004-T001`); 001 keeps bare ids (2026-09-27):** the sync's idempotency key matches `Spec Task ID` by JQL `~`, so a bare-id run for a second spec overwrites the first spec's tickets in place. Run 001 re-syncs before namespaced tickets exist; a double-hit 001 re-sync exits safely rather than corrupting.
 - **Read the live ticket summary before every comment/transition (2026-09-26):** stale key↔T-id maps misroute Jira writes; the JQL is the identity source.
 
 ### Living document (Mars, 2026-09-20)
