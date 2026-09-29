@@ -191,6 +191,10 @@ Never merge without Oracle APPROVE + green CI. Done is set only through the gate
   is terminal). Fields passed as logger `extra` are dropped by the log
   formatter — `error_class` may not appear in any line at all; pull the
   raw window and read the emitting code (2026-09-27).
+- **Ticket branches cut from main only (orchestrator, 2026-09-28):** cut every SPR ticket
+  branch from `origin/main`, never from a branch carrying other PR content (spec branches
+  included) — a spec-carrier commit rode a ticket branch and hitched onto its PR (Gate-38,
+  PR #144; rebased out). Verify with `git log origin/main..HEAD` before any push.
 - **Clean shell after cred export (2026-09-20):** exported AWS session creds
   (`aws configure export-credentials`) make 8 fake-AWS integration tests
   error — run `capture.py`/terraform and full pytest in separate shells.
