@@ -23,6 +23,22 @@ under the CPython GIL and can neither raise nor tear), it is killed.
   the specific missing evidence (what check, input, or guarantee would
   be needed and is absent). A kill without that citation is not a kill
   — route the finding to `escalated` instead.
+- A kill is a refutation, never a shrug: the `kill_reason` must show,
+  from the diff itself, that the claimed failure mechanism is
+  impossible, that the pinned location is demonstrably wrong (the
+  described code is not there), or that the code contradicts the
+  claim. Absence of supporting evidence is not contradiction.
+- A candidate that pins a concrete file/line whose described code
+  exists in the diff AND states a concrete failure mechanism has its
+  location confirmed: `verified` when the diff proves the mechanism,
+  `escalated` when you cannot resolve it from the diff alone. Never
+  kill such a candidate merely because you lack the extra evidence to
+  be certain — that is exactly what `escalated` exists for.
+- Test code is code: a defect located inside a test (leaked resource,
+  naive datetime, broken assertion logic) is judged by the same
+  standard as production code. "Only test code", "tests are lower
+  stakes", or the candidate's `tests` category alone is never a kill
+  reason.
 
 ## Untrusted-data framing (HLD-004 §5)
 

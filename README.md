@@ -1,113 +1,100 @@
-# Autonomous Serverless PR Reviewer
+# PR Reviewer
 
-An event-driven, fully serverless GitHub bot that automatically reviews Pull Requests using an AI language model—without running persistent servers and without cluttering PR conversations.
-
----
-
-## 🎯 Project Objective
-
-When developers submit pull requests, waiting for initial code reviews can slow down development velocity. While AI-assisted code review bots exist, most create a frustrating developer experience:
-- They spam the pull request with multiple disjointed comments every time a new commit is pushed.
-- They run on costly 24/7 servers that require ongoing infrastructure maintenance.
-- They can post out-of-order reviews if multiple commits are pushed quickly, causing stale reviews to overwrite newer code feedback.
-
-**The goal of this project is to build an intelligent, zero-maintenance, and cost-effective PR reviewer that behaves like a thoughtful human reviewer.**
-
-### The Core Invariant: One Canonical Comment
-Instead of creating new comment threads for every commit push, the reviewer maintains **exactly one evolving comment per Pull Request**.
-- When a PR is opened, the reviewer posts a structured review.
-- When new commits are pushed, the reviewer updates that same comment in place to reflect the latest revision.
-- If back-to-back commits are pushed or webhook deliveries arrive out of order, built-in **revision fencing** guarantees that older reviews will never overwrite newer ones.
-- If a pull request is still a draft, the reviewer stays quiet until it is marked "Ready for review".
+A small serverless bot that reviews your pull requests for you. No servers to run. No comment spam. Just one helpful review that stays up to date.
 
 ---
 
-## 🏗️ How It Works (In Plain English)
+## Why this exists
 
-The entire system is deployed on AWS using serverless primitives:
+Waiting on a first review slows everything down. Most review bots don't help much. They post a new comment on every push. They need servers that cost money and need care. And when pushes come fast, an old review can overwrite a new one.
+
+This bot aims to act like a thoughtful teammate: quick, quiet, and never out of date.
+
+### One comment per PR
+
+Each pull request gets exactly one review comment. That's the rule.
+
+- Open a PR, and the bot posts a review.
+- Push new commits, and the bot updates that same comment.
+- If webhooks arrive late or out of order, the bot drops the stale one. Newer code always wins. We call this revision fencing.
+- Draft PRs are left alone until you mark them ready.
+
+---
+
+## How it works
+
+Everything runs on AWS, and only when there's work to do. Nothing idles in the background.
 
 ```text
-[ GitHub PR Opened / Updated ]
-             │
-             ▼ (Webhook with HMAC signature)
+[ PR opened / updated on GitHub ]
+              │
+              ▼  webhook (checked with a shared secret)
 ┌─────────────────────────┐
-│     Ingress Lambda      │  ──▶ Responds HTTP 202 to GitHub in < 250ms
+│     Ingress Lambda      │  ── replies to GitHub within a few hundred milliseconds
 └────────────┬────────────┘
-             │ (Pushes event to queue)
-             ▼
+              │  job goes to queue
+              ▼
 ┌─────────────────────────┐
-│     SQS Work Queue      │  ──▶ Durably buffers incoming review requests
+│     SQS Work Queue      │  ── holds jobs safely during spikes
 └────────────┬────────────┘
-             │
-             ▼
+              ▼
 ┌─────────────────────────┐
-│      Worker Lambda      │  ──▶ 1. Fetches the PR code diff from GitHub
-└────────────┬────────────┘      2. Prompts the LLM (GLM-5.3-Flash) for review
-             │                   3. Verifies revision currency against DynamoDB
-             │                   4. Creates or updates the single PR comment
-             ▼
+│      Worker Lambda      │  ── 1. grabs the code diff
+└────────────┬────────────┘     2. asks the AI model (currently GLM-5.3-Flash — see `prompts/`)
+              │                  3. checks it has the newest commit
+              │                  4. creates or updates the one comment
+              ▼
 ┌─────────────────────────┐
-│  GitHub Canonical PR    │  ──▶ Clean, up-to-date review visible on the PR
-│        Comment          │
+│   The one PR comment    │  ── always matches the latest code
 └─────────────────────────┘
 ```
 
-1. **Fast Webhook Ingress (`Ingress Lambda`)**: GitHub webhooks require a response within a few seconds. The ingress function validates the webhook signature, checks for duplicate events, safely ignores drafts or non-PR events, places the job onto a durable queue, and immediately responds to GitHub in milliseconds.
-2. **Durable Buffer (`Amazon SQS`)**: Incoming reviews sit safely in an SQS queue. If review requests spike, they are processed reliably without dropping events or exceeding LLM rate limits.
-3. **Smart Review Processing (`Worker Lambda`)**: The worker retrieves the PR diff and runs the review: a fast single-pass review by the language model, with an experimental multi-agent stage — specialist reviewers for correctness, security, and tests, plus a verifier and a synthesizer — running alongside in shadow mode (recorded for comparison, not yet posted). Every review is archived to S3.
-4. **State & Concurrency Control (`Amazon DynamoDB`)**: Tracks event delivery GUIDs, active review leases, and current commit SHAs to guarantee that race conditions and network delays never corrupt the review state.
+1. **Ingress (the greeter).** Checks the webhook is really from GitHub. Skips drafts and repeats. Puts the job on a queue. Replies within a few hundred milliseconds.
+2. **Queue (the waiting room).** A durable SQS queue holds each job. Busy hour? Jobs wait their turn. Nothing gets lost.
+3. **Worker (the reviewer).** Reads the diff. Runs a fast single-pass AI review. Alongside it, an experimental panel — specialists in correctness, security, and tests, plus a checker and a writer — drafts a second opinion in shadow mode. That second opinion is saved for study but not posted yet. Every review is saved to S3, and a small token-gated viewer can serve any archived review back to you.
+4. **Memory (DynamoDB).** Tracks each delivery, each commit, and who holds the review lock. This is what makes stale updates safe to drop.
 
 ---
 
-## ✨ Key Features
+## What you get
 
-- **No Conversation Spam**: Only one review comment per PR, updated seamlessly over time.
-- **Multi-Agent Review Stage (experimental)**: A panel of specialist reviewers (correctness, security, tests), a verifier, and a synthesizer runs alongside the single-pass review in shadow mode as we tune it.
-- **Audit Trail**: Every review is archived to S3 (90-day retention), so any verdict can be replayed and inspected later.
-- **Race-Condition & Stale-Write Protection**: Webhooks arriving late or out-of-order are safely discarded if a newer commit has already been processed.
-- **$0 Baseline Infrastructure Cost**: Runs completely within AWS Always Free / Free Tier allowances (AWS Lambda, Amazon SQS, Amazon DynamoDB, Amazon S3, and AWS Systems Manager Parameter Store).
-- **Security-First Design**:
-  - Webhooks are cryptographically authenticated via HMAC-SHA256.
-  - Secrets (GitHub tokens, LLM API keys) are stored in SSM Parameter Store as `SecureString`—never hardcoded or committed to version control.
-  - Least-privilege IAM execution roles for ingress and worker functions.
-  - No untrusted tool execution: the model acts as a pure reviewer and cannot run arbitrary code or alter cloud infrastructure.
-- **Lean Runtime**: Written strictly in Python 3.12 using the Python standard library and `boto3` (no heavy third-party framework dependencies).
-- **Fully Automated Infrastructure**: Defined and deployed entirely through Terraform.
+- **One tidy comment.** No threads piling up on every push.
+- **Two reviews, one posted.** The quick review goes live today. The multi-agent panel runs beside it in shadow mode while we tune it.
+- **Full history in S3, replay built in.** Every review — input and result — is archived for 90 days, and a token-gated viewer replays any of them in the browser (the code is in main, `876e991`; it ships with the next deploy).
+- **Safe under pressure.** Late or duplicate webhooks are thrown away, never posted over fresh work.
+- **Nearly free to run.** It fits inside the AWS free tier today. Lambda, queue, database, storage, and secret store all included.
+- **Careful with secrets.** GitHub checks use HMAC signatures. Tokens live in SSM as locked secrets, never in code. Each function only gets the access it needs. The AI only reads code — it can't run anything or touch your cloud.
+- **Small and boring (on purpose).** Python 3.12, standard library plus boto3. Nothing else at runtime. All infrastructure is Terraform.
 
 ---
 
-## 📁 Repository Structure
+## Repo layout
 
-- [`lambda/`](lambda/): Python Lambda source code (`ingress_handler.py`, `worker_handler.py`, and shared modules in `lambda/common/`).
-- [`terraform/`](terraform/): Infrastructure as Code defining AWS Lambda, SQS, DynamoDB, S3, IAM roles, and SSM parameter references.
-- [`specs/`](specs/): Formal specs, data models, contracts, and task breakdowns (`001-pr-reviewer`: the base reviewer; `004-multi-agent-review`: the multi-agent review stage).
-- [`docs/`](docs/): High-level architectural design (`HLD.md`), runbooks, and process documentation.
-- [`prompts/`](prompts/): System and user prompt templates used for AI code review generation.
-- [`tests/`](tests/): Unit tests, contract tests, state machine tests, and model evaluation suites.
+- [`lambda/`](lambda/) — the code: `ingress_handler.py`, `worker_handler.py`, shared helpers in `lambda/common/`.
+- [`terraform/`](terraform/) — all AWS setup as code: Lambdas, queue, database, storage, roles.
+- [`specs/`](specs/) — what the bot should do: `001-pr-reviewer` (the base bot), `004-multi-agent-review` (the panel).
+- [`docs/`](docs/) — design docs (start with `HLD.md`), runbooks, team process.
+- [`prompts/`](prompts/) — the instructions we give the AI reviewer.
+- [`tests/`](tests/) — unit, state-machine, contract, model-eval, and integration tests.
 
 ---
 
-## 🚀 Development & Testing
+## Run it locally
 
-This project uses [`uv`](https://docs.astral.sh/uv/) for Python package and environment management.
-
-### Common Commands
+Uses [`uv`](https://docs.astral.sh/uv/) for Python setup. Commit hooks (`pre-commit run --all-files`) run the same checks CI does.
 
 ```bash
-# Sync dependencies
+# Install everything
 uv sync --frozen --group dev
 
-# Run test suite
+# Run the tests
 uv run --frozen pytest -q --tb=short
 
-# Code quality & formatting
+# Check style
 uv run --frozen ruff check .
 uv run --frozen ruff format --check .
 
-# Pre-commit checks
-pre-commit run --all-files
-
-# Validate Terraform infrastructure (no live AWS apply needed)
+# Check infra without touching AWS
 terraform -chdir=terraform init -backend=false
 terraform -chdir=terraform fmt -check
 terraform -chdir=terraform validate
