@@ -21,6 +21,8 @@ mirrors them:
 import re
 from pathlib import Path
 
+from common.mutex import MUTEX_LEASE_TTL_S
+
 TERRAFORM_DIR = Path(__file__).resolve().parent.parent.parent / "terraform"
 MESSAGING_TF = (TERRAFORM_DIR / "messaging.tf").read_text(encoding="utf-8")
 COMPUTE_TF = (TERRAFORM_DIR / "compute.tf").read_text(encoding="utf-8")
@@ -93,3 +95,13 @@ def test_visibility_covers_worker_timeout_no_duplicate_processing():
     visibility = _int_assignment(MESSAGING_TF, "visibility_timeout_seconds")
     assert visibility >= worker_timeout
     assert visibility == 2 * worker_timeout
+
+
+def test_mutex_lease_ttl_matches_worker_timeout_three_way():
+    """T063 (D9 lease TTL pin, Gate-15): the mutex lease constant, the
+    worker-timeout constant, and the parsed compute.tf worker timeout
+    are one value — the mutex module and the terraform contract pin it
+    separately, so without this link either side can drift silently
+    while the other stays green."""
+    assert MUTEX_LEASE_TTL_S == EXPECTED_WORKER_TIMEOUT
+    assert MUTEX_LEASE_TTL_S == _worker_lambda_timeout()
