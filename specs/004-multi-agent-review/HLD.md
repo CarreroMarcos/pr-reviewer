@@ -700,8 +700,12 @@ never silently forwarded into the synthesizer prompt.
   files are data, not rendered markup, and every consumer (the replay UI today, any future consumer)
   MUST treat them as adversarial input and apply §5 sanitization before any render path.
 - **Viewer Lambda IAM:**
-  - `ssm:GetParameter` on token parameter ARN, plus `kms:Decrypt` on the parameter's KMS key ARN
-    (SecureString reads fail without it — missing this makes the viewer 500 on every authed route).
+  - `ssm:GetParameter` on the replay token parameter ARN
+    (`…:parameter/pr-reviewer/replay-token` — the plain SecureString the T056 runbook provisions).
+    **No `kms:Decrypt`**: SecureStrings use the AWS-managed `aws/ssm` key and SSM decrypts
+    server-side via WithDecryption (§2.6 mechanics; iam.tf note #6, applied truth since T035).
+    The earlier `kms:Decrypt` requirement is superseded (Mars ruling 2026-09-28, DECISIONS) —
+    with a plain SecureString and no `--key-id`, the missing-decrypt 500 mode cannot trigger.
   - `s3:GetObject` on `["${bucket.arn}/runs/*", "${bucket.arn}/static/*"]` (permits serving static assets and archives).
   - `dynamodb:Query` on `"${table.arn}/index/pr-runs-index"`.
 - **DynamoDB State Store & GSI Capacity Rebalancing (Mars Ruling 2026-09-26):**
@@ -774,7 +778,8 @@ beyond `review_started` / `checkpoint` / `review_published`.
    - Function URL `authorization_type = "NONE"`.
    - Add permission statement `lambda:InvokeFunction` with condition `lambda:InvokedViaFunctionUrl = true`.
    - Viewer IAM role: `s3:GetObject` on `runs/*` and `static/*`; `dynamodb:Query` on GSI ARN;
-     `ssm:GetParameter` on token ARN plus `kms:Decrypt` on the parameter's KMS key ARN (§7).
+     `ssm:GetParameter` on the replay-token ARN — **no `kms:Decrypt`** (§2.6 mechanics; the
+     decrypt clause is superseded, Mars ruling 2026-09-28, §7 + DECISIONS).
 7. **Environment Variables (12):**
    - `MULTI_AGENT` (0/1), `MULTI_AGENT_PHASE0` (0/1), `FANOUT_CONCURRENCY` (default 3),
    - `MUTEX_LEASE_TTL_S` (default 900 — see the lease TTL pin under §Concurrency Resolution),
