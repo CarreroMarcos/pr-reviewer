@@ -80,6 +80,22 @@ resource "aws_cloudwatch_log_metric_filter" "worker_token_usage" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "worker_contention" {
+  name           = "pr-reviewer-worker-contention"
+  log_group_name = aws_cloudwatch_log_group.worker.name
+  # The contender logs the bare term at the contention path (T048b, Mars
+  # 2026-09-28) — the envelope event itself never reaches logs (fixed-field
+  # vocabulary). A bare-term pattern keeps the signal independent of the
+  # log formatter's field shapes.
+  pattern = "concurrency_single_pass"
+
+  metric_transformation {
+    name      = "ContentionCount"
+    namespace = "pr-reviewer/worker"
+    value     = "1"
+  }
+}
+
 # 1. DLQ depth > 0 — the primary failure signal (HLD §4.3).
 
 resource "aws_cloudwatch_metric_alarm" "dlq_depth" {
@@ -327,6 +343,31 @@ resource "aws_cloudwatch_metric_alarm" "worker_invocation_spike" {
   evaluation_periods  = 1
   threshold           = 10
   comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    Owner = var.alert_owner
+  }
+}
+
+# 9. Mutex contention rate (HLD D9; T048a/b, Mars 2026-09-28): contenders
+# run single-pass inline rather than queueing, so sustained contention is
+# the queue-pressure signal that Phase-1 contender-queuing (T049,
+# conditional) would relieve. Operability item, not a correctness gate.
+
+resource "aws_cloudwatch_metric_alarm" "contention_rate" {
+  alarm_name          = "pr-reviewer-contention-rate"
+  alarm_description   = "Mutex contention (concurrency_single_pass) above 10/5 min — sustained queue pressure; consider Phase-1 contender-queuing (HLD D9). Owner: ${var.alert_owner}."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = aws_cloudwatch_log_metric_filter.worker_contention.metric_transformation[0].name
+  namespace           = "pr-reviewer/worker"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = var.contention_rate_threshold
   treat_missing_data  = "notBreaching"
 
   alarm_actions = [aws_sns_topic.alerts.arn]

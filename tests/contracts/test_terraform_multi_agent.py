@@ -284,3 +284,61 @@ def test_spend_alarm_threshold():
     assert float(default.group(1)) == 1.0, (
         f"budget drifted from the Mars-set $1: {default.group(1)!r}"
     )
+
+
+# --- contention-rate alarm (HLD D9 lease TTL pin; T048a/b, Mars 2026-09-28) ---
+
+
+def test_contention_metric_filter():
+    """T048a: the worker log group carries a metric filter counting
+    `concurrency_single_pass` emissions. The envelope event never reaches
+    logs (fixed-field vocabulary), so the worker logs the bare term at the
+    contender path (Mars ruling 2026-09-28) and the filter counts those
+    lines — the pattern must name exactly that term."""
+    filt = _resource_block(
+        OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "worker_contention"
+    )
+    assert "log_group_name = aws_cloudwatch_log_group.worker.name" in filt
+    pattern = re.search(r'^\s*pattern\s*=\s*"([^"]*)"', filt, re.MULTILINE)
+    assert pattern is not None, "filter pattern not found"
+    assert "concurrency_single_pass" in pattern.group(1), (
+        f"filter pattern does not count the contention term: {pattern.group(1)!r}"
+    )
+    m = re.search(r"metric_transformation\s*\{([^}]*)\}", filt)
+    assert m is not None, "metric_transformation block not found"
+    body = m.group(1)
+    assert re.search(r'name\s*=\s*"ContentionCount"', body)
+    assert re.search(r'namespace\s*=\s*"pr-reviewer/worker"', body)
+    assert re.search(r'value\s*=\s*"1"', body)
+
+
+def test_contention_rate_alarm():
+    """T048a: the contention-rate alarm exists, measures the filter's
+    metric, wires the shared SNS topic, and stays silent on quiet logs
+    (HLD D9: operability signal, not a correctness gate)."""
+    alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "contention_rate")
+    assert re.search(
+        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.worker_contention"
+        r"\.metric_transformation\[0\]\.name",
+        alarm,
+    ), "alarm does not measure the worker_contention filter metric"
+    assert re.search(r'namespace\s*=\s*"pr-reviewer/worker"', alarm)
+    assert re.search(r'statistic\s*=\s*"Sum"', alarm)
+    assert re.search(r'comparison_operator\s*=\s*"GreaterThanThreshold"', alarm)
+    assert re.search(r'treat_missing_data\s*=\s*"notBreaching"', alarm)
+    assert "aws_sns_topic.alerts.arn" in alarm, "alarm not wired to the shared SNS topic"
+    th = re.search(r"^\s*threshold\s*=\s*(.+?)\s*(?:#.*)?$", alarm, re.MULTILINE)
+    assert th is not None, "contention_rate threshold not found"
+    assert th.group(1).strip() == "var.contention_rate_threshold", (
+        f"threshold not the tunable variable: {th.group(1)!r}"
+    )
+
+
+def test_contention_rate_threshold_default():
+    """T048a: the threshold default is a numeric literal pinned at 10
+    sustained contention hits / 5 min — provisional implementer default
+    (Mars approved the scope 2026-09-28; tune from Phase-1 telemetry)."""
+    var_block = _resource_block(VARIABLES_TF, "contention_rate_threshold", "", kind="variable")
+    default = re.search(r"^\s*default\s*=\s*(\d+)\s*$", var_block, re.MULTILINE)
+    assert default is not None, "threshold default is not a numeric literal"
+    assert int(default.group(1)) == 10, f"threshold default drifted: {default.group(1)!r}"

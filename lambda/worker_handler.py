@@ -954,6 +954,10 @@ def _make_review(
         """
         clamped = _contender_read_timeout_s(_safe_remaining_ms(), ma_cfg)
         elapsed_ms = max(0, int((now() - t_acquired) * 1000)) if t_acquired is not None else 0
+        # Metric-filter signal (T048b, Mars 2026-09-28): the envelope event
+        # never reaches logs, so the bare term is logged for the
+        # worker_contention filter to count (covers both contention outcomes).
+        logger.info("concurrency_single_pass")
         if clamped is None:
             evts.append(
                 concurrency_single_pass(
