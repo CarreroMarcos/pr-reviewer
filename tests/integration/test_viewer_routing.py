@@ -255,11 +255,71 @@ def test_ssm_literal_matches_iam_replay_token_grant():
     )
     m = re.search(r'TOKEN_PARAMETER_NAME\s*=\s*"([^"]+)"', handler_src)
     assert m is not None, "viewer_handler TOKEN_PARAMETER_NAME literal not found"
-    iam_src = (Path(__file__).resolve().parents[2] / "terraform" / "iam.tf").read_text(
+    iam_src = (Path(__file__).resolve().parents[2] / "terraform" / "viewer.tf").read_text(
         encoding="utf-8"
     )
     arn_path = f"parameter/{m.group(1).lstrip('/')}"
-    assert arn_path in iam_src, (
-        f"iam.tf does not grant {arn_path} — handler/iam drift would 500 "
-        "every authed route at runtime (Gate-39 F4)"
+    # Full coupling chain (bot F6, PR #149): the handler literal must
+    # match the iam.tf LOCAL's value, and viewer.tf's policy must grant
+    # that local — a stray mention in a comment or another role's grant
+    # satisfies nothing.
+    iam_tf = (Path(__file__).resolve().parents[2] / "terraform" / "iam.tf").read_text(
+        encoding="utf-8"
     )
+    local_def = re.search(r'replay_token\s*=\s*"([^"]*:parameter/[^"]+)"', iam_tf)
+    assert local_def is not None, "iam.tf ssm_parameter_arn.replay_token local not found"
+    assert local_def.group(1).endswith(arn_path), (
+        f"iam.tf local {local_def.group(1)!r} does not end with the handler "
+        f"path {arn_path!r} — drift would 500 every authed route (Gate-39 F4)"
+    )
+    policy = re.search(r'resource "aws_iam_role_policy" "viewer" \{(.*?)\n\}', iam_src, re.DOTALL)
+    assert policy is not None, "aws_iam_role_policy.viewer not found in viewer.tf"
+    assert "local.ssm_parameter_arn.replay_token" in policy.group(1), (
+        "viewer.tf policy does not grant local.ssm_parameter_arn.replay_token "
+        "— handler/iam drift would 500 every authed route (Gate-39 F4)"
+    )
+
+
+def test_api_latest_stale_row_without_run_id_never_500s(aws):
+    """Bot F1 (PR #149): DynamoDB reprojects a GSI item only on rewrite,
+    so rows predating the run_id projection (spec #148) lack it in the
+    index until next write. The endpoint degrades to a key subset —
+    never a KeyError 500."""
+    boto3.client("dynamodb", region_name=REGION).put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "run#legacy"},
+            "pr_number": {"N": "789"},
+            "started_ts": {"S": "2026-09-26T12:00:00Z"},
+            "sha": {"S": "e" * 40},
+            "status": {"S": "SUCCEEDED"},
+            "pipeline": {"S": "single_pass"},
+        },  # no run_id, no archive_s3_key — pre-projection row shape
+    )
+    r = _call("/api/runs/789/latest", token=TOKEN)
+    assert r["statusCode"] == 200
+    body = json.loads(r["body"])
+    assert "run_id" not in body
+    assert body["sha"] == "e" * 40
+
+
+def test_bearer_scheme_case_insensitive(aws):
+    """Bot F5 (PR #149): RFC 7235 — the auth scheme is case-insensitive."""
+    headers_event = _event(f"/api/runs/{PR}/latest")
+    headers_event["headers"]["authorization"] = f"bearer {TOKEN}"
+    r = viewer_handler.handler(headers_event, None)
+    assert r["statusCode"] == 200
+
+
+def test_internal_error_boundary_returns_controlled_500(aws, monkeypatch):
+    """Bot F4 (PR #149): an internal failure (SSM outage, IAM misconfig)
+    surfaces as a controlled JSON 500 — never an opaque stack or a
+    provider error body."""
+
+    def boom():
+        raise RuntimeError("simulated provider outage")
+
+    monkeypatch.setattr(viewer_handler, "_expected_token", boom)
+    r = _call(f"/api/runs/{PR}/latest", token=TOKEN)
+    assert r["statusCode"] == 500
+    assert json.loads(r["body"]) == {"message": "internal error"}

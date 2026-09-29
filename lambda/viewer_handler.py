@@ -61,6 +61,7 @@ _CONTENT_TYPES = {
 }
 
 _clients: dict[str, object] = {}
+_table = None
 
 
 def _client(name: str):
@@ -69,6 +70,14 @@ def _client(name: str):
     if name not in _clients:
         _clients[name] = boto3.client(name)
     return _clients[name]
+
+
+def _state_table():
+    """Cached DynamoDB table resource (bot F3, PR #149)."""
+    global _table
+    if _table is None:
+        _table = boto3.resource("dynamodb").Table(STATE_TABLE)
+    return _table
 
 
 def _response(status: int, body: str, content_type: str) -> dict:
@@ -94,16 +103,19 @@ def _expected_token() -> str:
 
 
 def _authorized(headers: dict) -> bool:
-    """Bearer check: scheme prefix, then constant-time token compare."""
+    """Bearer check: scheme prefix (case-insensitive per RFC 7235 — bot
+    F5), then constant-time token compare."""
     raw = None
     for key, value in headers.items():
         if key.lower() == "authorization":
             raw = value
             break
-    if not raw or not raw.startswith("Bearer "):
+    if not raw:
         return False
-    provided = raw[len("Bearer ") :]
-    return hmac.compare_digest(provided, _expected_token())
+    parts = raw.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return False
+    return hmac.compare_digest(parts[1], _expected_token())
 
 
 def _serve_s3(key: str) -> dict:
@@ -117,8 +129,7 @@ def _serve_s3(key: str) -> dict:
 
 
 def _serve_latest(pr: int) -> dict:
-    table = boto3.resource("dynamodb").Table(STATE_TABLE)
-    result = table.query(
+    result = _state_table().query(
         IndexName="pr-runs-index",
         KeyConditionExpression=boto3.dynamodb.conditions.Key("pr_number").eq(pr),
         ScanIndexForward=False,  # newest started_ts first (HLD §7 latest-run)
@@ -127,20 +138,24 @@ def _serve_latest(pr: int) -> dict:
     items = result.get("Items", [])
     if not items:
         return _not_found()
+    # Subset semantics (bot F1, PR #149): DynamoDB reprojects a GSI item
+    # only on rewrite, so rows predating the run_id projection (spec
+    # #148) lack it until next write — return what exists, never 500.
+    item = items[0]
     body = {
-        k: items[0][k]
-        for k in (
-            "run_id",
-            "sha",
-            "status",
-            "pipeline",
-            "archive_s3_key",
-        )
+        k: item[k] for k in ("run_id", "sha", "status", "pipeline", "archive_s3_key") if k in item
     }
     return _response(200, json.dumps(body), "application/json")
 
 
 def handler(event: dict, context) -> dict:  # noqa: ARG001 (Lambda signature)
+    try:
+        return _route(event)
+    except Exception:  # controlled 500 — no internals leak (bot F4/F2)
+        return _response(500, json.dumps({"message": "internal error"}), "application/json")
+
+
+def _route(event: dict) -> dict:
     method = (event.get("requestContext", {}).get("http", {}) or {}).get("method", "GET")
     if method != "GET":
         return _not_found()
