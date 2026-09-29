@@ -51,7 +51,7 @@ import pytest
 
 from common import fanout as fanout_mod
 from common.config import MultiAgentConfig
-from common.diff import DiffFile, DiffResult
+from common.diff import DiffFile, DiffResult, post_image_lengths
 from common.fanout import FanoutDegraded, run_fanout
 from common.llm import LlmError, ReviewResult
 
@@ -768,3 +768,55 @@ def test_fence_residual_documented():
     _, _, double, _ = invoke()
     for prompt in double.prompts_with("SPEC-"):
         assert prompt.count("````") >= 2
+
+
+# --- post-image lengths: hunk-derived reviewed-span bound (T060) ---------------------------
+
+
+def lengths_for(entries):
+    files = tuple(
+        DiffFile(filename=name, additions=1, deletions=0, patch=patch) for name, patch in entries
+    )
+    return post_image_lengths(
+        DiffResult(
+            head_sha="0" * 40,
+            files=files,
+            total_additions=len(files),
+            total_deletions=0,
+            total_bytes=0,
+            truncated=False,
+            lockfile_summary="lockfiles: no changes",
+            title="t",
+            body="b",
+        )
+    )
+
+
+def test_post_image_lengths_multi_hunk_takes_max_new_end():
+    patch = "@@ -1,3 +1,3 @@\n a\n@@ -10,4 +20,5 @@\n b\n"
+    assert lengths_for([("a.py", patch)]) == {"a.py": 24}
+
+
+def test_post_image_lengths_added_file_is_exact_total():
+    patch = "@@ -0,0 +1,7 @@\n+a\n+b\n+c\n+d\n+e\n+f\n+g\n"
+    assert lengths_for([("new.py", patch)]) == {"new.py": 7}
+
+
+def test_post_image_lengths_bare_count_means_one():
+    assert lengths_for([("a.py", "@@ -5 +9 @@\n x\n")]) == {"a.py": 9}
+
+
+def test_post_image_lengths_no_hunks_omitted():
+    assert lengths_for([("empty.py", ""), ("kept.py", "@@ -1,2 +1,2 @@\n x\n")]) == {"kept.py": 2}
+
+
+def test_post_image_lengths_deletion_hunk_bounds_to_new_start_minus_one():
+    assert lengths_for([("gone.py", "@@ -1,3 +5,0 @@\n-x\n")]) == {"gone.py": 4}
+
+
+def test_post_image_lengths_full_deletion_omitted():
+    assert lengths_for([("gone.py", "@@ -1,3 +0,0 @@\n-x\n")]) == {}
+
+
+def test_post_image_lengths_never_none():
+    assert lengths_for([]) == {}
