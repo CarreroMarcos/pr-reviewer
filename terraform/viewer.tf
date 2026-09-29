@@ -85,7 +85,7 @@ resource "aws_lambda_function_url" "viewer" {
 resource "aws_lambda_permission" "viewer_function_url" {
   statement_id           = "AllowFunctionUrlInvoke"
   action                 = "lambda:InvokeFunctionUrl"
-  function_name          = aws_lambda_function.viewer.function_name
+  function_name          = aws_lambda_function.viewer.arn
   principal              = "*"
   function_url_auth_type = "NONE"
 }
@@ -93,7 +93,7 @@ resource "aws_lambda_permission" "viewer_function_url" {
 resource "aws_lambda_permission" "viewer_invoked_via_function_url" {
   statement_id             = "AllowInvokedViaFunctionUrl"
   action                   = "lambda:InvokeFunction"
-  function_name            = aws_lambda_function.viewer.function_name
+  function_name            = aws_lambda_function.viewer.arn
   principal                = "*"
   invoked_via_function_url = true
 }
