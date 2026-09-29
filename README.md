@@ -51,7 +51,7 @@ Everything runs on AWS, and only when there's work to do. Nothing idles in the b
 
 1. **Ingress (the greeter).** Checks the webhook is really from GitHub. Skips drafts and repeats. Puts the job on a queue. Replies in milliseconds.
 2. **Queue (the waiting room).** A durable SQS queue holds each job. Busy hour? Jobs wait their turn. Nothing gets lost.
-3. **Worker (the reviewer).** Reads the diff. Runs a fast single-pass AI review. Alongside it, an experimental panel — specialists in correctness, security, and tests, plus a checker and a writer — drafts a second opinion in shadow mode. That second opinion is saved for study but not posted yet. Every review is saved to S3.
+3. **Worker (the reviewer).** Reads the diff. Runs a fast single-pass AI review. Alongside it, an experimental panel — specialists in correctness, security, and tests, plus a checker and a writer — drafts a second opinion in shadow mode. That second opinion is saved for study but not posted yet. Every review is saved to S3, and a small token-gated viewer can serve any archived review back to you.
 4. **Memory (DynamoDB).** Tracks each delivery, each commit, and who holds the review lock. This is what makes stale updates safe to drop.
 
 ---
@@ -60,7 +60,7 @@ Everything runs on AWS, and only when there's work to do. Nothing idles in the b
 
 - **One tidy comment.** No threads piling up on every push.
 - **Two reviews, one posted.** The quick review goes live today. The multi-agent panel runs beside it in shadow mode while we tune it.
-- **Full history in S3.** Every review — input and result — is archived for 90 days. You can replay anything.
+- **Full history in S3, replay built in.** Every review — input and result — is archived for 90 days, and a token-gated viewer replays any of them in the browser (code is merged; rollout is the next deploy).
 - **Safe under pressure.** Late or duplicate webhooks are thrown away, never posted over fresh work.
 - **About $0 to run.** Fits inside the AWS free tier. Lambda, queue, database, storage, and secret store all included.
 - **Careful with secrets.** GitHub checks use HMAC signatures. Tokens live in SSM as locked secrets, never in code. Each function only gets the access it needs. The AI only reads code — it can't run anything or touch your cloud.
