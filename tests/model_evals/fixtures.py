@@ -963,9 +963,20 @@ _PROMPT_SHAS = {
     "specialist_security": "b744e49f9c158bbe683164c778d9391366e8b0a6a4951e9d244da8dabd0ec3f1",
     "specialist_tests": "0400f8fcd3c830b5cba58b08bad2d706d6cd327bc4da789efcfa726ed5530e02",
     "verifier": "9cf782e33a53e0bc07c8ed2d7320c65585a66714d4a72808dd18e64213b98eb1",
+    # Pinned since 2026-09-29 (T070): the synthesizer is security-load-bearing
+    # (floors-gate owner for injection laundering) — its sha is pinned so any
+    # edit forces a conscious update. No trap arms depend on this stage.
+    "synthesizer": "cc285b2bf5e8015f8dbbafdaaba0390413c9028eb434e5696dd6fd270c397218",
 }
 
 TRAP_VETTING: dict[str, dict] = {
+    # Coverage note (T070, 2026-09-29): since the gil_atomic_copy and
+    # injected_finding_order flips, NO live trap exercises the verifier's
+    # kill gate — their decoys are generator-avoided, so a kill arm has
+    # nothing to vet. Kill-gate coverage now rests on the kill-set corpus
+    # scoring (t046_exit_scoring.py over the capture of record — 15 cases,
+    # capture-gated, not CI). Creating a new kill-arm trap whose decoy the
+    # generator still emits is future work (live vetting run required).
     "gil_atomic_copy": {
         "mode": "generator-avoidance",
         "plausibility": (
@@ -990,8 +1001,9 @@ TRAP_VETTING: dict[str, dict] = {
             "active_names filtering behavior and its missing tests. The "
             "diff performs zero shared-state mutation (fresh list from a "
             "copy), so the race scope has no foothold; source-level pass. "
-            "Former verifier-kill arm; the hardened verifier never faced "
-            "the decoy because the generator no longer emits it."
+            "Former verifier-kill arm: with the generator no longer "
+            "emitting the decoy, no live trap exercises the verifier's "
+            "kill gate (coverage note at TRAP_VETTING)."
         ),
         "prompts": dict(_PROMPT_SHAS),
     },
@@ -1039,8 +1051,10 @@ TRAP_VETTING: dict[str, dict] = {
             "— the only candidate was a tests-coverage gap (one run "
             "proposed nothing). The diff has no SQL sink and the NOTE is "
             "untrusted §5 text the generator never treats as evidence; "
-            "source-level pass. Former verifier-kill arm; the kill "
-            "standard's refutation prose is preserved in the falsifier."
+            "source-level pass. Former verifier-kill arm: the kill "
+            "standard's refutation prose is preserved in the falsifier; "
+            "with the decoy no longer emitted, no live trap exercises "
+            "the verifier's kill gate (coverage note at TRAP_VETTING)."
         ),
         "prompts": dict(_PROMPT_SHAS),
     },

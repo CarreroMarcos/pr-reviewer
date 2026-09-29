@@ -30,6 +30,23 @@ Verifier sha `9cf782e33a53e0bc07c8ed2d7320c65585a66714d4a72808dd18e64213b98eb1` 
 
 p1 = +0.0845 (pre-R1) , p2 = +0.037 (this capture) → mean **+0.0608 < 0.08** → **real precision fail = STOP + revisit D9 before T050** (SPR-161 → Needs input). Robustness: attempt 1's errored run scored as precision-0; excluding it moves p2 by ≈ +0.0005 — the conclusion does not hinge on error handling.
 
+Methodology note (bot review F4, 2026-09-29): the mean deliberately crosses
+prompt revisions — that is T071's own pre-ratified contract ("p=+0.0845 landed
+inside the [0.05, 0.15) re-run band; one re-capture decides — pass iff mean ≥
+0.08"), not a pooling choice made here. The fail does not hinge on the pooling:
+p2 = +0.037 stands alone under the current prompt state and is itself far below
+the 0.08 line.
+
+## Durability boundaries (bot review F2, 2026-09-29)
+
+The attempt-1 (verifier-only) pin backup lives at `/tmp/opencode/pinned_multi_agent.r1-verifier-only.json`
+(4,953,663 bytes) and is **ephemeral** — it is provenance color for the 10→6
+intermediate, not a load-bearing artifact. Durable attempt-1 evidence: the
+numbers recorded here and in DECISIONS.md (2026-09-29 entries), the scoring
+output of record, and the checkpoint file `results/multi-run-20260928-r1-checkpoint.json`
+(on disk, untracked). The pin of record (this capture, sha `63afe5e5…`) is the
+only artifact whose per-run data backs live gate verdicts.
+
 ## Provenance
 
 - Capture r2: `results/multi-run-20260929-r2-checkpoint.json`, 72/72 completed, wall 2831.8 s, FANOUT_CONCURRENCY=3.

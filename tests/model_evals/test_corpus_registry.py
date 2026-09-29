@@ -175,6 +175,7 @@ def test_vetting_modes():
             "specialist_security",
             "specialist_tests",
             "verifier",
+            "synthesizer",
         }
         has_avoidance = bool(record.get("avoidance_log", "").strip())
         has_kill = bool(record.get("kill_reason", "").strip())
@@ -213,6 +214,7 @@ def test_trap_prompts_undegraded():
         "specialist_security": "specialist_security.md",
         "specialist_tests": "specialist_tests.md",
         "verifier": "verifier.md",
+        "synthesizer": "synthesizer.md",
     }
     for case_id in fixtures.TRAP_IDS:
         pinned = fixtures.TRAP_VETTING[case_id]["prompts"]
