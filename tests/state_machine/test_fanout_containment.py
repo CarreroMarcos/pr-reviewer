@@ -574,7 +574,11 @@ def test_terminal_row_boundary_observability(multi_agent, stubbed_fanout):
     at the record boundary produces the `retry_queued` log + D2 notice,
     is re-raised UNCHANGED (same object — redelivery semantics
     identical), and `degraded_no_budget` appears exactly once
-    (closure-owned; the boundary adds none)."""
+    (closure-owned; the boundary adds none). The RETRYING→FINAL phase
+    mapping across redeliveries is the notice machinery's own contract
+    (`test_notice_phase_matrix` +
+    `test_publish_phase_and_attempts_reach_the_content` in
+    tests/contracts/test_failure_notice.py)."""
     boom = FanoutDegraded("insufficient_budget", "wave")
     stubbed_fanout(boom)
     provider = make_provider()

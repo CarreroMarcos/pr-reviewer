@@ -1736,6 +1736,9 @@ def _process_record(
         ConfigError,
         AssembleError,
         ReconcileError,
+        # Direct Exception subclass (fanout.py) — never shadowed by the
+        # arms above; the containment boundary row pins the fanout_*
+        # dispatch.
         FanoutDegraded,
     ) as exc:
         error_class = _error_class(exc)
