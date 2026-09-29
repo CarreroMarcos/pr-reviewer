@@ -102,6 +102,7 @@ withdrawn 2026-09-26: unsourcable in the AAMAS '26 proceedings.)
 
 Bar re-ratified 2026-09-29 (Mars D9 ruling): the measured +0.0608 operating point is accepted —
 see D8 gate 2.
+
 The old maintainability/style specialist is dropped — lowest signal, and the verifier kills
 its noise anyway. Blast-radius analysis (symbol lookup over unedited callers) is v2: it needs
 real tooling (ripgrep/LSP), not pure LLM reasoning, per Stengg et al.
