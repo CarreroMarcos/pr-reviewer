@@ -347,6 +347,13 @@ def is_retryable(exc: BaseException) -> bool:
         # Unparseable/unreadable listing or irreconcilable contention: the
         # decision table says complete (log, alert downstream, never spin).
         return False
+    if isinstance(exc, FanoutDegraded):
+        # T062 (Gate-14 Finding 1): terminal-row budget failure — the
+        # closure already emitted its terminal event; the record boundary
+        # logs `retry_queued` and raises for the bounded queue retry
+        # (`maxReceiveCount 3`). A named case, never an anonymous
+        # fall-through.
+        return True
     return True
 
 
@@ -364,6 +371,8 @@ def _error_class(exc: BaseException) -> str:
         return exc.error_class
     if isinstance(exc, ReconcileError):
         return f"reconcile_{exc.error_class}"
+    if isinstance(exc, FanoutDegraded):
+        return f"fanout_{exc.reason}_{exc.failed_stage}"
     return type(exc).__name__
 
 
@@ -1488,6 +1497,12 @@ def _notice_trigger(exc: BaseException) -> NoticeTrigger | None:
         if exc.status == 403:
             return NoticeTrigger.LIST_FORBIDDEN
         return NoticeTrigger.TRANSIENT
+    if isinstance(exc, FanoutDegraded):
+        # T062 (Gate-14 Finding 1): terminal-row budget failure is a
+        # retryable queue-retried fault — RETRYING notice on the first
+        # delivery, FINAL at the last receive; idempotency per redelivery
+        # rides the existing phase mechanism, not a new path.
+        return NoticeTrigger.TRANSIENT
     return None
 
 
@@ -1714,7 +1729,18 @@ def _process_record(
             # Finalize wrote the record: `finalized` reached. The conflict
             # variant never completes finalize, so it stays unmarked.
             record_events.append(checkpoint(stage="finalized", run_id=record_run_id))
-    except (DiffError, LlmError, GitHubError, ConfigError, AssembleError, ReconcileError) as exc:
+    except (
+        DiffError,
+        LlmError,
+        GitHubError,
+        ConfigError,
+        AssembleError,
+        ReconcileError,
+        # Direct Exception subclass (fanout.py) — never shadowed by the
+        # arms above; the containment boundary row pins the fanout_*
+        # dispatch.
+        FanoutDegraded,
+    ) as exc:
         error_class = _error_class(exc)
         duration_ms = max(0, int((clock() - started) * 1000))
         retryable = is_retryable(exc)
