@@ -127,6 +127,11 @@ def build_meta(
     if not isinstance(token_usage, int) or isinstance(token_usage, bool) or token_usage < 0:
         raise ArchiveError("token_usage", "bad_token_usage")
     by_stage = _check_token_usage_by_stage(token_usage_by_stage)
+    if token_usage != sum(by_stage.values()):
+        # Consistency invariant (bot r1): a meta claiming a total that
+        # disagrees with its own per-stage split is self-inconsistent
+        # however it got there.
+        raise ArchiveError("token_usage", "bad_token_usage")
     meta = {
         "v": EVENT_VERSION,
         "run_id": _check_run_id(run_id),

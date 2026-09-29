@@ -291,6 +291,31 @@ def test_meta_rejects_bad_token_usage():
             build_meta(**meta_kwargs(**{field: value}))
 
 
+def test_meta_rejects_token_usage_mismatch():
+    """Consistency invariant (bot r1): the total must equal the sum of
+    its own per-stage split — a self-inconsistent meta fails the shape."""
+    with pytest.raises(ArchiveError):
+        build_meta(
+            **meta_kwargs(
+                token_usage=999,
+                token_usage_by_stage={"wave": 0, "verifier": 0, "synthesizer": 0},
+            )
+        )
+    # Consistent values stay green.
+    build_meta(
+        **meta_kwargs(
+            token_usage=7, token_usage_by_stage={"wave": 7, "verifier": 0, "synthesizer": 0}
+        )
+    )
+
+
+def test_token_rollup_sums_partial_token_fields():
+    """A stage event with one token field missing/None and the other
+    valid must sum the valid one (partial-chain tolerance)."""
+    events = [{"type": "agent_completed", "tokens_in": None, "tokens_out": 7}]
+    assert token_rollup(events)["token_usage_by_stage"]["wave"] == 7
+
+
 # --- status mapping per pipeline ---------------------------------------------------------
 
 
