@@ -22,8 +22,13 @@ environment:
 
 Evidence run:
 
+    terraform -chdir=terraform init -backend=false   # once per checkout
     eval "$(aws configure export-credentials --format env)"
     uv run --frozen pytest tests/contracts/test_viewer_compiled_plan.py -v
+
+This module never runs `init` itself: it only consumes the existing
+provider install, so no evidence run writes into the working tree
+(bot F1, PR #147).
 """
 
 import json
@@ -38,9 +43,14 @@ import pytest
 TERRAFORM_DIR = Path(__file__).resolve().parent.parent.parent / "terraform"
 HANDLER = TERRAFORM_DIR.parent / "lambda" / "viewer_handler.py"
 
+# Full path satisfies S607; every argument is repo-constructed (no
+# untrusted input), so the S603 bandit check is suppressed at the call
+# sites below.
+TERRAFORM_BIN = shutil.which("terraform")
+
 
 def _skip_reason() -> str | None:
-    if shutil.which("terraform") is None:
+    if TERRAFORM_BIN is None:
         return "terraform binary not on PATH"
     if not os.environ.get("AWS_ACCESS_KEY_ID"):
         return "AWS creds not exported — terraform plan reads data sources"
@@ -49,34 +59,28 @@ def _skip_reason() -> str | None:
             "viewer_handler.py is still the T051b stub — the plan-time "
             "precondition blocks every plan; this pin arms at T054"
         )
+    if not (TERRAFORM_DIR / ".terraform" / "providers").exists():
+        return (
+            "provider not installed — run "
+            "`terraform -chdir=terraform init -backend=false` once, then re-run"
+        )
     return None
 
 
 _SKIP = _skip_reason()
 pytestmark = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
 
-# Full path satisfies S607; every argument is repo-constructed (no
-# untrusted input), so the S603 bandit check is suppressed at the call
-# sites below.
-TERRAFORM_BIN = shutil.which("terraform")
-
 
 def _compiled_plan() -> dict:
-    """Full-stack `terraform plan` rendered through `show -json`."""
+    """Full-stack `terraform plan` rendered through `show -json`.
+
+    No `init` here (bot F1, PR #147): the provider install is consumed
+    as-is — evidence runs never write into the working tree. The plan
+    itself still materializes the archive_file zip output (untracked
+    build artifact, never staged — house explicit-staging law).
+    """
     with tempfile.TemporaryDirectory() as tmp:
         plan_path = os.path.join(tmp, "plan.bin")
-        subprocess.run(  # noqa: S603
-            [
-                TERRAFORM_BIN,
-                f"-chdir={TERRAFORM_DIR}",
-                "init",
-                "-backend=false",
-                "-input=false",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=600,
-        )
         subprocess.run(  # noqa: S603
             [
                 TERRAFORM_BIN,

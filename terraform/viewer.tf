@@ -55,8 +55,12 @@ resource "aws_iam_role_policy" "viewer" {
         Resource = ["${aws_dynamodb_table.state.arn}/index/pr-runs-index"]
       },
       {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        # Singular read per HLD §5.1 discipline (iam.tf note #5): the
+        # T054 handler reads GetParameter + WithDecryption only. If it
+        # ever adopts batched GetParameters/ByPath, the grant grows in
+        # the same change.
         Resource = [local.ssm_parameter_arn.replay_token]
       },
     ]
