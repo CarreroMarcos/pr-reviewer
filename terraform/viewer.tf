@@ -2,10 +2,11 @@
 # Function URL posture per the Oct-2025 hardening). T051b lands the
 # Lambda + NONE-auth Function URL + BOTH permission statements; T052
 # lands the role's read-only policy (S3 runs/static, DynamoDB index,
-# SSM token + KMS decrypt). The handler source arrives with T054 — the
-# never-apply law keeps this surface validate-only until the T056
-# deploy tag, so the archive_file source below intentionally does not
-# resolve until then.
+# SSM token — no kms:Decrypt, §2.6 mechanics per the Mars ruling
+# 2026-09-28). The handler source arrives with T054 — the never-apply
+# law keeps this surface validate-only until the T056 deploy tag, so
+# the archive_file source below intentionally does not resolve until
+# then.
 
 resource "aws_iam_role" "viewer" {
   name = "pr-reviewer-viewer"
@@ -25,6 +26,41 @@ resource "aws_iam_role" "viewer" {
   tags = {
     Owner = var.alert_owner
   }
+}
+
+# Viewer read policy (T052, HLD §7 Viewer IAM): the replay surface is
+# strictly read-only. No kms:Decrypt — the token is a plain SecureString
+# on the AWS-managed aws/ssm key and SSM decrypts server-side via
+# WithDecryption (HLD §2.6, iam.tf note #6); §7's earlier decrypt clause
+# is superseded (Mars ruling 2026-09-28, DECISIONS), and the contract
+# tests pin its absence so it cannot silently return.
+resource "aws_iam_role_policy" "viewer" {
+  name = "pr-reviewer-viewer-read"
+  role = aws_iam_role.viewer.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = [
+          "${aws_s3_bucket.archives.arn}/runs/*",
+          "${aws_s3_bucket.archives.arn}/static/*",
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${aws_dynamodb_table.state.arn}/index/pr-runs-index"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = [local.ssm_parameter_arn.replay_token]
+      },
+    ]
+  })
 }
 
 data "archive_file" "viewer" {
