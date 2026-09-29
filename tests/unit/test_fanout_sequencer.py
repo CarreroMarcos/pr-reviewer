@@ -810,8 +810,8 @@ def test_post_image_lengths_no_hunks_omitted():
     assert lengths_for([("empty.py", ""), ("kept.py", "@@ -1,2 +1,2 @@\n x\n")]) == {"kept.py": 2}
 
 
-def test_post_image_lengths_zero_count_hunk_spans_nothing():
-    assert lengths_for([("gone.py", "@@ -1,3 +5,0 @@\n-x\n")]) == {}
+def test_post_image_lengths_deletion_hunk_bounds_to_new_start_minus_one():
+    assert lengths_for([("gone.py", "@@ -1,3 +5,0 @@\n-x\n")]) == {"gone.py": 4}
 
 
 def test_post_image_lengths_never_none():
