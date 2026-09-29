@@ -182,3 +182,9 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 **Decision (Mars ruling, 2026-09-28):** add `run_id` to the GSI `INCLUDE` projection — the response contract stands unchanged; the GSI alone answers the latest-run query (§7 intent), now including `run_id`.
 **Consequences:** one-line `terraform/state.tf` amendment (rides T054's pair PR, gated on this spec landing first); the T031-era contract pin (`EXPECTED_PROJECTION` in `tests/contracts/test_terraform_multi_agent.py`) extends by one attribute; in-flight runs now report `run_id` with `status` showing the live state.
 **Current truth:** HLD §7 GSI bullet as amended 2026-09-28; `terraform/state.tf` (T054's PR); `EXPECTED_PROJECTION` (T054's PR).
+
+## 2026-09-28 — Branch-cut custody incident: a spec-carrier commit rode a ticket PR (Gate-38, PR #144)
+
+**Context:** while landing the T051a/b pair (SPR-138/139, viewer infra contract + viewer.tf), a ticket branch was cut from a branch carrying other PR content (the spec carrier), so commit 56006c2 rode PR #144, duplicating work that belonged to the spec-carrier PR #143.
+**Fix:** rebased --onto ff0a63b and force-pushed; #144 landed viewer-only, #143 kept the spec work for Mars. Codified as the AGENTS.md branch-custody law: cut every SPR ticket branch from `origin/main`, never from a branch carrying other PR content (spec branches included); verify with `git log origin/main..HEAD` before any push.
+**Consequences:** the custody check is a standing loop law (2026-09-28); Gate 38 reviewed #144 post-fix. This entry is the incident narrative the law's "(Gate-38)" pointer resolves to.
