@@ -371,6 +371,9 @@ resource "aws_cloudwatch_metric_alarm" "contention_rate" {
   # notBreaching + a bare-term filter means a worker logging outage also
   # silences this alarm (blind spot, bot review #1 on PR #142); the DLQ
   # (#1) and invocation-spike (#8) alarms cover the outage path.
+  # evaluation_periods = 1 is deliberate at Phase 0 (bot review #2): a
+  # single 5-min window over threshold is page-worthy; recalibrate from
+  # Phase-1 telemetry alongside the threshold default.
   treat_missing_data = "notBreaching"
 
   # No ok_actions: an operability-only signal with evaluation_periods = 1

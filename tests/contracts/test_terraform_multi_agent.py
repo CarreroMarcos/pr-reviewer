@@ -350,9 +350,9 @@ def test_contention_term_couples_emission_and_filter():
     both ends, so a rename on either side fails here instead of silently
     leaving the alarm permanently dormant."""
     worker_src = (TERRAFORM_DIR.parent / "lambda" / "worker_handler.py").read_text(encoding="utf-8")
-    assert re.search(r'logger\.info\(\s*"concurrency_single_pass', worker_src), (
-        "contender emission no longer leads with the filter's term"
-    )
+    assert re.search(
+        r'logger\.info\(\s*"concurrency_single_pass mutex=%s elapsed_ms=%s"', worker_src
+    ), "contender emission no longer leads with the filter's term + triage fields"
     filt = _resource_block(
         OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "worker_contention"
     )

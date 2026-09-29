@@ -476,9 +476,12 @@ def test_contender_logs_contention_term_for_metric_filter(caplog, multi_agent, s
     with caplog.at_level(logging.INFO, logger="worker_handler"):
         make_closure(events, table)(SHA_B, 0)
     messages = [r.message for r in caplog.records if r.name == "worker_handler"]
-    assert any("concurrency_single_pass" in m for m in messages), (
-        f"contender path did not log the filter's term: {messages}"
-    )
+    term_messages = [m for m in messages if "concurrency_single_pass" in m]
+    assert term_messages, f"contender path did not log the filter's term: {messages}"
+    # Triage fields ride along (bot review #2): the mutex key identifies
+    # the contended PR; elapsed_ms anchors the contention in time.
+    assert all(f"mutex={MUTEX_PK}" in m for m in term_messages)
+    assert all("elapsed_ms=" in m for m in term_messages)
 
 
 def test_contender_emits_no_degraded_event(multi_agent, stubbed_fanout):
