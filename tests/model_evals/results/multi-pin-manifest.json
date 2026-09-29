@@ -8,12 +8,13 @@
     "retrieval": "recompute sha256 against pin.sha256 after retrieval; if the box is reaped, the pin is regenerable via reproduction.full_corpus_pass + topup_pass (nomic embedder required)"
   },
   "pin": {
-    "sha256": "5508f9a98bd21016d1e3bb040d01346ac334d5f64cda517ccff3693c8bf4eada",
-    "bytes": 5052355,
+    "sha256": "63afe5e59f2658716d169876ce20d3793f3bb94768c43ef80e8696be46ed9015",
+    "bytes": 4769309,
     "corpus": "24 cases x 3 runs (multi-agent, FANOUT_CONCURRENCY=3)",
     "runs_total": 72,
     "runs_errored": 0,
-    "verified_by": "error summed over every run of every case in this exact artifact (post-top-up state)"
+    "verified_by": "error summed over every run of every case in this exact artifact (post-top-up state)",
+    "rehash_note": "Re-hashed 2026-09-29 for the T070 R1 re-capture, attempt 2 (verifier prompt hardened per the exit-report recommendation + synthesizer \u00a75 no-launder precedence rule after attempt 1 leaked injection payload quotes into the posted comment \u2014 attempt-1 pin sha d8ea9b19b2568e71647c6cabce65d3ddf954528837ba43b939b61dfc5356341e, 4953663 bytes, backed up at /tmp/opencode/pinned_multi_agent.r1-verifier-only.json; pre-R1 before-side sha 5508f9a98bd21016d1e3bb040d01346ac334d5f64cda517ccff3693c8bf4eada). 72 runs, 0 errored."
   },
   "reproduction": {
     "full_corpus_pass": {
