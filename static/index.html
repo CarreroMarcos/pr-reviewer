@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review replay — pr-reviewer</title>
+<link rel="stylesheet" href="/static/review.css">
+<script src="/static/review.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">◈</span>
+    <span class="brand-name">pr-reviewer · replay</span>
+  </div>
+  <div class="run-meta" id="run-meta" hidden>
+    <span class="meta-item">PR <strong id="meta-pr">—</strong></span>
+    <span class="meta-item">sha <strong id="meta-sha" class="mono">—</strong></span>
+    <span class="meta-item">run <strong id="meta-run" class="mono">—</strong></span>
+    <span class="meta-item">status <strong id="meta-status">—</strong></span>
+    <span class="meta-item">pipeline <strong id="meta-pipeline">—</strong></span>
+  </div>
+  <div class="session">
+    <span id="session-state" class="session-state">locked</span>
+    <button id="logout-btn" type="button" hidden>Log out</button>
+  </div>
+</header>
+
+<main class="page">
+  <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+
+  <section id="login-panel" class="panel login" aria-labelledby="login-heading">
+    <h1 id="login-heading">Review replay</h1>
+    <p class="lede">One login unlocks this review. The token lives in this tab&rsquo;s
+      <span class="mono">sessionStorage</span> only — it never touches the URL,
+      and it vanishes when the tab closes.</p>
+    <form id="login-form">
+      <div class="field-row">
+        <label class="field">Pull request
+          <input id="in-pr" name="pr" inputmode="numeric" autocomplete="off" placeholder="123">
+        </label>
+        <label class="field">Head SHA
+          <input id="in-sha" name="sha" autocomplete="off" spellcheck="false"
+                 class="mono" placeholder="40 hex chars">
+        </label>
+      </div>
+      <label class="field">Replay token
+        <input id="in-token" name="token" type="password" autocomplete="current-password"
+               placeholder="paste the replay token">
+      </label>
+      <button type="submit" class="primary">Unlock review</button>
+    </form>
+  </section>
+
+  <div id="review" hidden>
+    <section class="panel" aria-labelledby="pipeline-heading">
+      <div class="panel-head">
+        <h2 id="pipeline-heading">Pipeline</h2>
+        <div class="controls">
+          <span id="replay-state" class="replay-state mono" aria-live="polite"></span>
+          <button id="replay-btn" type="button">Replay</button>
+        </div>
+      </div>
+      <svg id="dag" viewBox="0 0 640 300" role="img"
+           aria-label="Agent pipeline: three specialists fan out in parallel, then verifier, then synthesizer">
+        <g class="edges" aria-hidden="true">
+          <line id="edge-c-v" x1="170" y1="62"  x2="430" y2="128"></line>
+          <line id="edge-s-v" x1="170" y1="150" x2="430" y2="150"></line>
+          <line id="edge-t-v" x1="170" y1="238" x2="430" y2="172"></line>
+          <line id="edge-v-y" x1="470" y1="150" x2="540" y2="150"></line>
+        </g>
+        <g id="node-correctness" class="node" transform="translate(20,30)">
+          <rect width="150" height="64" rx="10"></rect>
+          <text x="14" y="26" class="node-title">correctness</text>
+          <text x="14" y="46" class="node-sub">specialist</text>
+        </g>
+        <g id="node-security" class="node" transform="translate(20,118)">
+          <rect width="150" height="64" rx="10"></rect>
+          <text x="14" y="26" class="node-title">security</text>
+          <text x="14" y="46" class="node-sub">specialist</text>
+        </g>
+        <g id="node-tests" class="node" transform="translate(20,206)">
+          <rect width="150" height="64" rx="10"></rect>
+          <text x="14" y="26" class="node-title">tests</text>
+          <text x="14" y="46" class="node-sub">specialist</text>
+        </g>
+        <g id="node-verifier" class="node stage" transform="translate(430,118)">
+          <rect width="110" height="64" rx="10"></rect>
+          <text x="14" y="26" class="node-title">verifier</text>
+          <text x="14" y="46" class="node-sub">falsify</text>
+        </g>
+        <g id="node-synthesizer" class="node stage" transform="translate(548,118)">
+          <rect width="72" height="64" rx="10"></rect>
+          <text x="12" y="26" class="node-title">synth</text>
+          <text x="12" y="46" class="node-sub">merge</text>
+        </g>
+      </svg>
+      <p class="hint">Nodes light as agents start and settle as they complete;
+        the run advances through verification into synthesis.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="reasoning-heading">
+      <h2 id="reasoning-heading">Agent reasoning</h2>
+      <div id="reasoning" class="cards"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="timeline-heading">
+      <h2 id="timeline-heading">Checkpoints</h2>
+      <ol id="timeline" class="timeline"></ol>
+    </section>
+
+    <section class="panel" aria-labelledby="findings-heading">
+      <h2 id="findings-heading">Findings <span id="findings-count" class="count mono"></span></h2>
+      <div id="findings" class="cards"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="raw-heading">
+      <div class="panel-head">
+        <h2 id="raw-heading">Raw archive</h2>
+        <div class="controls" role="tablist" aria-label="Archive files">
+          <button id="tab-events" type="button" role="tab" aria-selected="true">events.jsonl</button>
+          <button id="tab-meta" type="button" role="tab" aria-selected="false">meta.json</button>
+        </div>
+      </div>
+      <p class="hint">Archive bytes are data, not markup — shown here as inert,
+        sanitized text.</p>
+      <pre id="raw-events" class="raw" role="tabpanel" tabindex="0"></pre>
+      <pre id="raw-meta" class="raw" role="tabpanel" tabindex="0" hidden></pre>
+    </section>
+  </div>
+</main>
+
+<footer class="foot">
+  <span class="mono">single-origin replay · no third-party assets</span>
+</footer>
+</body>
+</html>
