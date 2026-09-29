@@ -62,7 +62,8 @@ class ArchiveError(ValueError):
     """Typed archive rejection: `field` names the offending field,
     `reason` is a machine-readable code (`bad_run_id`, `bad_pr`,
     `bad_sha`, `bad_pipeline`, `bad_status`, `bad_ts`, `bad_filename`,
-    `bad_key`, `bad_findings_n`, `bad_event`). Never carries payload
+    `bad_key`, `bad_findings_n`, `bad_event`, `bad_token_usage`,
+    `bad_token_usage_by_stage`). Never carries payload
     content."""
 
     def __init__(self, field: str, reason: str) -> None:
@@ -114,9 +115,23 @@ def build_meta(
     status: str,
     started_ts: int,
     finished_ts: int,
+    token_usage: int = 0,
+    token_usage_by_stage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Assemble a validated `meta.json` object (HLD §6 fixed shape)."""
+    """Assemble a validated `meta.json` object (HLD §6 fixed shape).
+
+    `token_usage` / `token_usage_by_stage` are the T066 per-review
+    rollup (see `token_rollup`): optional and defaulted so older
+    callers stay green; validated and stored when given."""
     check_status(pipeline, status)
+    if not isinstance(token_usage, int) or isinstance(token_usage, bool) or token_usage < 0:
+        raise ArchiveError("token_usage", "bad_token_usage")
+    by_stage = _check_token_usage_by_stage(token_usage_by_stage)
+    if token_usage != sum(by_stage.values()):
+        # Consistency invariant (bot r1): a meta claiming a total that
+        # disagrees with its own per-stage split is self-inconsistent
+        # however it got there.
+        raise ArchiveError("token_usage", "bad_token_usage")
     meta = {
         "v": EVENT_VERSION,
         "run_id": _check_run_id(run_id),
@@ -127,6 +142,8 @@ def build_meta(
         "started_ts": _check_ts(started_ts, "started_ts"),
         "finished_ts": _check_ts(finished_ts, "finished_ts"),
         "archive_version": ARCHIVE_VERSION,
+        "token_usage": token_usage,
+        "token_usage_by_stage": by_stage,
     }
     if meta["finished_ts"] < meta["started_ts"]:
         # Monotonicity is a shape invariant: an archive that claims to
@@ -197,6 +214,67 @@ def findings_count(events: list[dict[str, Any]]) -> int:
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 count = max(count, value)
     return count
+
+
+# Stage → rollup bucket: only token-bearing stage events reduce;
+# degraded markers (`degraded_to_single_pass`, `concurrency_single_pass`,
+# `degraded_no_budget`) and every other type carry no token fields.
+_TOKEN_STAGE_BUCKETS = {
+    "agent_completed": "wave",
+    "verification_done": "verifier",
+    "review_synthesized": "synthesizer",
+}
+
+_TOKEN_STAGES = ("wave", "verifier", "synthesizer")
+
+
+def _check_token_usage_by_stage(value: Any) -> dict[str, int]:
+    """Validate the per-stage split: exactly the three stage keys with
+    non-negative ints (`None` means unwired — zeros, matching the
+    reducer's degraded-path output)."""
+    if value is None:
+        return dict.fromkeys(_TOKEN_STAGES, 0)
+    if (
+        not isinstance(value, dict)
+        or set(value) != set(_TOKEN_STAGES)
+        or any(
+            not isinstance(value[stage], int) or isinstance(value[stage], bool) or value[stage] < 0
+            for stage in _TOKEN_STAGES
+        )
+    ):
+        raise ArchiveError("token_usage_by_stage", "bad_token_usage_by_stage")
+    return {stage: value[stage] for stage in _TOKEN_STAGES}
+
+
+def _clean_tokens(value: Any) -> int:
+    """Tolerant count read for the reducer: `_clean_count` validity
+    (`events.py` semantics — int, not bool, ≥ 0) with 0 instead of a
+    raise, so degraded/partial chains reduce without failing."""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return 0
+    return value
+
+
+def token_rollup(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Reduce stage `usage` into the per-review rollup (T066, HLD §6).
+
+    `agent_completed` events sum into "wave" (ALL of them — one per
+    specialist), `verification_done` into "verifier",
+    `review_synthesized` into "synthesizer"; each bucket sums
+    `tokens_in + tokens_out`. All three stage keys are ALWAYS present
+    (0 when the stage never ran — degraded paths fall out naturally).
+    Pure: reads already-validated event dicts, never raises."""
+    by_stage = dict.fromkeys(_TOKEN_STAGES, 0)
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        bucket = _TOKEN_STAGE_BUCKETS.get(event.get("type"))
+        if bucket is None:
+            continue
+        by_stage[bucket] += _clean_tokens(event.get("tokens_in")) + _clean_tokens(
+            event.get("tokens_out")
+        )
+    return {"token_usage": sum(by_stage.values()), "token_usage_by_stage": by_stage}
 
 
 def _index_started_ts(value: int) -> str:
