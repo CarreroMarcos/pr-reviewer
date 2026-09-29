@@ -24,7 +24,9 @@ Each interaction gets a contract test that fails on current `main`:
 - Packaging: assert every file the code reads at runtime ships in the zip.
 
 Run the suite BEFORE writing the fix. The FAIL is the proof the gap is real
-and the pin will catch its return. "FAIL-first" is the verify bar for
+and the pin will catch its return. The pins merge in the same bundle as their
+fixes (step 3) — never land a failing pin alone; `main` stays green except for
+the staged FAIL-first window inside the gated PR. "FAIL-first" is the verify bar for
 creator tasks (P2 pairs the creator with the implementer).
 
 ## 3. Gate each pin, then bundle the deploy
