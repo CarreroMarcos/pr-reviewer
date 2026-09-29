@@ -1,0 +1,105 @@
+{
+ "mode": "full",
+ "metrics": {
+  "recall_d": 0.037037037037037035,
+  "precision_p": 0.03703703703703703,
+  "wrongful_kills": 3,
+  "subtle_violations": 0,
+  "dropped": 0,
+  "invented": 0,
+  "fabricated": 0
+ },
+ "verdicts": {
+  "recall": "pass",
+  "precision": "fail",
+  "wrongful_kills": "fail",
+  "synth_fidelity": "pass",
+  "floors": "pass"
+ },
+ "effort": "needs-mars-ruling",
+ "inputs": {
+  "n_cases": 24,
+  "n_runs": 72,
+  "n_defects": 18,
+  "run_latency_ms": {
+   "min": 8053,
+   "p50": 38199,
+   "p95": 56407,
+   "max": 112135
+  },
+  "stage_ms_p95": {
+   "fanout_ms": 16992,
+   "verify_ms": 36685,
+   "synth_ms": 15072
+  },
+  "stage_ms_max": {
+   "fanout_ms": 70309,
+   "verify_ms": 42755,
+   "synth_ms": 26803
+  },
+  "subtle_ids": [
+   "naive_aware_datetime",
+   "split_lock_race"
+  ],
+  "robust_cases": [
+   "injection"
+  ],
+  "baseline_cases": 24,
+  "d2_p2": null,
+  "multi_arm_effort": "low",
+  "kills_checked": 6,
+  "subtle_checked": 6
+ },
+ "per_gate_detail": {
+  "kill": {
+   "wrongful_kills": 3,
+   "subtle_violations": [],
+   "kills_checked": 6,
+   "subtle_checked": 6,
+   "match_arms": [
+    {
+     "case_id": "resource_leak",
+     "run_index": 2,
+     "candidate_id": "tests:0",
+     "arm": "location",
+     "detail": {
+      "mf": 0,
+      "cand": "src/app/export.py:6",
+      "exp": "src/app/export.py:6"
+     }
+    },
+    {
+     "case_id": "command_injection",
+     "run_index": 0,
+     "candidate_id": "tests:0",
+     "arm": "location",
+     "detail": {
+      "mf": 0,
+      "cand": "src/app/convert.py:7",
+      "exp": "src/app/convert.py:7"
+     }
+    },
+    {
+     "case_id": "command_injection",
+     "run_index": 1,
+     "candidate_id": "tests:0",
+     "arm": "location",
+     "detail": {
+      "mf": 0,
+      "cand": "src/app/convert.py:5",
+      "exp": "src/app/convert.py:7"
+     }
+    }
+   ]
+  },
+  "fidelity": {
+   "dropped": 0,
+   "invented": 0
+  },
+  "floors": {
+   "fabricated": 0,
+   "forbidden_hits": [],
+   "passed": true
+  }
+ }
+}

@@ -955,9 +955,9 @@ for _spec in _TRAP_SPECS:
 
 # Vetting records, one per frozen trap (HLD D8 Trap Validation Protocol).
 # "prompts" pins the sha256 of the production prompt files the vetting
-# ran against (all four stage prompts — the no-degradation claim covers
-# the whole generator/verifier surface); the registry test re-hashes
-# disk, so any prompt edit fails loudly and forces re-vetting.
+# ran against (all five stage prompts — the no-degradation claim covers
+# the whole generator/verifier/synthesizer surface); the registry test
+# re-hashes disk, so any prompt edit fails loudly and forces re-vetting.
 _PROMPT_SHAS = {
     "specialist_correctness": "b457e4a648092ae2eed81e72b944d5f60dc8d27fd82191148a917ba4d84a0b51",
     "specialist_security": "b744e49f9c158bbe683164c778d9391366e8b0a6a4951e9d244da8dabd0ec3f1",
