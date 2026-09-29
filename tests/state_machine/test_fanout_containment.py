@@ -38,7 +38,11 @@ Gate-13 forward contracts pinned here:
 Gate-4 terminal row (HLD D9: no budget left even for fallback): the
 closure emits `degraded_no_budget` and re-raises the `FanoutDegraded` —
 the queue owns retries and a redelivery gets a fresh budget. This is the
-ONE documented escape; every degradable failure is contained.
+ONE documented escape; every degradable failure is contained. T062
+(Gate-14 Finding 1): the escaped terminal-row failure is caught at the
+record boundary (`_process_record`) — `retry_queued` log + D2 TRANSIENT
+notice via the existing failure-lifecycle path — then re-raised
+UNCHANGED for queue redelivery.
 
 Doubles discipline (Gate-11): the `run_fanout` stub mirrors the
 sequencer's requiredness (no defaults on required params); transport
@@ -57,6 +61,7 @@ from dynamodb_stub import InMemoryTable
 import worker_handler
 from common.config import ConfigError
 from common.envelope import validate_envelope
+from common.failure_notice import NoticeTrigger
 from common.fanout import FanoutDegraded
 from common.llm import LlmError
 from common.protocol import OutcomeKind, run_review
@@ -67,6 +72,7 @@ from worker_handler import (
     _load_fanout_prompts,
     _load_residuals_for,
     _make_review,
+    _notice_trigger,
     _process_record,
     handler,
     is_retryable,
@@ -546,6 +552,56 @@ def test_terminal_no_budget_emits_event_and_raises(multi_agent, stubbed_fanout):
     assert len(terminal) == 1
     assert terminal[0]["reason"] == "insufficient_budget"
     assert closure._test_conns == []  # noqa: SLF001 (fallback never attempted)
+
+
+def test_terminal_row_is_retryable_named_case():
+    """T062: the terminal-row budget failure is a NAMED retryable case
+    (not an anonymous fall-through) — the queue owns the retry, bounded
+    by maxReceiveCount 3."""
+    assert is_retryable(FanoutDegraded("insufficient_budget", "wave")) is True
+
+
+def test_terminal_row_notice_trigger_is_transient():
+    """T062: the terminal-row failure rides the existing D2 path as a
+    TRANSIENT row — RETRYING notice first, FINAL at the last receive."""
+    assert _notice_trigger(FanoutDegraded("insufficient_budget", "wave")) is (
+        NoticeTrigger.TRANSIENT
+    )
+
+
+def test_terminal_row_boundary_observability(multi_agent, stubbed_fanout):
+    """T062 (Gate-14 Finding 1): the escaped terminal-row `FanoutDegraded`
+    at the record boundary produces the `retry_queued` log + D2 notice,
+    is re-raised UNCHANGED (same object — redelivery semantics
+    identical), and `degraded_no_budget` appears exactly once
+    (closure-owned; the boundary adds none)."""
+    boom = FanoutDegraded("insufficient_budget", "wave")
+    stubbed_fanout(boom)
+    provider = make_provider()
+    github = FakeGitHub()
+    events = []
+    sink = []
+    with pytest.raises(FanoutDegraded) as exc_info:
+        _process_record(
+            {"body": json.dumps(envelope_dict())},
+            table=InMemoryTable(),
+            provider=provider,
+            clock=lambda: NOW,
+            diff_transport=FakeDiffTransport(meta=[(200, SHA_B)]),
+            llm_factory=lambda host, port, *, timeout: FakeLLMConnection([], []),
+            github_transport=github,
+            sink=sink.append,
+            system_prompt="SYSTEM-PROMPT",
+            remaining_time_ms=lambda: 1_000,
+            events=events,
+        )
+    assert exc_info.value is boom
+    (line,) = [json.loads(entry) for entry in sink]
+    assert line["status"] == "retry_queued"
+    assert line["error_class"] == "fanout_insufficient_budget_wave"
+    assert line["failure_notice_published"] == "true"
+    assert [c for c in github.calls if c["method"] == "POST"]  # D2 notice landed
+    assert len(events_of_type(events, "degraded_no_budget")) == 1
 
 
 def test_legacy_path_never_attempts_fanout(stubbed_fanout):
