@@ -713,9 +713,10 @@ never silently forwarded into the synthesizer prompt.
   - Base table: `read_capacity = 20`, `write_capacity = 20`.
   - GSI `pr-runs-index`: `read_capacity = 5`, `write_capacity = 5`.
   - Partition key: `pr_number (N)`. Sort key: `started_ts (S)`.
-  - `ProjectionType: INCLUDE` with non-key attributes `["sha", "status", "pipeline", "archive_s3_key", "archive_written_at", "findings_n"]`.
+  - `ProjectionType: INCLUDE` with non-key attributes `["run_id", "sha", "status", "pipeline", "archive_s3_key", "archive_written_at", "findings_n"]`.
     (Answers "latest run for PR #123" without requiring a secondary base-table `GetItem`; `pipeline`
-    is projected so latest-run queries can discriminate shadow runs — gate 5).
+    is projected so latest-run queries can discriminate shadow runs — gate 5; `run_id` projected so
+    the latest-run response can carry it — Mars ruling 2026-09-28, DECISIONS).
 
 ## 8. Rollout & Hardened Terraform Checklist
 
