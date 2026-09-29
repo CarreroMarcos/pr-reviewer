@@ -10,7 +10,8 @@ deploy-coupled activation.
 ## 1. Enumerate what the flag activates
 
 Walk the call graph from the flag check (`codegraph_impact` on the gated
-symbols). List every external interaction the activated path makes: IAM
+symbols; if the indexer is unavailable, grep the flag's symbols' call sites
+manually — the enumeration matters, not the tool). List every external interaction the activated path makes: IAM
 actions, env vars, files read from the package, tables/queues/buckets
 touched. A path that has never run in production has never had its
 assumptions tested — treat it as guilty until pinned.
