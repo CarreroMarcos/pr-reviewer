@@ -40,7 +40,7 @@ Everything runs on AWS, and only when there's work to do. Nothing idles in the b
               ▼
 ┌─────────────────────────┐
 │      Worker Lambda      │  ── 1. grabs the code diff
-└────────────┬────────────┘     2. asks the AI model (GLM-5.3-Flash)
+└────────────┬────────────┘     2. asks the AI model (currently GLM-5.3-Flash — see `prompts/`)
               │                  3. checks it has the newest commit
               │                  4. creates or updates the one comment
               ▼
@@ -60,7 +60,7 @@ Everything runs on AWS, and only when there's work to do. Nothing idles in the b
 
 - **One tidy comment.** No threads piling up on every push.
 - **Two reviews, one posted.** The quick review goes live today. The multi-agent panel runs beside it in shadow mode while we tune it.
-- **Full history in S3, replay built in.** Every review — input and result — is archived for 90 days, and a token-gated viewer replays any of them in the browser (code is merged; viewer rollout is planned with the next deploy).
+- **Full history in S3, replay built in.** Every review — input and result — is archived for 90 days, and a token-gated viewer replays any of them in the browser (the code is in main; it ships with the next deploy).
 - **Safe under pressure.** Late or duplicate webhooks are thrown away, never posted over fresh work.
 - **Nearly free to run.** It fits inside the AWS free tier today. Lambda, queue, database, storage, and secret store all included.
 - **Careful with secrets.** GitHub checks use HMAC signatures. Tokens live in SSM as locked secrets, never in code. Each function only gets the access it needs. The AI only reads code — it can't run anything or touch your cloud.
