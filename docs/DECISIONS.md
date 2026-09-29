@@ -206,24 +206,24 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 ## 2026-09-29 — Q8 worker-concurrency ruling recorded: unreserved worker, ESM concurrency 2, DynamoDB mutex (SPR-146/T058)
 
 **Ruling:** Q8 RESOLVED 2026-09-26 (Mars): worker concurrency = Option A — unreserved worker, ESM concurrency 2, single-worker execution enforced via the §D9 DynamoDB mutex contract; on contention the contender runs single-pass inline, never a visibility deferral.
-**As implemented:** the worker ESM's `scaling_config` block in `terraform/compute.tf` (`maximum_concurrency = 2`), with the worker's reserved concurrency dropped (2026-09-15 operator ruling — the "Reserved concurrency DROPPED" comment block in the same file); single-worker serialization via `MUTEX_PK` in `lambda/common/mutex.py` (`"mutex:pr-reviewer-worker"`, one-row lease); contender falls back to single-pass per the mutex contract.
+**As implemented:** the worker ESM's `scaling_config` block in `terraform/compute.tf` (`maximum_concurrency = 2`), with the worker's reserved concurrency dropped (2026-09-15 operator ruling — the "Reserved concurrency DROPPED" comment block in the same file); single-worker serialization via `MUTEX_PK` in `lambda/common/mutex.py` (`"mutex:pr-reviewer-worker"`, one-row lease); contender falls back to single-pass per the mutex contract. (ESM landed via #118/`3146764`; mutex via #112/`2223f4d`.)
 **Current truth:** `lambda/common/mutex.py`, `terraform/compute.tf` (ESM block).
 
 ## 2026-09-29 — Q9 archive-retention ruling recorded: 90-day S3 expiration + local sync runbook (SPR-146/T058)
 
 **Ruling:** Q9 RESOLVED 2026-09-26 (Mars): S3 Expiration (Delete) at 90 days on the `runs/` prefix stays within the Free Tier; a documented runbook `aws s3 sync` command — NOT a tracked script (the `tools/sync_archives.py` proposal was withdrawn the same day) — pulls archives to `~/.pr-reviewer/archives/`.
-**As implemented:** the `expire-runs-after-90-days` lifecycle rule in `terraform/archives.tf` (filter prefix `runs/` only — the viewer `static/` assets sharing the bucket are unaffected); `docs/runbook-archive-sync.md` documents the exact command (landed via #152, `42d395c`).
+**As implemented:** the `expire-runs-after-90-days` lifecycle rule in `terraform/archives.tf` (filter prefix `runs/` only — the viewer `static/` assets sharing the bucket are unaffected; landed via #117/`fafdcf0`); `docs/runbook-archive-sync.md` documents the exact command (landed via #152, `42d395c`).
 **Current truth:** `terraform/archives.tf`, `docs/runbook-archive-sync.md`, spec-004 HLD §5.
 
 ## 2026-09-29 — Q10 DynamoDB-capacity ruling recorded: 20/20 base + 5/5 GSI (SPR-146/T058)
 
 **Ruling:** Q10 RESOLVED 2026-09-26 (Mars): rebalance the base table to 20/20 and allocate 5/5 to GSI `pr-runs-index` to preserve the $0 Always Free Tier.
-**As implemented:** the table block in `terraform/state.tf` (PROVISIONED at 20/20); the `pr-runs-index` GSI block in the same file (5/5, hash `pr_number`, range `started_ts`, INCLUDE projection).
+**As implemented:** the table block in `terraform/state.tf` (PROVISIONED at 20/20); the `pr-runs-index` GSI block in the same file (5/5, hash `pr_number`, range `started_ts`, INCLUDE projection). (Rebalance landed via #118/`3146764`.)
 **Current truth:** `terraform/state.tf`.
 
 ## 2026-09-29 — Q11 redrive ruling recorded: maxReceiveCount 5 → 3 (SPR-146/T058)
 
 **Ruling:** Q11 RESOLVED 2026-09-26 (Mars): SQS redrive — update `maxReceiveCount` from 5 to 3 in `terraform/messaging.tf`.
-**As implemented:** the work-queue redrive config in `terraform/messaging.tf` (`maxReceiveCount = 3`); operator redrive procedure lives in `docs/runbook-redrive.md`.
+**As implemented:** the work-queue redrive config in `terraform/messaging.tf` (`maxReceiveCount = 3`); operator redrive procedure lives in `docs/runbook-redrive.md`. (Landed via #89/`ca553ad`.)
 **Known drift:** `docs/HLD.md` §7.3 still cites the spec-002-era "maxReceiveCount 5" for `pr-reviewer-work` — refresh owed at the next HLD touch, owned by the spec-conformance sweep (T059/SPR-147); recorded here so the drift is findable.
 **Current truth:** `terraform/messaging.tf`, `docs/runbook-redrive.md`.
