@@ -1924,14 +1924,15 @@ def _archive_run(
                 table.update_item(
                     Key={"pk": item["pk"]},
                     UpdateExpression=(
-                        "SET pr_number = :pr, started_ts = :started, sha = :sha,"
-                        " #st = :status, pipeline = :pipeline,"
+                        "SET run_id = :run_id, pr_number = :pr, started_ts = :started,"
+                        " sha = :sha, #st = :status, pipeline = :pipeline,"
                         " archive_s3_key = :key, archive_written_at = :written,"
                         " findings_n = :findings"
                     ),
                     ConditionExpression="attribute_not_exists(pk)",
                     ExpressionAttributeNames={"#st": "status"},
                     ExpressionAttributeValues={
+                        ":run_id": item["run_id"],
                         ":pr": item["pr_number"],
                         ":started": item["started_ts"],
                         ":sha": item["sha"],

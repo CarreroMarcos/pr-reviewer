@@ -114,7 +114,9 @@ def aws():
         ):
             ddb.put_item(
                 TableName=TABLE,
-                Item={
+                Item={  # writer-shaped: build_index_item + the worker
+                    # UpdateExpression SET exactly these attrs (Gate-40
+                    # F1 — the fixture mirrors production, never invents)
                     "pk": {"S": f"run#{run_id}"},
                     "run_id": {"S": run_id},
                     "pr_number": {"N": str(PR)},
@@ -307,6 +309,16 @@ def test_bearer_scheme_case_insensitive(aws):
     """Bot F5 (PR #149): RFC 7235 — the auth scheme is case-insensitive."""
     headers_event = _event(f"/api/runs/{PR}/latest")
     headers_event["headers"]["authorization"] = f"bearer {TOKEN}"
+    r = viewer_handler.handler(headers_event, None)
+    assert r["statusCode"] == 200
+
+
+def test_capitalized_authorization_header_authenticates(aws):
+    """Gate-40 F2: every real client sends `Authorization` (capitalized);
+    only the scheme case was pinned before. Function URLs preserve the
+    client's header casing — the handler must lower() the NAME too."""
+    headers_event = _event(f"/api/runs/{PR}/latest")
+    headers_event["headers"] = {"Authorization": f"Bearer {TOKEN}"}
     r = viewer_handler.handler(headers_event, None)
     assert r["statusCode"] == 200
 
