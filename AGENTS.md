@@ -101,12 +101,18 @@ Verdicts: **APPROVE** → squash-merge on green CI, comment `Oracle: APPROVE. Me
 - **P3 — deepwork regime:** every loop run follows the deepwork skill (spec-first, thin slices, phase gates, qa ledger) with these loop laws layered on top. Activate at phase start.
 - **Batch orchestration:** multi-ticket runs follow `docs/process/batch-loop.md`.
 
+### Git
+
+- **Cut every SPR ticket branch from `origin/main` (2026-09-28):** a branch cut from spec or feature content hitches that content onto the ticket's PR (Gate-38); `git log origin/main..HEAD` before any push proves the branch carries exactly its own commits.
+
 ### PR review loop
 
 - **Self-review recheck (Mars, 2026-09-19/20/26):** after every push, wait 2 min, then re-fetch the bot's canonical comment — marker `pr-reviewer:canonical` — with jq `[.[] | select(.body | contains("pr-reviewer:canonical"))] | last | .body` (`tail -1` collapses multi-line bodies). Dispose changed findings each round; absent canonical at 120 s → wait 45 s, re-fetch once, then proceed (in-flight ≠ outage; CI gates merges, never the bot). **Freeze law:** when the per-round finding count holds stable across 2 consecutive rounds, stop self-fixing — carry the residuals into the gate brief as "open at freeze, rulings demanded" with proposed dispositions.
 - **Bot self-review failure (2026-09-20):** `assemble_approval_verdict` on our own PRs fails deterministically; remedy is exactly one empty-commit retrigger (squash collapses it), then proceed.
 - **Queue retry purgatory (2026-09-20):** visibility timeout 5400 s ⇒ a timed-out delivery redelivers ~90 min later and PATCHes merged PRs harmlessly.
-- **PR body edits:** `gh pr edit` fails on this repo — use `gh api repos/CarreroMarcos/pr-reviewer/pulls/N -X PATCH -f body=...`.
+- **Verify branch custody after any sub-agent run in a shared checkout (2026-09-28):** check `git branch --contains <sha>` and the PR's files-changed stat before trusting a diff — two incidents had commits/foreign files land on the wrong surface.
+- **Wall-clock estimates over ~1h state their measurement date (2026-09-28):** stale per-call latencies once scaled a 2–4h job into a 19h plan; re-probe before committing to a long run.
+- **PR body edits:** `gh pr edit` fails on this repo — use `gh api repos/CarreroMarcos/pr-reviewer/pulls/N -X PATCH` (`-f body=...` inline; `-F body=@file` from a file — the `@path` form only works under `-F`).
 
 ### Deploys & IAM
 
@@ -119,6 +125,7 @@ Verdicts: **APPROVE** → squash-merge on green CI, comment `Oracle: APPROVE. Me
 ### Ops diagnosis
 
 - **Worker logs are lowercase structured JSON (2026-09-20/27):** filter by field (`'{ $.error_class = "..." }'`) or pull the window and grep locally; `retry_queued` redelivers, `discarded_error` is terminal. Logger `extra` fields are dropped by the formatter — grep the raw window and read the emitting code.
+- **The HCP workspace plans run remotely — saved plans are banned (2026-09-28):** `terraform plan -out` dies with "Saved plans not allowed for workspaces with a VCS connection" and every plan executes in HCP against the VCS-tracked config; the provider-resolved evidence surface is registered state (`terraform show -json`), which lags config until the next apply.
 - **Separate shells after cred export (2026-09-20):** exported AWS creds break 8 fake-AWS integration tests — run capture/terraform and full pytest in different shells (`docs/process/pr-protocol.md`).
 
 ### Jira hygiene

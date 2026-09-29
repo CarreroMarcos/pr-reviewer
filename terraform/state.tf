@@ -51,6 +51,7 @@ resource "aws_dynamodb_table" "state" {
     projection_type = "INCLUDE"
 
     non_key_attributes = [
+      "run_id",
       "sha",
       "status",
       "pipeline",

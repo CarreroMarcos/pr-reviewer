@@ -610,3 +610,153 @@ def test_events_carry_run_id():
     )
     assert events
     assert all(e["run_id"] == run_id for e in events)
+
+
+# --- format-fumble resilience: fence-tolerant parse + one re-ask --------------------
+# T045 capture evidence (2026-09-28): ~17% of live verifier legs returned
+# unparseable content; ~half were fence-wrapped verdicts, ~half genuinely
+# malformed JSON (escape-heavy diffs). The leg strips fences; the stage
+# re-asks ONCE on invalid_response; transport faults stay fail-fast.
+
+GOOD_VERDICT = {"verified": [verified_item("correctness:0")], "killed": [], "escalated": []}
+# Echo contract: every candidate id must be echoed exactly once — scope
+# the stage to the single candidate GOOD_VERDICT echoes.
+ONE_CANDIDATE = [candidate("correctness:0", severity="HIGH", category="correctness")]
+BAD_JSON = '{"verified": [{"candidate_id": "correctness:0"'  # truncated — never parses
+
+
+class SequentialVerifierCall:
+    """Multi-leg stub: one behavior tuple per call, last one repeats.
+
+    Behaviors mirror ScriptedVerifierCall's kinds, plus `sleep_raw`
+    (burn wall time, then return raw content) for window-budget tests.
+    """
+
+    def __init__(self, behaviors):
+        self.behaviors = list(behaviors)
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        behavior = self.behaviors[min(len(self.calls) - 1, len(self.behaviors) - 1)]
+        kind = behavior[0]
+        if kind == "ok":
+            return ok_result(behavior[1])
+        if kind == "raw":
+            return ReviewResult(
+                content=behavior[1],
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                reasoning_content=None,
+            )
+        if kind == "sleep_raw":
+            time.sleep(behavior[1])
+            return ReviewResult(
+                content=behavior[2],
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                reasoning_content=None,
+            )
+        raise behavior[1]
+
+
+def test_fenced_verdict_parses_clean():
+    fenced = "```json\n" + json.dumps(GOOD_VERDICT) + "\n```"
+    call = SequentialVerifierCall([("raw", fenced)])
+    outcome, events = result_of(call, candidates=ONE_CANDIDATE)
+    assert [item["candidate_id"] for item in outcome["verified"]] == ["correctness:0"]
+    assert len(call.calls) == 1
+    assert failed_events(events, "verification_failed") == []
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda body: f"```\n{body}\n```",  # bare fences, no language tag
+        lambda body: f"```json\r\n{body}\r\n``` ",  # CRLF + trailing space
+        lambda body: body,  # no fences at all — unchanged parse path
+    ],
+)
+def test_fence_shapes_parse(wrap):
+    call = SequentialVerifierCall([("raw", wrap(json.dumps(GOOD_VERDICT)))])
+    outcome, events = result_of(call, candidates=ONE_CANDIDATE)
+    assert outcome["verified"][0]["candidate_id"] == "correctness:0"
+    assert len(failed_events(events, "verification_done")) == 1
+
+
+def test_malformed_after_fence_strip_still_fails():
+    call = SequentialVerifierCall([("raw", "```\n{not json\n```")])
+    with pytest.raises(FanoutDegraded) as excinfo:
+        result_of(call)
+    assert excinfo.value.reason == "invalid_response"
+    # fence-strip fixed the wrapper, the body was still garbage → re-ask, then fail
+    assert len(call.calls) == 2
+
+
+def test_invalid_response_reasks_once_then_succeeds():
+    call = SequentialVerifierCall([("raw", BAD_JSON), ("ok", GOOD_VERDICT)])
+    outcome, events = result_of(call, candidates=ONE_CANDIDATE)
+    assert outcome["verified"][0]["candidate_id"] == "correctness:0"
+    assert len(call.calls) == 2
+    assert failed_events(events, "verification_failed") == []
+    assert len(failed_events(events, "verification_done")) == 1
+
+
+def test_invalid_response_twice_fails_loud():
+    call = SequentialVerifierCall([("raw", BAD_JSON), ("raw", BAD_JSON)])
+    captured = []
+    with pytest.raises(FanoutDegraded) as excinfo:
+        invoke(call, events=captured)
+    assert excinfo.value.reason == "invalid_response"
+    assert len(call.calls) == 2
+    failed = failed_events(captured, "verification_failed")
+    assert len(failed) == 1
+    assert failed[0]["error_class"] == "invalid_response"
+
+
+def test_invalid_shape_reasks_once_then_succeeds():
+    call = SequentialVerifierCall([("ok", {"verified": "not-a-list"}), ("ok", GOOD_VERDICT)])
+    outcome, events = result_of(call, candidates=ONE_CANDIDATE)
+    assert outcome["verified"][0]["candidate_id"] == "correctness:0"
+    assert len(call.calls) == 2
+    assert failed_events(events, "verification_failed") == []
+
+
+def test_transport_fault_still_fails_fast_without_reask():
+    call = SequentialVerifierCall([("raise", LlmError("rate_limit")), ("ok", GOOD_VERDICT)])
+    with pytest.raises(FanoutDegraded) as excinfo:
+        result_of(call)
+    assert excinfo.value.reason == "rate_limit"
+    assert len(call.calls) == 1
+
+
+def test_reask_attempt_two_gets_only_remaining_window():
+    # attempt 1 burns 0.5s of a 2s window, then fails with malformed
+    # JSON; attempt 2 sleeps 2.0s against its ~1.5s remaining budget →
+    # window enforcement cancels it: reason=timeout. Margins are >=0.5s
+    # in both directions so a loaded CI runner cannot flip the outcome.
+    call = SequentialVerifierCall(
+        [("sleep_raw", 0.5, BAD_JSON), ("sleep_raw", 2.0, json.dumps(GOOD_VERDICT))]
+    )
+    captured = []
+    with pytest.raises(FanoutDegraded) as excinfo:
+        invoke(call, cfg=make_cfg(verifier_wait_for_s=2), events=captured)
+    assert len(call.calls) == 2
+    assert excinfo.value.reason == "timeout"
+    failed = failed_events(captured, "verification_failed")
+    assert len(failed) == 1
+    assert failed[0]["error_class"] == "timeout"
+
+
+def test_sliver_budget_skips_reask():
+    # attempt 1 burns 1.7s of a 2s window, then fails with malformed
+    # JSON; only ~0.3s (< 25% floor) remains → no re-ask dispatch (a
+    # sliver-budget leg pays a full model request for a guaranteed
+    # timeout) → honest invalid_response failure with a single call.
+    call = SequentialVerifierCall([("sleep_raw", 1.7, BAD_JSON), ("ok", GOOD_VERDICT)])
+    with pytest.raises(FanoutDegraded) as excinfo:
+        result_of(call, candidates=ONE_CANDIDATE, cfg=make_cfg(verifier_wait_for_s=2))
+    assert len(call.calls) == 1
+    assert excinfo.value.reason == "invalid_response"

@@ -2,13 +2,14 @@
 
 Runs the REAL `run_fanout` sequencer (gates, nonce authority, clamp,
 IDs, events) with scripted legs + stub embeddings on one corpus case —
-no network, no creds, no Bedrock. Pins the capture↔scorer contract
+no network, no creds, no live models. Pins the capture↔scorer contract
 (run-record shape, embedding key families, wall-claim wording) that
 T045's live run must reproduce.
 """
 
 import json
 import time
+import urllib.error
 
 import capture_multi_agent as cma
 import fixtures
@@ -210,6 +211,11 @@ def test_smoke_main_writes_output_and_resumes(tmp_path):
     )
     assert stats["runs_completed"] == 2
     assert stats["runs_skipped"] == 0
+    # ScriptedLegs routes by CUMULATIVE call index: run 2's wave legs see
+    # index >= 3 and starve (fixture limit, not a live-path property — the
+    # live single-case probe runs clean). The counter must count that
+    # honestly, not hide it.
+    assert stats["runs_errored"] == 1
     pinned = json.loads(output.read_text(encoding="utf-8"))
     assert set(pinned["cases"]) == {CASE_ID}
     assert len(pinned["cases"][CASE_ID]["runs"]) == 2
@@ -241,6 +247,52 @@ def test_smoke_main_writes_output_and_resumes(tmp_path):
     assert resumed["runs_skipped"] == 2
     reread = json.loads(output.read_text(encoding="utf-8"))
     assert len(reread["cases"][CASE_ID]["runs"]) == 2
+
+
+class _RaisingThenScripted:
+    """First leg raises like a dead endpoint, the rest delegate to the
+    scripted legs — drives one run into the errored state."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls = inner.calls
+        self._raised = False
+
+    def __call__(self, **kwargs):
+        if not self._raised:
+            self._raised = True
+            raise RuntimeError("dead endpoint")
+        return self.inner(**kwargs)
+
+
+def test_smoke_main_counts_errored_runs(tmp_path):
+    """Exit-code discipline (capture blocker #2, 2026-09-28): main()
+    surfaces per-run errors in stats and __main__ exits 1 iff
+    runs_errored — a garbage pin must never look like a clean capture
+    (the old SystemExit(main()) printed the stats dict and exited 1 on
+    EVERY run, success or garbage alike)."""
+
+    output = tmp_path / "pinned.json"
+    checkpoint = tmp_path / "cp.json"
+    stats = cma.main(
+        [
+            "--cases",
+            CASE_ID,
+            "--runs",
+            "1",
+            "--output",
+            str(output),
+            "--checkpoint",
+            str(checkpoint),
+        ],
+        _review_fn=_RaisingThenScripted(ScriptedLegs()),
+        _embed_fn=stub_embed,
+        _creds=(API_KEY, MODEL, ENDPOINT),
+    )
+    assert stats["runs_errored"] == 1
+    assert stats["runs_completed"] == 1
+    pinned = json.loads(output.read_text(encoding="utf-8"))
+    assert pinned["cases"][CASE_ID]["runs"][0]["error"]
 
 
 def test_wall_claim_states_parallelism():
@@ -468,6 +520,280 @@ def test_latency_excludes_embedding_time(monkeypatch):
     assert record["error"] is None
 
 
+def test_ollama_embed_texts_retries_transient_then_succeeds(monkeypatch):
+    """T045 pre-flight: `ollama_embed_texts` survives transient local
+    failures (connection errors, 5xx) via app-level retry with doubling
+    backoff (2s..32s) — same discipline the Bedrock client had."""
+
+    script: list = [
+        urllib.error.URLError("connection refused"),
+        urllib.error.URLError("connection refused"),
+        [0.1, 0.2],
+    ]
+
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
+
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
+    delays: list = []
+    monkeypatch.setattr(cma.time, "sleep", delays.append)
+    assert cma.ollama_embed_texts(["hello"]) == [[0.1, 0.2]]
+    assert delays == [2.0, 4.0]
+
+
+def test_ollama_embed_texts_reraises_after_exhaustion(monkeypatch):
+    """Retry budget is 6 attempts total; the final failure re-raises."""
+
+    def always_refused(text):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(cma, "_ollama_embed_one", always_refused)
+    monkeypatch.setattr(cma.time, "sleep", lambda s: None)
+    try:
+        cma.ollama_embed_texts(["hello"])
+    except urllib.error.URLError:
+        pass
+    else:
+        raise AssertionError("expected URLError after 6 attempts")
+
+
+def test_ollama_embed_texts_non_retryable_raises_without_sleep(monkeypatch):
+    """A 4xx HTTPError is not transient: raise immediately, no backoff."""
+
+    def not_found(text):
+        raise urllib.error.HTTPError(
+            cma.OLLAMA_URL + "/api/embed", 404, "model not found", None, None
+        )
+
+    monkeypatch.setattr(cma, "_ollama_embed_one", not_found)
+    slept: list = []
+    monkeypatch.setattr(cma.time, "sleep", slept.append)
+    try:
+        cma.ollama_embed_texts(["hello"])
+    except urllib.error.HTTPError:
+        pass
+    else:
+        raise AssertionError("expected HTTPError")
+    assert slept == []
+
+
+def test_ollama_embed_texts_retries_5xx_then_succeeds(monkeypatch):
+    """HTTP 5xx responses retry like transient failures."""
+
+    script: list = [
+        urllib.error.HTTPError(
+            cma.OLLAMA_URL + "/api/embed", 503, "service unavailable", None, None
+        ),
+        [1.0],
+    ]
+
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
+
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
+    delays: list = []
+    monkeypatch.setattr(cma.time, "sleep", delays.append)
+    assert cma.ollama_embed_texts(["hi"]) == [[1.0]]
+    assert delays == [2.0]
+
+
+def test_live_review_fn_accepts_fanout_kwargs(monkeypatch):
+    """Capture blocker found at the first live run (2026-09-28):
+    `run_fanout` passes api_key/model/endpoint explicitly
+    (lambda/common/fanout.py:178-180) while the wrapper pre-bound the
+    same creds — the double kwarg raised TypeError per leg in ~0ms,
+    every leg recorded agent_failed/unknown, and the run pinned 72
+    empty shells (exit 1). The stub smoke could not see it (stub legs
+    accept **kwargs) and CI could not (zero external calls).
+    Regression: caller kwargs merge OVER the pre-bound creds."""
+
+    captured: dict = {}
+
+    def fake_review_diff(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(cma, "review_diff", fake_review_diff)
+    fn = cma._live_review_fn("k", "m", "https://e")
+    out = fn(
+        api_key="k",
+        model="m",
+        endpoint="https://e",
+        system_prompt="s",
+        diff_text="d",
+        thinking_enabled=True,
+        reasoning_effort="low",
+        read_timeout_s=30,
+        allowed_hosts=frozenset(),
+    )
+    assert out == "ok"
+    assert captured["api_key"] == "k"
+    assert captured["model"] == "m"
+    assert captured["endpoint"] == "https://e"
+    assert captured["system_prompt"] == "s"
+    assert captured["diff_text"] == "d"
+    assert captured["reasoning_effort"] == "low"
+    assert captured["thinking_enabled"] is True
+
+
+def test_live_review_fn_rejects_cred_divergence():
+    """Bot R1 (#137): a caller cred that disagrees with the hydrated
+    closure creds must raise loudly — silent merge-override would
+    discard the SSM-hydrated creds (one source of truth enforced)."""
+
+    fn = cma._live_review_fn("k", "m", "https://e")
+    try:
+        fn(
+            api_key="STALE",
+            model="m",
+            endpoint="https://e",
+            system_prompt="s",
+            diff_text="d",
+        )
+    except ValueError as exc:
+        assert "api_key" in str(exc)
+    else:
+        raise AssertionError("expected ValueError on cred divergence")
+
+
+def test_ollama_embed_one_posts_model_and_parses_embeddings(monkeypatch):
+    """The seam POSTs {model, input} to /api/embed and returns the first
+    vector of the `embeddings` payload (real seam logic, socket stubbed)."""
+
+    captured: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"embeddings": [[0.1] * cma.EXPECTED_EMBED_DIM]}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured["method"] = req.get_method()
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        assert timeout == 60
+        return _Resp()
+
+    monkeypatch.setattr(cma.urllib.request, "urlopen", fake_urlopen)
+    assert cma._ollama_embed_one("hello") == [0.1] * cma.EXPECTED_EMBED_DIM
+    assert captured["method"] == "POST"
+    assert captured["url"] == cma.OLLAMA_URL + "/api/embed"
+    assert captured["body"] == {"model": cma.OLLAMA_MODEL, "input": ["hello"]}
+
+
+def test_ollama_embed_texts_retries_429_then_succeeds(monkeypatch):
+    """Gap-1 (Gate 31): the 429 rate-limit shape exercises the exact-code
+    classifier branch — a typo there (`==` vs `in`) would turn the next
+    throttle into fail-fast, shipping green."""
+
+    script: list = [
+        urllib.error.HTTPError(cma.OLLAMA_URL + "/api/embed", 429, "rate limited", None, None),
+        [1.0],
+    ]
+
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
+
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
+    delays: list = []
+    monkeypatch.setattr(cma.time, "sleep", delays.append)
+    assert cma.ollama_embed_texts(["hi"]) == [[1.0]]
+    assert delays == [2.0]
+
+
+def test_ollama_embed_one_rejects_wrong_dim_vector(monkeypatch):
+    """Bot R1 (#136): a wrong-dimension vector fails loud at the seam —
+    a misconfigured local model must never silently pin unusable
+    vectors that only explode at score time."""
+
+    # Gap-2 (Gate 31): pin the constant itself — the happy-path test
+    # builds its vector FROM this constant, so a wrong value would
+    # otherwise pass vacuously.
+    assert cma.EXPECTED_EMBED_DIM == 768
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"embeddings": [[0.1, 0.2]]}).encode("utf-8")
+
+    monkeypatch.setattr(cma.urllib.request, "urlopen", lambda req, timeout: _Resp())
+    try:
+        cma._ollama_embed_one("hello")
+    except ValueError as exc:
+        assert "malformed vector" in str(exc)
+        assert "dim=2" in str(exc)
+    else:
+        raise AssertionError("expected ValueError on wrong-dim vector")
+
+
+def test_ollama_embed_one_rejects_malformed_payload(monkeypatch):
+    """A payload without usable embeddings raises — corrupt responses
+    fail loud, never silently truncate to a wrong-length vector."""
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"unexpected": True}).encode("utf-8")
+
+    monkeypatch.setattr(cma.urllib.request, "urlopen", lambda req, timeout: _Resp())
+    try:
+        cma._ollama_embed_one("hello")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on malformed payload")
+
+
+def test_preflight_delimiter_scan_clean_corpus_silent(capsys):
+    """T045 pre-flight: the real corpus carries no delimiter literals —
+    no hits, no warnings."""
+    assert cma.preflight_delimiter_scan([CASE_ID]) == []
+    assert capsys.readouterr().err == ""
+
+
+def test_preflight_delimiter_scan_warns_never_aborts(monkeypatch, capsys):
+    """T045 pre-flight: a diff and a manifest carrying the verbatim-tag
+    literals warn (one line per hit) and return the hits — the run
+    proceeds, the gate rules."""
+    monkeypatch.setitem(
+        fixtures.CORPUS,
+        "evil",
+        lambda: (
+            "diff <<<CANDIDATE_FINDINGS x",
+            {"expected_findings": [{"hint": "<<<END_CANDIDATE_FINDINGS y"}]},
+            {"title": "", "body": ""},
+        ),
+    )
+    hits = cma.preflight_delimiter_scan(["evil"])
+    assert len(hits) == 2
+    err = capsys.readouterr().err
+    assert "evil:diff_text" in err and "evil:manifest" in err
+
+
 def test_round_trip_capture_record_through_scorer():
     """Bot R1 Fix 6 (Risk Note): a REAL capture-shaped run record —
     list-form candidates straight from `run_case` — flowing through the
@@ -534,3 +860,24 @@ def test_round_trip_capture_record_through_scorer():
     # One bullet covering two survivors is a correct merge — matching is
     # many-to-one (HLD gate 4 keys on "no semantic match", not exclusivity).
     assert fidelity["dropped"] == 0
+
+
+def test_ollama_embed_retry_logs_attempts(monkeypatch, capsys):
+    """Bot R2 (PR #135): each retry attempt logs a one-line stderr note
+    (attempt, error, delay) so a dead endpoint doesn't look like a hang."""
+
+    script: list = [urllib.error.URLError("connection refused"), [0.3]]
+
+    def fake_one(text):
+        action = script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return action
+
+    monkeypatch.setattr(cma, "_ollama_embed_one", fake_one)
+    monkeypatch.setattr(cma.time, "sleep", lambda s: None)
+    assert cma.ollama_embed_texts(["hello"]) == [[0.3]]
+    err = capsys.readouterr().err
+    assert "ollama embed retry 1/6" in err
+    assert "URLError" in err
+    assert "sleeping 2s" in err

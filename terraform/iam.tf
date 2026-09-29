@@ -64,6 +64,7 @@ locals {
     glm_api_key    = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/pr-reviewer/glm-api-key"
     glm_model      = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/pr-reviewer/glm-model"
     glm_endpoint   = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/pr-reviewer/glm-endpoint"
+    replay_token   = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/pr-reviewer/replay-token"
   }
 
   ingress_function_arn = "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:pr-reviewer-ingress"
