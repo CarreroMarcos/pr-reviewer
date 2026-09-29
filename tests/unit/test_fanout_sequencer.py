@@ -52,7 +52,7 @@ import pytest
 from common import fanout as fanout_mod
 from common.config import MultiAgentConfig
 from common.diff import DiffFile, DiffResult, post_image_lengths
-from common.fanout import FanoutDegraded, run_fanout
+from common.fanout import FanoutDegraded, _remaining_ms, run_fanout
 from common.llm import LlmError, ReviewResult
 
 NONCE_RE = re.compile(r'nonce="([0-9a-f]{16})"')
@@ -412,14 +412,60 @@ def test_gate1_exhaustion_degrades_before_any_call():
     cfg = make_cfg()
     gate1, _, _ = gate_totals(cfg)
     double = ScriptedFanoutCall()
+    seen_events: list = []
     with pytest.raises(FanoutDegraded) as exc_info:
-        invoke(double, cfg=cfg, remaining=(gate1 - 1,))
+        invoke(double, cfg=cfg, remaining=(gate1 - 1,), events=seen_events)
     assert (exc_info.value.reason, exc_info.value.failed_stage) == (
         "insufficient_budget",
         "wave",
     )
     assert double.calls == []
     assert double.prompts_with("SPEC-") == []
+    assert seen_events == []  # budget-degrade path emits no events (T061)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "900000",
+        None,
+        object(),
+        True,
+        False,
+    ],
+    ids=["nan", "inf", "-inf", "str", "none", "object", "bool-true", "bool-false"],
+)
+def test_remaining_ms_fails_closed_on_non_finite_and_non_numeric(shape):
+    class C:
+        def get_remaining_time_in_millis(self):
+            return shape
+
+    assert _remaining_ms(C()) is None
+
+
+def test_remaining_ms_passes_huge_int_clock_through():
+    class C:
+        def get_remaining_time_in_millis(self):
+            return 10**309
+
+    assert _remaining_ms(C()) == 10**309
+
+
+def test_non_finite_clock_degrades_without_calls():
+    cfg = make_cfg()
+    double = ScriptedFanoutCall()
+    seen_events: list = []
+    with pytest.raises(FanoutDegraded) as exc_info:
+        invoke(double, cfg=cfg, remaining=(float("nan"),), events=seen_events)
+    assert (exc_info.value.reason, exc_info.value.failed_stage) == (
+        "insufficient_budget",
+        "wave",
+    )
+    assert double.calls == []
+    assert seen_events == []
 
 
 def test_gate1_boundary_proceeds():

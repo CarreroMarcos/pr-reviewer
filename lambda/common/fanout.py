@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import math
 import re
 import secrets
 import time
@@ -1542,8 +1543,10 @@ def assemble_synth_prompt(
     append the nonced reasoning block. One fresh nonce. (Run_synth fills
     the same two slots internally for its leg; this assembly adds the
     reasoning block the stage signature cannot carry — the sequencer
-    composes them, and the internal fill is a harmless no-op on
-    pre-filled prompts.)"""
+    composes them. That internal fill is single-pass within itself, but
+    its TEMPLATE is this pre-filled prompt, so payload-embedded slot
+    markers CAN be re-scanned there — prompt duplication only; verdict/
+    event truth rides params, never the prompt.)"""
     filled = _fill_prompt(
         template,
         {
@@ -1567,9 +1570,9 @@ def _remaining_ms(context: Any) -> int | None:
     single-pass path — `context.get_remaining_time_in_millis`).
 
     Fail-closed discipline mirrors the worker's timeout-retry budget
-    (`worker_handler.py:485-499`): a missing/unreadable/non-numeric clock
-    yields `None`, and every budget gate treats `None` as exhausted —
-    degrade, never proceed blind.
+    (`worker_handler.py:485-499`): a missing/unreadable/non-numeric/
+    non-finite (NaN/Inf) clock yields `None`, and every budget gate
+    treats `None` as exhausted — degrade, never proceed blind.
     """
     get_remaining = getattr(context, "get_remaining_time_in_millis", None)
     if not callable(get_remaining):
@@ -1579,6 +1582,8 @@ def _remaining_ms(context: Any) -> int | None:
     except Exception:
         return None
     if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+        return None
+    if isinstance(remaining, float) and not math.isfinite(remaining):
         return None
     return int(remaining)
 
@@ -1630,7 +1635,9 @@ def run_fanout(
     gate (synth + margin) → synthesizer (deterministic `dedupe_findings` +
     `render_findings_section` pre-render composed via
     `assemble_synth_prompt`: one fresh nonce; the stage's internal slot
-    fill is a harmless no-op on the pre-filled prompt).
+    fill's template is the pre-filled prompt, so payload-embedded slot
+    markers CAN be re-scanned there — prompt duplication only; verdict/
+    event truth rides params, never the prompt).
 
     Nonce authority: every nonce in the pipeline originates in this
     module's `assemble_*` composition during this call — fresh per
