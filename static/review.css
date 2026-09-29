@@ -1,0 +1,297 @@
+/* Review replay — single dark instrument-console theme.
+   No webfonts, no external assets: system stacks only. */
+
+:root {
+  --ink: #0e1319;
+  --ink-2: #141b24;
+  --ink-3: #1b242f;
+  --line: #26313e;
+  --fog: #93a1b3;
+  --paper: #e8edf3;
+  --dim: #6b7889;
+  --signal: #5fd0c5;
+  --signal-dim: rgba(95, 208, 197, 0.14);
+  --amber: #e0b45c;
+  --red: #e07a6c;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --serif: "Iowan Old Style", Palatino, Georgia, "Times New Roman", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 500px at 80% -10%, rgba(95, 208, 197, 0.07), transparent 60%),
+    var(--ink);
+  color: var(--paper);
+  font-family: var(--sans);
+  line-height: 1.55;
+  min-height: 100vh;
+}
+
+/* --- top bar --------------------------------------------------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.7rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(14, 19, 25, 0.85);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  flex-wrap: wrap;
+}
+
+.brand { display: flex; align-items: center; gap: 0.5rem; }
+.brand-mark { color: var(--signal); font-size: 1.1rem; }
+.brand-name { font-family: var(--mono); font-size: 0.9rem; letter-spacing: 0.02em; }
+
+.run-meta {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  color: var(--fog);
+  margin-inline: auto;
+}
+.run-meta strong { color: var(--paper); font-weight: 600; }
+
+.session { display: flex; align-items: center; gap: 0.6rem; margin-left: auto; }
+.session-state {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--amber);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+}
+.session-state.open { color: var(--signal); }
+
+/* --- page ------------------------------------------------------ */
+.page {
+  max-width: 1060px;
+  margin: 0 auto;
+  padding: 1.75rem 1.25rem 3rem;
+  display: grid;
+  gap: 1.25rem;
+}
+
+.panel {
+  background: linear-gradient(180deg, var(--ink-2), var(--ink));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1.25rem 1.35rem;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+h1, h2 {
+  font-family: var(--serif);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0 0 0.4rem;
+}
+h1 { font-size: 1.7rem; }
+h2 { font-size: 1.2rem; }
+
+.lede { color: var(--fog); max-width: 60ch; }
+.hint { color: var(--dim); font-size: 0.85rem; margin-bottom: 0; }
+.mono { font-family: var(--mono); }
+.count { color: var(--dim); font-size: 0.85rem; }
+
+.notice {
+  margin: 0;
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--amber);
+  background: rgba(224, 180, 92, 0.08);
+  color: var(--paper);
+}
+
+/* --- login ----------------------------------------------------- */
+.field-row { display: grid; grid-template-columns: 1fr 2fr; gap: 0.8rem; }
+.field { display: grid; gap: 0.35rem; margin-bottom: 0.8rem; font-size: 0.85rem; color: var(--fog); }
+input {
+  font: inherit;
+  color: var(--paper);
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  width: 100%;
+}
+input:focus-visible, button:focus-visible, pre:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  color: var(--paper);
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.95rem;
+}
+button:hover { border-color: var(--signal); }
+button.primary {
+  background: var(--signal);
+  border-color: var(--signal);
+  color: #0b1116;
+  font-weight: 700;
+  margin-top: 0.4rem;
+}
+button[aria-selected="true"] { border-color: var(--signal); color: var(--signal); }
+
+.controls { display: flex; align-items: center; gap: 0.7rem; }
+.replay-state { font-size: 0.78rem; color: var(--dim); min-width: 12ch; text-align: right; }
+
+/* --- DAG ------------------------------------------------------- */
+#dag { width: 100%; height: auto; display: block; margin-top: 0.5rem; }
+#dag .edges line {
+  stroke: var(--line);
+  stroke-width: 2;
+  transition: stroke 0.4s ease;
+}
+#dag .edges line.lit { stroke: var(--signal); }
+#dag .node rect {
+  fill: var(--ink-3);
+  stroke: var(--line);
+  stroke-width: 1.5;
+  transition: fill 0.4s ease, stroke 0.4s ease;
+}
+#dag .node text { fill: var(--fog); font-family: var(--mono); }
+#dag .node .node-title { font-size: 15px; }
+#dag .node .node-sub { font-size: 11px; fill: var(--dim); }
+#dag .node.active rect {
+  stroke: var(--signal);
+  fill: var(--signal-dim);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+#dag .node.active text { fill: var(--paper); }
+#dag .node.done rect { stroke: var(--signal); }
+#dag .node.done .node-title { fill: var(--signal); }
+#dag .node.failed rect { stroke: var(--red); }
+#dag .node.failed .node-title { fill: var(--red); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* --- cards ----------------------------------------------------- */
+.cards { display: grid; gap: 0.9rem; margin-top: 0.7rem; }
+.card {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--signal);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  background: rgba(27, 36, 47, 0.55);
+}
+.card.sev-HIGH { border-left-color: var(--red); }
+.card.sev-MEDIUM { border-left-color: var(--amber); }
+.card-head {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+.sev {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+}
+.sev-HIGH .sev { color: var(--red); }
+.sev-MEDIUM .sev { color: var(--amber); }
+.sev-LOW .sev { color: var(--signal); }
+.loc { font-family: var(--mono); font-size: 0.8rem; color: var(--fog); }
+.card-title { font-weight: 650; }
+.card .flag { font-size: 0.75rem; color: var(--amber); font-family: var(--mono); }
+.prose { color: var(--paper); font-size: 0.92rem; overflow-wrap: anywhere; }
+.prose p { margin: 0.45rem 0; }
+.prose code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: rgba(95, 208, 197, 0.1);
+  padding: 0.1em 0.35em;
+  border-radius: 5px;
+}
+.prose pre {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  background: #0a0e13;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+.agent-tag { font-family: var(--mono); font-size: 0.78rem; color: var(--signal); }
+.agent-stats { font-family: var(--mono); font-size: 0.75rem; color: var(--dim); }
+.empty { color: var(--dim); font-style: italic; }
+
+/* --- timeline -------------------------------------------------- */
+.timeline { list-style: none; margin: 0.7rem 0 0; padding: 0; display: grid; gap: 0; }
+.timeline li {
+  display: grid;
+  grid-template-columns: 110px 170px 1fr;
+  gap: 0.8rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.88rem;
+  align-items: baseline;
+}
+.timeline li:first-child { border-top: 0; }
+.t-ts { font-family: var(--mono); font-size: 0.76rem; color: var(--dim); }
+.t-type { font-family: var(--mono); font-size: 0.76rem; color: var(--signal); }
+.t-detail { color: var(--fog); overflow-wrap: anywhere; }
+
+/* --- raw archive ----------------------------------------------- */
+.raw {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  background: #0a0e13;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fog);
+}
+
+.foot {
+  text-align: center;
+  color: var(--dim);
+  font-size: 0.75rem;
+  padding: 0 1rem 2rem;
+}
+
+/* --- responsive + reduced motion -------------------------------- */
+@media (max-width: 760px) {
+  .field-row { grid-template-columns: 1fr; }
+  .timeline li { grid-template-columns: 1fr; gap: 0.15rem; }
+  .run-meta { font-size: 0.75rem; gap: 0.6rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #dag .node rect, #dag .edges line { transition: none; }
+  #dag .node.active rect { animation: none; }
+}
