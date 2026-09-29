@@ -203,6 +203,12 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 **Consequences:** T050 (MULTI_AGENT activation) stays blocked on two reds: the 0-wrongful-kill promotion gate (at 3) and the D8 precision band — the latter now a human decision. A future D9 ruling that re-runs the capture supersedes this entry's numbers.
 **Current truth:** `results/t046-scoring.json`, `results/t070-verifier-hardening-evidence.md` (§ T071).
 
+## 2026-09-29 — D9 ruling: D8 band re-ratified to +0.0608; 0-wrongful-kill bar kept; T056 bundled with T050 (SPR-161)
+
+**Context:** the T071 fail branch (mean +0.0608 < 0.08) put D9 to Mars: keep the 0.08 band (T050 blocked) or re-ratify. The two reds are one trade — the pre-hardening verifier was kill-eager (10/15 wrongful, inflating p1 to +0.0845); the T070 hardening fixed wrongful kills (10→3, recall +0.037, no missed-kill regression) at a precision-uplift cost (p2 +0.037).
+**Decision (Mars, structured Q&A 2026-09-29):** R1 — the D8 precision band is RE-RATIFIED: the measured +0.0608 is the accepted operating point; D8 gate 2 passes by ruling (HLD amended). R2 — the 0-wrongful-kill promotion bar is KEPT: T050 stays blocked at 3 wrongful kills; hardening round 2 minted as T072 (this spec change). R3 — T056's `tf-*` deploy is BUNDLED with T050's activation change: one apply ships both.
+**Consequences:** T050's only remaining red is the promotion bar; a post-T072 capture measuring above +0.0608 supersedes the re-ratified number. Supersedes the "human decision" open item in this file's 2026-09-29 re-capture entry above.
+
 ## 2026-09-29 — Q8 worker-concurrency ruling recorded: unreserved worker, ESM concurrency 2, DynamoDB mutex (SPR-146/T058)
 
 **Ruling:** Q8 RESOLVED 2026-09-26 (Mars): worker concurrency = Option A — unreserved worker, ESM concurrency 2, single-worker execution enforced via the §D9 DynamoDB mutex contract; on contention the contender runs single-pass inline, never a visibility deferral.
