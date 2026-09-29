@@ -98,8 +98,10 @@ canonical comment. This mirrors Uber uReview's production shape (3 specialists +
 per the Uber engineering blog it analyzes over 90% of the weekly ~65,000 diffs landed).
 The +0.08 precision bar in D8 is a Mars-set product target, not a citation-derived number — no
 external precision benchmark is claimed. (A prior citation to "Wang, AAMAS 2026 +10.3pp" was
-withdrawn 2026-09-26: unsourcable in the AAMAS '26 proceedings.) Bar re-ratified 2026-09-29
-(Mars D9 ruling): the measured +0.0608 operating point is accepted — see D8 gate 2.
+withdrawn 2026-09-26: unsourcable in the AAMAS '26 proceedings.)
+
+Bar re-ratified 2026-09-29 (Mars D9 ruling): the measured +0.0608 operating point is accepted —
+see D8 gate 2.
 The old maintainability/style specialist is dropped — lowest signal, and the verifier kills
 its noise anyway. Blast-radius analysis (symbol lookup over unedited callers) is v2: it needs
 real tooling (ripgrep/LSP), not pure LLM reasoning, per Stengg et al.
@@ -242,8 +244,9 @@ Five hard gates, paired case-by-case vs the single-pass pin:
    **Amended 2026-09-29 (Mars D9 ruling):** the band fired and the re-capture meaned +0.0608 < 0.08
    ($p_1$ = +0.0845 pre-hardening, $p_2$ = +0.037 capture of record); the measured +0.0608 is
    RE-RATIFIED as the operating point — gate 2 passes by ruling (DECISIONS 2026-09-29). The band
-   mechanics above stand as the historical record; the 0-wrongful-kill promotion bar is unaffected
-   and remains T050's activation gate.
+   mechanics above stand as the historical record and do NOT govern future captures: a post-T072
+   capture measuring above +0.0608 supersedes the re-ratified number. The 0-wrongful-kill promotion
+   bar is unaffected and remains T050's activation gate.
 3. **wrongful kills:** match rule pre-registered — a killed candidate matches a manifest
    finding iff location matches ($|\Delta\text{line}| \le 2$ on same path) OR embedding cosine ≥ 0.76
    (using the D8-pinned offline embedder — local Ollama `nomic-embed-text`, amended 2026-09-28
