@@ -1583,7 +1583,7 @@ def _remaining_ms(context: Any) -> int | None:
         return None
     if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
         return None
-    if not math.isfinite(remaining):
+    if isinstance(remaining, float) and not math.isfinite(remaining):
         return None
     return int(remaining)
 
@@ -1635,7 +1635,9 @@ def run_fanout(
     gate (synth + margin) → synthesizer (deterministic `dedupe_findings` +
     `render_findings_section` pre-render composed via
     `assemble_synth_prompt`: one fresh nonce; the stage's internal slot
-    fill is a harmless no-op on the pre-filled prompt).
+    fill's template is the pre-filled prompt, so payload-embedded slot
+    markers CAN be re-scanned there — prompt duplication only; verdict/
+    event truth rides params, never the prompt).
 
     Nonce authority: every nonce in the pipeline originates in this
     module's `assemble_*` composition during this call — fresh per

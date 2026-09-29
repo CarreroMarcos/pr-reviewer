@@ -433,8 +433,10 @@ def test_gate1_exhaustion_degrades_before_any_call():
         "900000",
         None,
         object(),
+        True,
+        False,
     ],
-    ids=["nan", "inf", "-inf", "str", "none", "object"],
+    ids=["nan", "inf", "-inf", "str", "none", "object", "bool-true", "bool-false"],
 )
 def test_remaining_ms_fails_closed_on_non_finite_and_non_numeric(shape):
     class C:
@@ -442,6 +444,14 @@ def test_remaining_ms_fails_closed_on_non_finite_and_non_numeric(shape):
             return shape
 
     assert _remaining_ms(C()) is None
+
+
+def test_remaining_ms_passes_huge_int_clock_through():
+    class C:
+        def get_remaining_time_in_millis(self):
+            return 10**309
+
+    assert _remaining_ms(C()) == 10**309
 
 
 def test_non_finite_clock_degrades_without_calls():
