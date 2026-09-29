@@ -33,16 +33,33 @@ EXPECTED_WORKER_TIMEOUT = 900
 EXPECTED_BATCH_SIZE = 1
 
 
+def _hcl_canary(match: re.Match[str] | None, what: str) -> re.Match[str]:
+    """T065 (Gate-13 aside): every terraform-text extraction is bounded
+    by this canary. A None match means the HCL SHAPE changed (reformat,
+    rename, restructure) — not that a pinned value drifted — so fail
+    with the loud, actionable message instead of a bare "not found"."""
+    assert match is not None, (
+        f"HCL SHAPE CHANGED: {what} no longer matches the expected "
+        "terraform layout — a reformat/rename broke this contract-file "
+        "extraction. Update the extraction; do not weaken the pin."
+    )
+    return match
+
+
 def _int_assignment(text: str, key: str) -> int:
     """Value of the FIRST `key = <int>` assignment (HCL, `=` style)."""
-    match = re.search(rf"^\s*{re.escape(key)}\s*=\s*(\d+)\s*(?:#.*)?$", text, re.MULTILINE)
-    assert match is not None, f"{key!r} not found in terraform text"
+    match = _hcl_canary(
+        re.search(rf"^\s*{re.escape(key)}\s*=\s*(\d+)\s*(?:#.*)?$", text, re.MULTILINE),
+        f"{key!r} assignment",
+    )
     return int(match.group(1))
 
 
 def _max_receive_count() -> int:
-    match = re.search(r"maxReceiveCount\s*=\s*(\d+)", MESSAGING_TF)
-    assert match is not None, "maxReceiveCount not found in redrive policy"
+    match = _hcl_canary(
+        re.search(r"maxReceiveCount\s*=\s*(\d+)", MESSAGING_TF),
+        "maxReceiveCount in the messaging.tf redrive policy",
+    )
     return int(match.group(1))
 
 
@@ -76,12 +93,14 @@ def test_esm_batch_size_is_one():
 def _worker_lambda_timeout() -> int:
     """`timeout` inside the `aws_lambda_function" "worker"` block (the
     ingress function declares its own, smaller, timeout first)."""
-    block = re.search(r'resource "aws_lambda_function" "worker" \{', COMPUTE_TF)
-    assert block is not None, "worker lambda resource not found"
-    match = re.search(
-        r"^\s*timeout\s*=\s*(\d+)\s*(?:#.*)?$", COMPUTE_TF[block.end() :], re.MULTILINE
+    block = _hcl_canary(
+        re.search(r'resource "aws_lambda_function" "worker" \{', COMPUTE_TF),
+        '`resource "aws_lambda_function" "worker"` block in compute.tf',
     )
-    assert match is not None, "worker timeout not found"
+    match = _hcl_canary(
+        re.search(r"^\s*timeout\s*=\s*(\d+)\s*(?:#.*)?$", COMPUTE_TF[block.end() :], re.MULTILINE),
+        "`timeout` assignment inside the worker lambda block",
+    )
     return int(match.group(1))
 
 
