@@ -230,15 +230,20 @@ def build_index_item(
     archive_written_at: int,
     findings_n: int,
 ) -> dict[str, Any]:
-    """Assemble the best-effort DDB index item: exactly the T031-projected
-    attribute set (`pk` provisional — see module docstring)."""
+    """Assemble the best-effort DDB index item: the T031-projected
+    attribute set plus top-level `run_id` (Mars ruling 2026-09-28 — the
+    GSI projects it for the latest-run contract, #148; a projected
+    attribute no writer stores is dead config, Gate-40 F1). `pk`
+    provisional — see module docstring."""
     check_status(pipeline, status)
     if not isinstance(archive_s3_key, str) or not archive_s3_key:
         raise ArchiveError("archive_s3_key", "bad_key")
     if not isinstance(findings_n, int) or isinstance(findings_n, bool) or findings_n < 0:
         raise ArchiveError("findings_n", "bad_findings_n")
+    checked_run_id = _check_run_id(run_id)
     return {
-        "pk": f"archive:{_check_run_id(run_id)}",
+        "pk": f"archive:{checked_run_id}",
+        "run_id": checked_run_id,
         "pr_number": _check_pr(pr),
         "started_ts": _index_started_ts(started_ts),
         "sha": _check_sha(sha),

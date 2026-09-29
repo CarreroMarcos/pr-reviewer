@@ -81,9 +81,11 @@ No locks are required inside fan-out, eliminating cross-thread race conditions b
 His Z.AI plan makes GLM-5.3-Flash effectively unlimited, so a Bedrock migration is hassle
 with no payoff — decided 2026-09-25: GLM for all agents, no Bedrock in the v1 RUNTIME path.
 (Bedrock research kept on file in case a future stronger-synthesizer experiment is ever eval-gated.)
-Carve-out (added 2026-09-26, bot review #5): Bedrock Titan Text Embeddings is permitted in the OFFLINE
-eval harness only — `capture_multi_agent.py`, out-of-band, per the D8 Offline Embedding Rule — never
-in any request-serving path.
+Carve-out (added 2026-09-26, bot review #5; provider amended 2026-09-28, Mars ruling): OFFLINE
+eval-harness embeddings are permitted in `capture_multi_agent.py` only — out-of-band, per the D8
+Offline Embedding Rule — never in any request-serving path. Provider: local Ollama
+`nomic-embed-text` (was Amazon Bedrock Titan V2 — on-demand entitlement suppressed account-wide
+on 395799817120; full ruling in `docs/DECISIONS.md` 2026-09-28).
 The agent interface stays provider-neutral behind the existing `common/llm.py` port.
 
 **D3 — Topology: 3 generator specialists + adversarial verifier + synthesizer.**
@@ -238,8 +240,10 @@ Five hard gates, paired case-by-case vs the single-pass pin:
    → fail outright. $0.05 \le p < 0.15$ → exactly one full re-run; pass iff $(p_1 + p_2)/2 \ge 0.08$.
 3. **wrongful kills:** match rule pre-registered — a killed candidate matches a manifest
    finding iff location matches ($|\Delta\text{line}| \le 2$ on same path) OR embedding cosine ≥ 0.76
-   (using Amazon Bedrock Titan Text Embeddings `amazon.titan-embed-text-v2:0` pinned offline in
-   the eval harness; 0.76 is an app-tuned, pre-registered threshold, not a model property). Human
+   (using the D8-pinned offline embedder — local Ollama `nomic-embed-text`, amended 2026-09-28
+   after the Bedrock entitlement suppression; 0.76 is an app-tuned, pre-registered threshold, not a
+   model property, and both A/B arms share the embedder so deltas stay internally consistent).
+   Human
    adjudication applies ONLY to ties/ambiguities flagged by the deterministic rule — the gate itself
    is computed deterministically, and a run with zero deterministic matches passes without human input.
    Gate: **0 wrongful kills across all runs** (all cases × 3 runs). The 2 subtle-true cases MUST
@@ -262,7 +266,8 @@ exploration beyond the confirmed setting runs only if budget allows and does not
 **Offline Embedding Rule (Constitution II):** External ML libraries (`torch`, `sentence-transformers`,
 `numpy`, `scipy`) are strictly banned by `pyproject.toml`. Pytest in CI must run 100% offline without network.
 Embedding vectors are generated exclusively during out-of-band capture (`capture_multi_agent.py`) via
-`boto3.client("bedrock-runtime")` calling Titan Text Embeddings v2 in `us-west-2`, and serialized into
+`ollama_embed_texts` POSTing local Ollama `nomic-embed-text` at `http://localhost:11434/api/embed`,
+and serialized into
 `pinned_multi_agent.json` — for manifest findings AND for every candidate and verifier-killed finding
 text of each captured run: the wrongful-kill rule scores the killed side's vector, so the cosine arm
 is unscorable without it (amended 2026-09-26, bot review #2). Cosine similarity is computed in pure
@@ -695,8 +700,12 @@ never silently forwarded into the synthesizer prompt.
   files are data, not rendered markup, and every consumer (the replay UI today, any future consumer)
   MUST treat them as adversarial input and apply §5 sanitization before any render path.
 - **Viewer Lambda IAM:**
-  - `ssm:GetParameter` on token parameter ARN, plus `kms:Decrypt` on the parameter's KMS key ARN
-    (SecureString reads fail without it — missing this makes the viewer 500 on every authed route).
+  - `ssm:GetParameter` on the replay token parameter ARN
+    (`…:parameter/pr-reviewer/replay-token` — the plain SecureString the T056 runbook provisions).
+    **No `kms:Decrypt`**: SecureStrings use the AWS-managed `aws/ssm` key and SSM decrypts
+    server-side via WithDecryption (§2.6 mechanics; iam.tf note #6, applied truth since T035).
+    The earlier `kms:Decrypt` requirement is superseded (Mars ruling 2026-09-28, DECISIONS) —
+    with a plain SecureString and no `--key-id`, the missing-decrypt 500 mode cannot trigger.
   - `s3:GetObject` on `["${bucket.arn}/runs/*", "${bucket.arn}/static/*"]` (permits serving static assets and archives).
   - `dynamodb:Query` on `"${table.arn}/index/pr-runs-index"`.
 - **DynamoDB State Store & GSI Capacity Rebalancing (Mars Ruling 2026-09-26):**
@@ -704,9 +713,10 @@ never silently forwarded into the synthesizer prompt.
   - Base table: `read_capacity = 20`, `write_capacity = 20`.
   - GSI `pr-runs-index`: `read_capacity = 5`, `write_capacity = 5`.
   - Partition key: `pr_number (N)`. Sort key: `started_ts (S)`.
-  - `ProjectionType: INCLUDE` with non-key attributes `["sha", "status", "pipeline", "archive_s3_key", "archive_written_at", "findings_n"]`.
+  - `ProjectionType: INCLUDE` with non-key attributes `["run_id", "sha", "status", "pipeline", "archive_s3_key", "archive_written_at", "findings_n"]`.
     (Answers "latest run for PR #123" without requiring a secondary base-table `GetItem`; `pipeline`
-    is projected so latest-run queries can discriminate shadow runs — gate 5).
+    is projected so latest-run queries can discriminate shadow runs — gate 5; `run_id` projected so
+    the latest-run response can carry it — Mars ruling 2026-09-28, DECISIONS).
 
 ## 8. Rollout & Hardened Terraform Checklist
 
@@ -769,7 +779,8 @@ beyond `review_started` / `checkpoint` / `review_published`.
    - Function URL `authorization_type = "NONE"`.
    - Add permission statement `lambda:InvokeFunction` with condition `lambda:InvokedViaFunctionUrl = true`.
    - Viewer IAM role: `s3:GetObject` on `runs/*` and `static/*`; `dynamodb:Query` on GSI ARN;
-     `ssm:GetParameter` on token ARN plus `kms:Decrypt` on the parameter's KMS key ARN (§7).
+     `ssm:GetParameter` on the replay-token ARN — **no `kms:Decrypt`** (§2.6 mechanics; the
+     decrypt clause is superseded, Mars ruling 2026-09-28, §7 + DECISIONS).
 7. **Environment Variables (12):**
    - `MULTI_AGENT` (0/1), `MULTI_AGENT_PHASE0` (0/1), `FANOUT_CONCURRENCY` (default 3),
    - `MUTEX_LEASE_TTL_S` (default 900 — see the lease TTL pin under §Concurrency Resolution),

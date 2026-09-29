@@ -42,6 +42,7 @@ the red proof is re-enacted detached at `31a1795`.
 """
 
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -462,6 +463,25 @@ def test_contender_viable_runs_single_pass_with_clamped_timeout(multi_agent, stu
     assert events_of_type(events, "agent_started") == []
     # 900 − 60 − 90 = 750, computed once, forwarded to the socket.
     assert timeouts and all(t == 750 for t in timeouts)
+
+
+def test_contender_logs_contention_term_for_metric_filter(caplog, multi_agent, stubbed_fanout):
+    """T048b (Mars 2026-09-28): the contender path logs the bare term
+    `concurrency_single_pass` — the CloudWatch metric filter counts log
+    lines, and envelope events never reach logs (fixed-field vocabulary);
+    without this line the contention-rate alarm is permanently dormant."""
+    stubbed_fanout(REVIEW_BODY)
+    events, table = [], MutexTable()
+    hold(table)
+    with caplog.at_level(logging.INFO, logger="worker_handler"):
+        make_closure(events, table)(SHA_B, 0)
+    messages = [r.message for r in caplog.records if r.name == "worker_handler"]
+    term_messages = [m for m in messages if "concurrency_single_pass" in m]
+    assert term_messages, f"contender path did not log the filter's term: {messages}"
+    # Triage fields ride along (bot review #2): the mutex key identifies
+    # the contended PR; elapsed_ms anchors the contention in time.
+    assert all(f"mutex={MUTEX_PK}" in m for m in term_messages)
+    assert all("elapsed_ms=" in m for m in term_messages)
 
 
 def test_contender_emits_no_degraded_event(multi_agent, stubbed_fanout):

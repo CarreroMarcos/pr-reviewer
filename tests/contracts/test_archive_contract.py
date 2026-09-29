@@ -614,6 +614,11 @@ def test_index_item_shape():
         findings_n=3,
     )
     assert item["pk"] == f"archive:{RUN_ID}"
+    # Top-level run_id (Mars ruling 2026-09-28, #148 + Gate-40 F1): the
+    # GSI projects it for the latest-run contract — a projected
+    # attribute the writer never stored would be dead config and the
+    # viewer response would permanently miss run_id.
+    assert item["run_id"] == RUN_ID
     assert item["pr_number"] == PR_NUMBER
     # GSI sort key is String (HLD §7/T031): the index row carries ISO-8601
     # UTC; meta.json keeps epoch-ms INT (T028).

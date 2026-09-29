@@ -954,6 +954,15 @@ def _make_review(
         """
         clamped = _contender_read_timeout_s(_safe_remaining_ms(), ma_cfg)
         elapsed_ms = max(0, int((now() - t_acquired) * 1000)) if t_acquired is not None else 0
+        # Metric-filter signal (T048b, Mars 2026-09-28): the envelope event
+        # never reaches logs, so a line led by the bare term is logged for
+        # the worker_contention filter to count (both contention outcomes);
+        # lock key + elapsed ride along for alarm triage.
+        logger.info(
+            "concurrency_single_pass mutex=%s elapsed_ms=%s",
+            mutex_mod.MUTEX_PK,
+            elapsed_ms,
+        )
         if clamped is None:
             evts.append(
                 concurrency_single_pass(
@@ -1915,14 +1924,15 @@ def _archive_run(
                 table.update_item(
                     Key={"pk": item["pk"]},
                     UpdateExpression=(
-                        "SET pr_number = :pr, started_ts = :started, sha = :sha,"
-                        " #st = :status, pipeline = :pipeline,"
+                        "SET run_id = :run_id, pr_number = :pr, started_ts = :started,"
+                        " sha = :sha, #st = :status, pipeline = :pipeline,"
                         " archive_s3_key = :key, archive_written_at = :written,"
                         " findings_n = :findings"
                     ),
                     ConditionExpression="attribute_not_exists(pk)",
                     ExpressionAttributeNames={"#st": "status"},
                     ExpressionAttributeValues={
+                        ":run_id": item["run_id"],
                         ":pr": item["pr_number"],
                         ":started": item["started_ts"],
                         ":sha": item["sha"],
