@@ -368,10 +368,15 @@ resource "aws_cloudwatch_metric_alarm" "contention_rate" {
   period              = 300
   statistic           = "Sum"
   threshold           = var.contention_rate_threshold
-  treat_missing_data  = "notBreaching"
+  # notBreaching + a bare-term filter means a worker logging outage also
+  # silences this alarm (blind spot, bot review #1 on PR #142); the DLQ
+  # (#1) and invocation-spike (#8) alarms cover the outage path.
+  treat_missing_data = "notBreaching"
 
+  # No ok_actions: an operability-only signal with evaluation_periods = 1
+  # flaps, and recovery notices would be noise (divergence from the T055
+  # convention is intentional here).
   alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
 
   tags = {
     Owner = var.alert_owner

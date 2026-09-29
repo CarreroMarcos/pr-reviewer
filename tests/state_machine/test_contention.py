@@ -476,7 +476,9 @@ def test_contender_logs_contention_term_for_metric_filter(caplog, multi_agent, s
     with caplog.at_level(logging.INFO, logger="worker_handler"):
         make_closure(events, table)(SHA_B, 0)
     messages = [r.message for r in caplog.records if r.name == "worker_handler"]
-    assert "concurrency_single_pass" in messages
+    assert any("concurrency_single_pass" in m for m in messages), (
+        f"contender path did not log the filter's term: {messages}"
+    )
 
 
 def test_contender_emits_no_degraded_event(multi_agent, stubbed_fanout):

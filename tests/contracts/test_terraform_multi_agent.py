@@ -342,3 +342,20 @@ def test_contention_rate_threshold_default():
     default = re.search(r"^\s*default\s*=\s*(\d+)\s*$", var_block, re.MULTILINE)
     assert default is not None, "threshold default is not a numeric literal"
     assert int(default.group(1)) == 10, f"threshold default drifted: {default.group(1)!r}"
+
+
+def test_contention_term_couples_emission_and_filter():
+    """T048b (bot review #1, PR #142): the filter's term and the worker's
+    log call share one source of truth by construction — this test reads
+    both ends, so a rename on either side fails here instead of silently
+    leaving the alarm permanently dormant."""
+    worker_src = (TERRAFORM_DIR.parent / "lambda" / "worker_handler.py").read_text(encoding="utf-8")
+    assert re.search(r'logger\.info\(\s*"concurrency_single_pass', worker_src), (
+        "contender emission no longer leads with the filter's term"
+    )
+    filt = _resource_block(
+        OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "worker_contention"
+    )
+    pattern = re.search(r'^\s*pattern\s*=\s*"([^"]*)"', filt, re.MULTILINE)
+    assert pattern is not None, "filter pattern not found"
+    assert "concurrency_single_pass" in pattern.group(1)
