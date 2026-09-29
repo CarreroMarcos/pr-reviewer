@@ -13,7 +13,7 @@ Error mapping at the worker boundary (HLD §2.3 item 8 is the authority;
 `is_retryable` is the executable form of that table for T034 scope):
 
 * RETRYABLE → the error propagates for SQS redelivery (queue owns retries;
-  DLQ after `maxReceiveCount 5`): transient diff transport (F4
+  DLQ after `maxReceiveCount 3`): transient diff transport (F4
   `transport_error`), GitHub/LLM 429 + 5xx, timeouts/connection failures,
   malformed provider responses (`invalid_response`, `bad_shape`/`bad_sha`
   — a garbled provider reply is treated as transient; the queue bounds it).
@@ -329,7 +329,7 @@ def _github_is_retryable(exc: GitHubError) -> bool:
 def is_retryable(exc: BaseException) -> bool:
     """Worker-boundary retry verdict (HLD §2.3 item 8, T034 scope).
 
-    True → propagate for SQS redelivery (bounded by `maxReceiveCount 5`).
+    True → propagate for SQS redelivery (bounded by `maxReceiveCount 3`).
     False → complete (log, alert downstream, never spin). Unknown faults
     retry into the bounded queue budget rather than vanishing silently.
     """

@@ -19,7 +19,7 @@ exported for tests to pin.
 Error semantics: HTTP errors, timeouts, connection failures, and malformed
 responses raise typed `LlmError` (machine-readable `error_class`) — never
 swallowed, never `None`-as-success — so the queue owns the retry
-(visibility redelivery, DLQ after `maxReceiveCount 5`).
+(visibility redelivery, DLQ after `maxReceiveCount 3`).
 
 Logging is minimal (HLD §5.4): one static-message record per call carrying
 only `status` / `duration_ms` / token usage (`prompt_tokens`,
