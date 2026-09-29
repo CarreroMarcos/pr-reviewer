@@ -5,9 +5,10 @@ from tests/contracts/test_terraform_contract.py) and pins the
 multi-agent infrastructure surface:
 
 * GSI `pr-runs-index` on the state table (`pr_number (N)` +
-  `started_ts (S)`, 5/5, `INCLUDE` projecting exactly `["sha",
-  "status", "pipeline", "archive_s3_key", "archive_written_at",
-  "findings_n"]`) — HLD §7 + checklist 5;
+  `started_ts (S)`, 5/5, `INCLUDE` projecting exactly `["run_id",
+  "sha", "status", "pipeline", "archive_s3_key", "archive_written_at",
+  "findings_n"]` — HLD §7 + checklist 5; run_id projected per the Mars
+  ruling 2026-09-28, DECISIONS);
 * base table 20/20 rebalance (Always Free 25/25 envelope: 20 base + 5
   GSI) — checklist 5;
 * ESM `scaling_config { maximum_concurrency = 2 }` — checklist 3;
@@ -62,6 +63,7 @@ EXPECTED_ENV = {
 }
 
 EXPECTED_PROJECTION = [
+    "run_id",
     "sha",
     "status",
     "pipeline",

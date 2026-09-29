@@ -91,6 +91,7 @@ def aws():
                     "Projection": {
                         "ProjectionType": "INCLUDE",
                         "NonKeyAttributes": [
+                            "run_id",
                             "sha",
                             "status",
                             "pipeline",
