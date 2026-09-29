@@ -1915,6 +1915,20 @@ def _archive_run(
     fault is a structured warning. No bucket (or no client) means the
     feature is off — return silently (missing) or warn (misconfigured).
     """
+    # T066 per-review rollup: computed ONCE, before the early returns, so
+    # every archive attempt (including archive-off configs) reads one
+    # number; degraded paths reduce to zeros (no token-bearing events).
+    # Pure reducer — never raises, so the never-raises contract holds.
+    rollup = archive_mod.token_rollup(events)
+    logger.info(
+        "token_rollup",
+        extra={
+            "token_usage": rollup["token_usage"],
+            "tokens_wave": rollup["token_usage_by_stage"]["wave"],
+            "tokens_verifier": rollup["token_usage_by_stage"]["verifier"],
+            "tokens_synth": rollup["token_usage_by_stage"]["synthesizer"],
+        },
+    )
     if not bucket:
         return
     if s3 is None:
@@ -1933,6 +1947,8 @@ def _archive_run(
             status=status,
             started_ts=started_ts_ms,
             finished_ts=finished_ts_ms,
+            token_usage=rollup["token_usage"],
+            token_usage_by_stage=rollup["token_usage_by_stage"],
         )
         events_body = archive_mod.render_events_jsonl(events)
         meta_body = archive_mod.render_meta(meta)

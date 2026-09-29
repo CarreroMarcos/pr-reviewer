@@ -1,7 +1,8 @@
 """SPR-113 T028: archive contract tests (HLD-004 §6 Archive & Index Contracts).
 
 `meta.json` = `{v: 1, run_id (uuid4 hex 32), pr, sha, pipeline,
-status, started_ts, finished_ts (epoch ms), archive_version: 1}`;
+status, started_ts, finished_ts (epoch ms), archive_version: 1,
+token_usage, token_usage_by_stage {wave, verifier, synthesizer}}`;
 status mapping per pipeline (`multi_agent` → published |
 degraded_single_pass | failed; `single_pass` → published | failed;
 `phase0_shadow` → published | failed; status = REVIEW outcome);
@@ -48,6 +49,7 @@ from common.archive import (  # noqa: E402
     resolve_pipeline,
     s3_key,
     should_write_index_row,
+    token_rollup,
 )
 from common.config import ConfigProvider  # noqa: E402
 from common.events import (  # noqa: E402
@@ -58,7 +60,9 @@ from common.events import (  # noqa: E402
     degraded_to_single_pass,
     review_skipped,
     review_started,
+    review_synthesized,
     to_jsonl,
+    verification_done,
 )
 from common.fanout import FanoutDegraded  # noqa: E402
 from worker_handler import _process_record  # noqa: E402
@@ -130,6 +134,8 @@ def test_meta_shape_and_literals():
         "started_ts": NOW * 1000,
         "finished_ts": NOW * 1000 + 5000,
         "archive_version": 1,
+        "token_usage": 0,
+        "token_usage_by_stage": {"wave": 0, "verifier": 0, "synthesizer": 0},
     }
     assert re.fullmatch(r"[0-9a-f]{32}", meta["run_id"]) is not None
     assert json.loads(render_meta(meta)) == meta
@@ -155,6 +161,130 @@ def test_meta_rejects_bad_scalars():
         ("finished_ts", "now"),
         ("pipeline", "multi-pass"),
         ("finished_ts", "x"),
+    ]
+    for field, value in bad_rows:
+        with pytest.raises(ArchiveError):
+            build_meta(**meta_kwargs(**{field: value}))
+
+
+# --- token/cost rollup (T066, HLD §6) ----------------------------------------------------------
+
+
+def full_stage_events():
+    return [
+        agent_completed(
+            specialty="correctness",
+            findings_n=1,
+            latency_ms=10,
+            tokens_in=100,
+            tokens_out=20,
+            findings=[],
+            run_id=RUN_ID,
+            ts=1,
+        ),
+        agent_completed(
+            specialty="security",
+            findings_n=0,
+            latency_ms=11,
+            tokens_in=150,
+            tokens_out=30,
+            findings=[],
+            run_id=RUN_ID,
+            ts=2,
+        ),
+        verification_done(
+            survived_n=1,
+            killed_n=0,
+            escalated_n=0,
+            wave_survivors=2,
+            latency_ms=12,
+            tokens_in=200,
+            tokens_out=40,
+            verified=[],
+            killed=[],
+            escalated=[],
+            run_id=RUN_ID,
+            ts=3,
+        ),
+        review_synthesized(
+            findings_merged_n=1,
+            dropped_as_duplicate_n=0,
+            latency_ms=13,
+            tokens_in=300,
+            tokens_out=50,
+            findings=[],
+            run_id=RUN_ID,
+            ts=4,
+        ),
+    ]
+
+
+def test_token_rollup_per_stage_sums():
+    """2 wave legs + verifier + synth reduce to per-stage buckets
+    (tokens_in + tokens_out each) and their total."""
+    assert token_rollup(full_stage_events()) == {
+        "token_usage": 890,
+        "token_usage_by_stage": {"wave": 300, "verifier": 240, "synthesizer": 350},
+    }
+
+
+def test_token_rollup_meta_fields_exact():
+    rollup = token_rollup(full_stage_events())
+    meta = build_meta(
+        **meta_kwargs(
+            pipeline="multi_agent",
+            status="published",
+            token_usage=rollup["token_usage"],
+            token_usage_by_stage=rollup["token_usage_by_stage"],
+        )
+    )
+    assert meta["token_usage"] == 890
+    assert meta["token_usage_by_stage"] == {"wave": 300, "verifier": 240, "synthesizer": 350}
+    assert json.loads(render_meta(meta))["token_usage_by_stage"] == meta["token_usage_by_stage"]
+
+
+def test_token_rollup_degraded_is_zeros():
+    """Degraded paths carry no token-bearing events: zeros with all
+    three stage keys present."""
+    degraded = [
+        started_event(1),
+        degraded_to_single_pass(
+            reason="insufficient_budget", failed_stage="wave", run_id=RUN_ID, ts=2
+        ),
+    ]
+    assert token_rollup(degraded) == {
+        "token_usage": 0,
+        "token_usage_by_stage": {"wave": 0, "verifier": 0, "synthesizer": 0},
+    }
+    meta = build_meta(**meta_kwargs())
+    assert meta["token_usage"] == 0
+    assert set(meta["token_usage_by_stage"]) == {"wave", "verifier", "synthesizer"}
+
+
+def test_token_rollup_tolerates_partial_chains():
+    """Missing/None token fields, unknown types, and non-dict entries
+    reduce as 0 — a partial chain never fails the rollup."""
+    events = [
+        {"type": "agent_completed", "tokens_in": None},
+        {"type": "verification_done"},
+        {"type": "no_such_stage", "tokens_in": 5, "tokens_out": 5},
+        "not-a-dict",
+    ]
+    assert token_rollup(events) == {
+        "token_usage": 0,
+        "token_usage_by_stage": {"wave": 0, "verifier": 0, "synthesizer": 0},
+    }
+
+
+def test_meta_rejects_bad_token_usage():
+    bad_rows = [
+        ("token_usage", -1),
+        ("token_usage", True),
+        ("token_usage", "10"),
+        ("token_usage_by_stage", {"wave": 1}),
+        ("token_usage_by_stage", {"wave": 1, "verifier": 0, "synthesizer": -2}),
+        ("token_usage_by_stage", {"wave": 1, "verifier": 0, "synthesizer": True}),
+        ("token_usage_by_stage", ["wave"]),
     ]
     for field, value in bad_rows:
         with pytest.raises(ArchiveError):
