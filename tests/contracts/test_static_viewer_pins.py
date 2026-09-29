@@ -92,6 +92,35 @@ def test_sanitizer_three_phases_present_and_ordered():
     )
 
 
+def test_archive_key_validation_before_interpolation():
+    """archive_s3_key is server-shaped data, never trusted markup: an
+    anchored allowlist mirroring the viewer Lambda's _ARCHIVE_RE must
+    gate interpolation, with validated run_id/sha components feeding the
+    fallback branch."""
+    match = re.search(r"var ARCHIVE_KEY_RE = /(.*?)/;", JS)
+    assert match is not None, "ARCHIVE_KEY_RE allowlist missing from review.js"
+    pattern = match.group(1)
+    assert pattern.startswith("^") and pattern.endswith("$"), "key allowlist must be anchored"
+    for fragment in (r"runs\/", r"(\d+)", "[0-9a-f]{40}", "[0-9a-f]{32}", r"events\.jsonl"):
+        assert fragment in pattern, f"key allowlist lost its {fragment} contract"
+    assert "key.match(ARCHIVE_KEY_RE)" in JS, "archive key must be validated before use"
+    assert "[0-9a-f]{32}" in JS, "run_id fallback component must be shape-validated"
+    assert "[0-9a-f]{40}" in JS, "sha fallback component must be shape-validated"
+
+
+def test_severity_allowlist_before_class_interpolation():
+    """Model-controlled severity text must pass an explicit HIGH/MEDIUM/
+    LOW allowlist (default LOW) before reaching className — explicit
+    equality, so prototype-chain names can never pass."""
+    assert re.search(r"function cleanSeverity\(value\)", JS), "cleanSeverity() missing"
+    for level in ("HIGH", "MEDIUM", "LOW"):
+        assert f'"{level}"' in JS, f"{level} missing from the severity allowlist"
+    assert "cleanSeverity(item.severity)" in JS, "finding render must use cleanSeverity"
+    assert 'typeof item.severity === "string" ? item.severity : "LOW"' not in JS, (
+        "raw severity interpolation must not remain"
+    )
+
+
 def test_sanitizer_neutralization_semantics():
     """Span stash uses NUL framing (fail-closed collision domain, like
     sanitize.py's \\x00CODE_SPAN_N\\x00); prose neutralization defuses
@@ -104,14 +133,20 @@ def test_sanitizer_neutralization_semantics():
     assert "bad_type" in JS and "nul_byte" in JS, "fail-closed input guards missing"
 
 
-def test_embedded_payload_never_reaches_markup_sink():
-    """An embedded <script> payload string lives in the neutralization
-    path (documents the XSS boundary), while every markup-unsafe sink
-    is absent from the file — sanitized content can only reach the DOM
-    through textContent-backed nodes."""
-    assert "<script>alert(1)</script>" in JS, (
-        "neutralization-path payload example missing — the scan broke"
-    )
+def test_no_attack_syntax_literals_in_shipped_js():
+    """Real attack-syntax probes live HERE, in the test — never in the
+    shipped JS (comments included). The JS keeps only inert mechanism
+    markers (CODE_SPAN_, NUL framing); every markup-unsafe sink is
+    absent, so sanitized content can only reach the DOM through
+    textContent-backed nodes."""
+    shipped = JS + HTML + CSS
+    for probe in (
+        "<script>alert(1)</script>",
+        "<img src=x onerror=alert(1)>",
+        "<svg onload=alert(1)>",
+        "javascript:alert(1)",
+    ):
+        assert probe not in shipped, f"attack-syntax literal ships in static/: {probe}"
     for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
         assert sink not in JS, f"markup-unsafe sink {sink} present in review.js"
     assert "textContent" in JS, "model-controlled leaves must render via textContent"
@@ -143,7 +178,15 @@ def test_reasoning_excerpt_guarded_render():
 
 def test_api_contract_shapes():
     """The shell speaks the T053/T054 viewer contract: latest-run lookup
-    plus the two archive objects, all on same-origin relative paths."""
-    assert "/api/runs/" in JS and "/latest" in JS, "latest-run API path missing"
-    assert "events.jsonl" in JS and "meta.json" in JS, "archive object paths missing"
-    assert "archive_s3_key" in JS and "run_id" in JS, "latest-run response fields missing"
+    plus the two archive objects, all on same-origin relative paths.
+    Asserts bind to the actual construction and field-usage sites, not
+    bare substrings a comment could satisfy."""
+    assert re.search(r'"/api/runs/" \+ pr \+ "/latest"', JS), (
+        "latest-run fetch must build /api/runs/{pr}/latest"
+    )
+    assert re.search(r'"/runs/" \+ pr \+ "/"', JS), "archive fetch must build /runs/{pr}/…"
+    assert re.search(r'\+ "/events\.jsonl"', JS), "events.jsonl must be a built path suffix"
+    assert re.search(r'\+ "/meta\.json"', JS), "meta.json must be a built path suffix"
+    for field in ("latest.run_id", "latest.archive_s3_key", "latest.sha"):
+        assert field in JS, f"latest-run field usage {field} missing"
+    assert "key.match(ARCHIVE_KEY_RE)" in JS, "archive key must pass the allowlist"

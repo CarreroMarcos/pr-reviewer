@@ -14,6 +14,11 @@
  */
 
 var TOKEN_KEY = "pr-reviewer.replay-token";
+/* HLD §7 archive key contract, mirrored from the viewer Lambda's
+ * _ARCHIVE_RE: runs/{pr}/{sha}/{run_id}/events.jsonl with numeric PR,
+ * 40-hex SHA, 32-hex run id. Anchored: no dot-segments, no query or
+ * fragment characters, no traversal — anything else is rejected. */
+var ARCHIVE_KEY_RE = /^runs\/(\d+)\/([0-9a-f]{40})\/([0-9a-f]{32})\/events\.jsonl$/;
 var NUL = "\x00";
 
 /* --- §5 span-preserving sanitizer (mirrors lambda/common/sanitize.py) --- */
@@ -121,9 +126,9 @@ function extractInlineSpans(text, stash) {
 function neutralizeProseText(prose) {
   // Neutralize exactly three prose constructs so model markdown cannot
   // carry live links, images, or autolinks into the render tree.
-  // Neutralization target example: an embedded <script>alert(1)</script>
-  // payload must survive this phase as inert text and reach the DOM only
-  // through textContent, never as live markup.
+  // Neutralization target example: an embedded script payload must
+  // survive this phase as inert text and reach the DOM only through
+  // textContent, never as live markup.
   // Images precede links so ![a](b) is never eaten as a link; link/image
   // text tolerates one nested bracket pair (linked images still defuse).
   var nested = "(?:[^\\[\\]]|\\[[^\\[\\]]*\\])*";
@@ -342,6 +347,16 @@ function nodeEl(name) {
   return document.getElementById("node-" + name);
 }
 
+function cleanSeverity(value) {
+  // Model-controlled text must never reach className interpolation:
+  // allowlist to HIGH/MEDIUM/LOW, default LOW. Explicit equality (not a
+  // lookup table) so prototype-chain names can never pass.
+  if (value === "HIGH" || value === "MEDIUM" || value === "LOW") {
+    return value;
+  }
+  return "LOW";
+}
+
 function resetDag() {
   DAG_NODES.forEach(function (name) {
     nodeEl(name).classList.remove("active", "done", "failed");
@@ -533,7 +548,9 @@ function renderTimeline(events) {
   var host = document.getElementById("timeline");
   host.textContent = "";
   var ordered = events.slice().sort(function (a, b) {
-    return a.ts - b.ts;
+    var ta = typeof a.ts === "number" ? a.ts : 0;
+    var tb = typeof b.ts === "number" ? b.ts : 0;
+    return ta - tb;
   });
   if (ordered.length === 0) {
     var li = document.createElement("li");
@@ -604,7 +621,7 @@ function renderFindings(findings) {
   }
   findings.forEach(function (item) {
     var card = document.createElement("article");
-    var severity = typeof item.severity === "string" ? item.severity : "LOW";
+    var severity = cleanSeverity(item.severity);
     card.className = "card sev-" + severity;
     var head = document.createElement("div");
     head.className = "card-head";
@@ -681,21 +698,32 @@ function parseJsonl(text) {
 
 function archivePaths(pr, sha, latest) {
   // archive_s3_key names the events object; meta.json is its sibling.
+  // The key is server-shaped data, never trusted markup: it must match
+  // the HLD §7 archive key contract — runs/{pr}/{sha}/{run_id}/file —
+  // before interpolation. The anchored class admits no dot-segments, no
+  // query/fragment characters, and no traversal; a violation falls back
+  // to the runId branch (built from validated components), or to a
+  // caller-side notice when nothing validates.
   var key = typeof latest.archive_s3_key === "string" ? latest.archive_s3_key : null;
-  var runId = typeof latest.run_id === "string" ? latest.run_id : null;
-  var headSha = typeof latest.sha === "string" ? latest.sha : sha;
-  var eventsPath;
-  var metaPath;
-  if (key !== null && key.slice(-12) === "events.jsonl") {
-    eventsPath = "/" + key;
-    metaPath = "/" + key.slice(0, -12) + "meta.json";
-  } else if (runId !== null) {
-    eventsPath = "/runs/" + pr + "/" + headSha + "/" + runId + "/events.jsonl";
-    metaPath = "/runs/" + pr + "/" + headSha + "/" + runId + "/meta.json";
-  } else {
+  var keyMatch = key !== null ? key.match(ARCHIVE_KEY_RE) : null;
+  if (keyMatch !== null) {
+    return {
+      eventsPath: "/" + keyMatch[0],
+      metaPath: "/runs/" + keyMatch[1] + "/" + keyMatch[2] + "/" + keyMatch[3] + "/meta.json"
+    };
+  }
+  var runId = typeof latest.run_id === "string" && /^[0-9a-f]{32}$/.test(latest.run_id) ?
+    latest.run_id : null;
+  var latestSha = typeof latest.sha === "string" && /^[0-9a-f]{40}$/.test(latest.sha) ?
+    latest.sha : null;
+  var headSha = latestSha !== null ? latestSha : (/^[0-9a-f]{40}$/.test(sha) ? sha : null);
+  if (runId === null || headSha === null || !/^\d+$/.test(String(pr))) {
     return null;
   }
-  return { eventsPath: eventsPath, metaPath: metaPath };
+  return {
+    eventsPath: "/runs/" + pr + "/" + headSha + "/" + runId + "/events.jsonl",
+    metaPath: "/runs/" + pr + "/" + headSha + "/" + runId + "/meta.json"
+  };
 }
 
 function loadReview(pr, sha) {
