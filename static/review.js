@@ -368,10 +368,15 @@ function resetDag() {
 
 function applyStage(step) {
   // step: {kind:"start"|"end", node, ok}
+  // Returns false when the node is unknown — the replay loop skips and
+  // counts instead of dying inside tick().
   var node = nodeEl(step.node);
+  if (node === null) {
+    return false;
+  }
   if (step.kind === "start") {
     node.classList.add("active");
-    return;
+    return true;
   }
   node.classList.remove("active");
   node.classList.add(step.ok ? "done" : "failed");
@@ -383,13 +388,15 @@ function applyStage(step) {
   if (step.node === "synthesizer") {
     document.getElementById("edge-v-y").classList.add("lit");
   }
+  return true;
 }
 
 function planReplay(events) {
   // Compress the event stream into ordered DAG stage transitions.
   // Unknown specialties/sinks are skipped — a surprise event must never
-  // break the replay loop.
-  var known = {};
+  // break the replay loop. The set is null-prototype so model-controlled
+  // specialty names (e.g. "__proto__") can never pass a prototype read.
+  var known = Object.create(null);
   DAG_NODES.forEach(function (name) {
     known[name] = true;
   });
@@ -421,6 +428,9 @@ function planReplay(events) {
 }
 
 var replayTimer = null;
+/* The steps the Replay button re-runs: assigned on every successful load,
+ * so a failed re-fetch can never leave a stale closure behind. */
+var currentSteps = [];
 
 function stopReplay() {
   if (replayTimer !== null) {
@@ -439,19 +449,29 @@ function runReplay(steps) {
   }
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (reduced) {
-    steps.forEach(applyStage);
-    label.textContent = "final state (" + steps.length + " steps)";
+    var skippedFinal = 0;
+    steps.forEach(function (step) {
+      if (!applyStage(step)) {
+        skippedFinal++;
+      }
+    });
+    label.textContent = "final state (" + steps.length + " steps" +
+      (skippedFinal > 0 ? ", " + skippedFinal + " skipped" : "") + ")";
     return;
   }
   var i = 0;
+  var skipped = 0;
   label.textContent = "replaying…";
   function tick() {
     if (i >= steps.length) {
-      label.textContent = "done (" + steps.length + " steps)";
+      label.textContent = "done (" + steps.length + " steps" +
+        (skipped > 0 ? ", " + skipped + " skipped" : "") + ")";
       replayTimer = null;
       return;
     }
-    applyStage(steps[i]);
+    if (!applyStage(steps[i])) {
+      skipped++;
+    }
     i++;
     label.textContent = "step " + i + " of " + steps.length;
     replayTimer = window.setTimeout(tick, 380);
@@ -631,8 +651,10 @@ function renderFindings(findings) {
     head.appendChild(sev);
     var loc = document.createElement("span");
     loc.className = "loc";
-    var line = item.line_start !== undefined ? item.line_start : item.line;
-    loc.textContent = String(item.file_path || item.path || "unknown") + ":" + String(line);
+    var lineNo = typeof item.line_start === "number" ? item.line_start :
+      (typeof item.line === "number" ? item.line : null);
+    loc.textContent = String(item.file_path || item.path || "unknown") + ":" +
+      (lineNo === null ? "—" : String(lineNo));
     head.appendChild(loc);
     if (item.escalated === true) {
       var flag = document.createElement("span");
@@ -795,16 +817,25 @@ function loadReview(pr, sha) {
     renderFindings(pickFindings(events));
     renderRawArchive(archives.eventsText, archives.metaText);
     var steps = planReplay(events);
+    currentSteps = steps;
     runReplay(steps);
-    document.getElementById("replay-btn").onclick = function () {
-      runReplay(steps);
-    };
   }).catch(function (err) {
     notice(err instanceof Error ? err.message : "Review failed to load.");
   });
 }
 
 /* --- session + boot ----------------------------------------------------- */
+
+/* One shared PR/SHA validator for the login form and the query-param
+ * auto-load — both gates enforce numeric PR and 40-hex SHA, so a crafted
+ * link can never smuggle path characters into the /api request. */
+function prError(pr) {
+  return /^\d+$/.test(pr || "") ? null : "Enter a numeric pull request number.";
+}
+
+function shaError(sha) {
+  return /^[0-9a-f]{40}$/.test(sha || "") ? null : "Enter the 40-character head SHA.";
+}
 
 function syncSession() {
   var authed = getToken() !== null;
@@ -822,6 +853,10 @@ function boot() {
     document.getElementById("in-sha").value = params.sha;
   }
 
+  document.getElementById("replay-btn").onclick = function () {
+    runReplay(currentSteps);
+  };
+
   document.getElementById("tab-events").onclick = function () {
     document.getElementById("raw-events").hidden = false;
     document.getElementById("raw-meta").hidden = true;
@@ -838,6 +873,7 @@ function boot() {
   document.getElementById("logout-btn").onclick = function () {
     stopReplay();
     clearToken();
+    currentSteps = [];
     syncSession();
     document.getElementById("review").hidden = true;
     document.getElementById("run-meta").hidden = true;
@@ -850,12 +886,14 @@ function boot() {
     var pr = document.getElementById("in-pr").value.trim();
     var sha = document.getElementById("in-sha").value.trim().toLowerCase();
     var token = document.getElementById("in-token").value;
-    if (!/^\d+$/.test(pr)) {
-      notice("Enter a numeric pull request number.");
+    var prErr = prError(pr);
+    if (prErr !== null) {
+      notice(prErr);
       return;
     }
-    if (!/^[0-9a-f]{40}$/.test(sha)) {
-      notice("Enter the 40-character head SHA.");
+    var shaErr = shaError(sha);
+    if (shaErr !== null) {
+      notice(shaErr);
       return;
     }
     if (token === "") {
@@ -869,8 +907,11 @@ function boot() {
   };
 
   syncSession();
-  if (getToken() !== null && params.pr && params.sha) {
-    loadReview(params.pr, params.sha);
+  var autoSha = typeof params.sha === "string" ? params.sha.toLowerCase() : params.sha;
+  if (getToken() !== null && prError(params.pr) === null && shaError(autoSha) === null) {
+    loadReview(params.pr, autoSha);
+  } else if (getToken() !== null && (params.pr || params.sha)) {
+    notice("That link's PR or SHA looks incomplete — check the fields and unlock again.");
   }
 }
 

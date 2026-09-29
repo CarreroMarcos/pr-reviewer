@@ -152,6 +152,42 @@ def test_no_attack_syntax_literals_in_shipped_js():
     assert "textContent" in JS, "model-controlled leaves must render via textContent"
 
 
+def test_specialty_prototype_safe_and_stage_null_guarded():
+    """planReplay's known-node set must be null-prototype (a __proto__ /
+    constructor specialty can never pass a prototype read) and
+    applyStage must null-check its node — unknown stages skip, never
+    throw inside the replay tick."""
+    assert "Object.create(null)" in JS, "known-node set must be null-prototype"
+    assert re.search(r"if \(node === null\)", JS), "applyStage must null-guard its node"
+    assert "known[ev.specialty]" in JS, "specialty filter must gate stage planning"
+
+
+def test_boot_autoload_shares_form_validation():
+    """The query-param auto-load must pass the same PR/SHA validator as
+    the login form — one shared gate, so a crafted link cannot smuggle
+    path characters into the /api request."""
+    assert re.search(r"function prError\(pr\)", JS), "shared PR validator missing"
+    assert re.search(r"function shaError\(sha\)", JS), "shared SHA validator missing"
+    assert "loadReview(params.pr, params.sha)" not in JS, "unvalidated auto-load must not remain"
+    assert re.search(r"prError\(params\.pr\)", JS), "auto-load must validate pr"
+    assert re.search(r"shaError\(autoSha\)", JS), "auto-load must validate sha"
+
+
+def test_replay_button_bound_once_to_current_steps():
+    """The Replay button wires once against module-level currentSteps
+    (assigned per successful load) — never a per-load stale closure."""
+    assert "var currentSteps = []" in JS, "module-level currentSteps missing"
+    assert "currentSteps = steps" in JS, "successful load must refresh currentSteps"
+    assert "runReplay(currentSteps)" in JS, "Replay button must run currentSteps"
+
+
+def test_finding_line_number_guarded():
+    """Finding locations coerce non-numeric line coordinates to an em
+    dash — model-controlled line text never renders as a bare value."""
+    assert 'typeof item.line_start === "number"' in JS, "line_start type guard missing"
+    assert '(lineNo === null ? "—"' in JS, "non-numeric lines must degrade to a dash"
+
+
 def test_token_hygiene_sessionstorage_only():
     """Token in sessionStorage ONLY: set/get/remove present, localStorage
     absent, Bearer attached via fetch headers — never the URL."""
