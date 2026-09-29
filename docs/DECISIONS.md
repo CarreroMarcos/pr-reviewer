@@ -169,3 +169,10 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 **Decision (Mars ruling, 2026-09-28, in-channel answer to 10419):** option (a) — §2.6 mechanics. T052 lands `ssm:GetParameter` on the replay-token ARN (`parameter/pr-reviewer/replay-token`) with **no** `kms:Decrypt`; the amended §7 bullet and checklist item supersede §7's decrypt clause.
 **Consequences:** least privilege preserved; the T052 contract pins the absence of `kms:Decrypt` in the viewer policy so the superseded clause cannot silently return; if the viewer ever moves to a customer-managed key, that is a new Mars ruling amending this entry (the grant and `--key-id` land together).
 **Current truth:** `terraform/viewer.tf` (`aws_iam_role_policy.viewer` — no KMS actions); HLD §7 Viewer IAM bullet + checklist item 6 as amended 2026-09-28.
+
+## 2026-09-28 — `run_id` added to the `pr-runs-index` GSI projection (SPR-142/T054)
+
+**Context:** the `/api/runs/{pr}/latest` response contract requires `{run_id, sha, ...}`, but `run_id` was absent from the GSI `INCLUDE` projection — the moto integration tier (real GSI projection semantics, T054 creator run) proved the query cannot produce it. Deriving `run_id` from `archive_s3_key` was ruled out: in-flight runs have no archive key until finalize, so the derivation fails exactly when the viewer polls an active review. Filed as Needs input (SPR-142); Mars answered in-channel.
+**Decision (Mars ruling, 2026-09-28):** add `run_id` to the GSI `INCLUDE` projection — the response contract stands unchanged; the GSI alone answers the latest-run query (§7 intent), now including `run_id`.
+**Consequences:** one-line `terraform/state.tf` amendment (rides T054's pair PR, gated on this spec landing first); the T031-era contract pin (`EXPECTED_PROJECTION` in `tests/contracts/test_terraform_multi_agent.py`) extends by one attribute; in-flight runs now report `run_id` with `status` showing the live state.
+**Current truth:** HLD §7 GSI bullet as amended 2026-09-28; `terraform/state.tf` (T054's PR); `EXPECTED_PROJECTION` (T054's PR).
