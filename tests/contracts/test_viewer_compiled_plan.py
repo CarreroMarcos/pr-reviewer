@@ -1,24 +1,34 @@
-"""T052: compiled-plan pin for the viewer Function URL hardening.
+"""T052: registered-state pin for the viewer Function URL hardening.
 
 Closes the Gate-38 deferred finding on PR #144 (bot-concurred, owner
 T052): the source-text pins in tests/contracts/test_viewer_infra.py
 prove the .tf uses the provider-native typed arguments
 (`function_url_auth_type` / `invoked_via_function_url`), but a source
 pin cannot catch provider-version drift where the spelling passes and
-the compiled posture changes. This module renders the real plan and
-asserts the resolved values — including the compiled viewer policy
+the compiled posture changes. This module asserts the RESOLVED values
+as registered in the HCP workspace state — including the viewer policy
 document, where the Mars-ruled absence of `kms:Decrypt` is checked
-against what terraform will actually register (DECISIONS 2026-09-28).
+against what the workspace has actually registered (DECISIONS
+2026-09-28).
+
+Mechanism note (PR #149 evidence-run discovery): this workspace runs
+in HCP REMOTE execution — every plan executes in HCP against the
+VCS-tracked configuration and saved plans are banned — so "compile
+the local tree and assert the plan" is structurally unavailable. The
+registered state is the honest compiled surface; see
+`_registered_resources` below.
 
 Evidence-class test (mars-law: terraform and full pytest run in
 separate shells). It skips — never fails — outside its evidence
 environment:
 
-* no terraform binary, or no AWS creds for the plan's data sources
-  (`eval "$(aws configure export-credentials --format env)"` first);
+* no terraform binary, or no AWS creds (the evidence-intent signal —
+  `eval "$(aws configure export-credentials --format env)"` first);
 * the viewer handler is still the T051b stub — the Lambda's plan-time
   precondition (intentionally) hard-fails every plan until T054 lands
-  the real handler, so this pin arms itself at T054.
+  the real handler, so this pin arms itself at T054;
+* a pinned resource is not yet registered (T052's policy ships at the
+  next tf-tag apply) — the specific test skips with that reason.
 
 Evidence run:
 
@@ -35,7 +45,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -71,79 +80,79 @@ _SKIP = _skip_reason()
 pytestmark = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
 
 
-def _compiled_plan() -> dict:
-    """Full-stack `terraform plan` rendered through `show -json`.
+def _registered_resources() -> dict[str, dict]:
+    """address -> registered values from the workspace state.
 
-    No `init` here (bot F1, PR #147): the provider install is consumed
-    as-is — evidence runs never write into the working tree. The plan
-    itself still materializes the archive_file zip output (untracked
-    build artifact, never staged — house explicit-staging law).
+    Evidence-surface law (PR #149 discovery): the pr-reviewer HCP
+    workspace runs in REMOTE execution mode — every `terraform plan`
+    executes in HCP against the VCS-tracked configuration, and saved
+    plans are banned outright ("Saved plans not allowed for workspaces
+    with a VCS connection"). Local planning of a working tree is
+    therefore impossible, and the only provider-resolved compiled
+    surface available is the REGISTERED STATE, read via
+    `terraform show -json`. It proves what AWS enforces from this
+    workspace today; config-side truth stays with the source-level
+    pins (tests/contracts/test_viewer_infra.py +
+    test_terraform_multi_agent.py), and the state lags config until the
+    next tf-tag apply — undeployed resources skip with an explicit
+    reason rather than fake evidence.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        plan_path = os.path.join(tmp, "plan.bin")
-        subprocess.run(  # noqa: S603
-            [
-                TERRAFORM_BIN,
-                f"-chdir={TERRAFORM_DIR}",
-                "plan",
-                "-refresh=false",
-                "-input=false",
-                "-lock=false",
-                "-no-color",
-                f"-out={plan_path}",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=600,
-        )
-        shown = subprocess.run(  # noqa: S603
-            [TERRAFORM_BIN, f"-chdir={TERRAFORM_DIR}", "show", "-json", plan_path],
-            check=True,
-            capture_output=True,
-            timeout=300,
-        )
-    return json.loads(shown.stdout)
+    proc = subprocess.run(  # noqa: S603
+        [TERRAFORM_BIN, f"-chdir={TERRAFORM_DIR}", "show", "-json"],
+        check=True,
+        capture_output=True,
+        timeout=300,
+    )
+    state = json.loads(proc.stdout)
 
+    def walk(module: dict, found: dict) -> None:
+        for resource in module.get("resources", []):
+            found[resource["address"]] = resource.get("values", {})
+        for child in module.get("child_modules", []):
+            walk(child, found)
 
-def _walk_resources(module: dict, found: dict) -> None:
-    for resource in module.get("resources", []):
-        found[resource["address"]] = resource.get("values", {})
-    for child in module.get("child_modules", []):
-        _walk_resources(child, found)
-
-
-@pytest.fixture(scope="module")
-def compiled_resources() -> dict[str, dict]:
-    plan = _compiled_plan()
     found: dict[str, dict] = {}
-    _walk_resources(plan.get("planned_values", {}).get("root_module", {}), found)
+    walk(state.get("values", {}).get("root_module", {}), found)
     return found
 
 
-def test_viewer_function_url_permissions_compile(compiled_resources):
-    """The typed permission arguments resolve to the intended hardening
-    posture in the compiled plan (provider-version drift catcher)."""
-    url_grant = compiled_resources.get("aws_lambda_permission.viewer_function_url")
-    assert url_grant is not None, "compiled plan lacks the URL-invocation grant"
-    assert url_grant.get("action") == "lambda:InvokeFunctionUrl"
-    assert url_grant.get("principal") == "*"
-    assert url_grant.get("function_url_auth_type") == "NONE"
+@pytest.fixture(scope="module")
+def registered() -> dict[str, dict]:
+    return _registered_resources()
 
-    invoke_grant = compiled_resources.get("aws_lambda_permission.viewer_invoked_via_function_url")
-    assert invoke_grant is not None, "compiled plan lacks the InvokedViaFunctionUrl companion grant"
+
+def test_viewer_function_url_permissions_compile(registered):
+    """The typed permission arguments resolve to the intended hardening
+    posture as REGISTERED (provider-version drift catcher)."""
+    grant = registered.get("aws_lambda_permission.viewer_function_url")
+    if grant is None:
+        pytest.skip(
+            "viewer URL grant not yet registered in workspace state — "
+            "evidence run deferred to the next tf-tag apply"
+        )
+    assert grant.get("action") == "lambda:InvokeFunctionUrl"
+    assert grant.get("principal") == "*"
+    assert grant.get("function_url_auth_type") == "NONE"
+
+    invoke_grant = registered.get("aws_lambda_permission.viewer_invoked_via_function_url")
+    assert invoke_grant is not None, "state lacks the InvokedViaFunctionUrl companion grant"
     assert invoke_grant.get("action") == "lambda:InvokeFunction"
     assert invoke_grant.get("principal") == "*"
     assert invoke_grant.get("invoked_via_function_url") is True
 
 
-def test_viewer_role_policy_compiles_without_kms_decrypt(compiled_resources):
-    """The jsonencode'd policy document resolves with exactly the ruled
-    read surface — and the superseded kms:Decrypt clause is absent from
-    what terraform will actually register, not just from the source."""
-    policy_resource = compiled_resources.get("aws_iam_role_policy.viewer")
-    assert policy_resource is not None, "compiled plan lacks aws_iam_role_policy.viewer"
+def test_viewer_role_policy_compiles_without_kms_decrypt(registered):
+    """The registered policy document carries exactly the ruled read
+    surface — and the superseded `kms:Decrypt` clause is absent from
+    what the workspace has actually registered, not just from source."""
+    policy_resource = registered.get("aws_iam_role_policy.viewer")
+    if policy_resource is None:
+        pytest.skip(
+            "viewer policy not yet registered in workspace state (T052 IAM "
+            "ships at the next tf-tag apply) — evidence run deferred"
+        )
     raw = policy_resource.get("policy")
-    assert isinstance(raw, str), "policy did not resolve to a JSON document"
+    assert isinstance(raw, str), "registered policy did not resolve to a JSON document"
     document = json.loads(raw)
     actions = {
         action
@@ -153,8 +162,8 @@ def test_viewer_role_policy_compiles_without_kms_decrypt(compiled_resources):
         )
     }
     assert {"s3:GetObject", "dynamodb:Query", "ssm:GetParameter"} <= actions, (
-        f"compiled policy missing ruled read actions: {sorted(actions)}"
+        f"registered policy missing ruled read actions: {sorted(actions)}"
     )
     assert "kms:Decrypt" not in actions, (
-        "superseded kms:Decrypt clause present in the compiled policy"
+        "superseded kms:Decrypt clause present in the registered policy"
     )
