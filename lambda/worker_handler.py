@@ -93,7 +93,7 @@ from urllib.request import Request, urlopen
 from common import archive as archive_mod
 from common import mutex as mutex_mod
 from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
-from common.config import ConfigError, ConfigProvider, multi_agent_config
+from common.config import ConfigError, ConfigProvider, multi_agent_config, replay_base_url
 from common.diff import DiffError, fetch_diff, fetch_pr_head_sha, post_image_lengths
 from common.envelope import Envelope, EnvelopeError, validate_envelope
 from common.events import (
@@ -388,6 +388,30 @@ def _github_headers(token: str) -> dict[str, str]:
 
 # SQS `ChangeMessageVisibility` ceiling: 12 hours. A `Retry-After` beyond
 # it (or garbage) is ignored — the queue default applies.
+REPLAY_FOOTER_MARK = "Full agent replay"
+
+
+def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
+    """T075: deterministic replay-link footer on the published canonical
+    body — code-side, never model-side (the synthesizer prompt and output
+    contract are untouched). Omitted entirely when `REPLAY_BASE_URL` is
+    unset; exactly-once under re-publish: a body already carrying the
+    mark is returned unchanged (constitution IV discipline extends to
+    the footer — a PATCH of a re-composed body can never stack footers).
+    The URL targets the unauth shell + bearer-gated artifacts (HLD §7);
+    the base never appears as a committed literal (PR #167 canonical
+    LOW posture) — it rides the worker env from the viewer Function URL
+    resource (terraform contract pin, test_terraform_multi_agent.py)."""
+    base = replay_base_url()
+    if not base or REPLAY_FOOTER_MARK in content:
+        return content
+    return (
+        content
+        + f"\n\n---\n🔬 [{REPLAY_FOOTER_MARK}]({base}/runs/{pr_number}/{sha}/)"
+        + " — agent DAG, per-agent reasoning, and checkpoints for this review.\n"
+    )
+
+
 _MAX_VISIBILITY_TIMEOUT = 12 * 3600
 
 
@@ -1011,7 +1035,7 @@ def _make_review(
             review_number=generation + 1,
             now=(clock if clock is not None else time.time)(),
         )
-        return comment.content
+        return _with_replay_footer(comment.content, pr_number=pr_number, sha=head_sha)
 
     def _fanout_content(
         diff_result: Any,
@@ -1121,7 +1145,7 @@ def _make_review(
             review_number=generation + 1,
             now=(clock if clock is not None else time.time)(),
         )
-        return comment.content
+        return _with_replay_footer(comment.content, pr_number=pr_number, sha=head_sha)
 
     def _safe_remaining_ms() -> int | None:
         """Fail-closed remaining-time read (mirrors the `_call_llm`

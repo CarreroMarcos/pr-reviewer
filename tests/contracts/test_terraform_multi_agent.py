@@ -208,7 +208,18 @@ def test_twelve_env_vars_with_t005_defaults():
     # Archive contract target (T030, wired live by T069): read directly
     # by worker_handler (os.environ), not through common.config.
     assert env.pop("ARCHIVE_BUCKET") == "pr-reviewer-archives"
+    # T075: replay footer base — wired from the viewer Function URL
+    # resource, pinned in its own test below; not a §8 12-var knob.
+    assert env.pop("REPLAY_BASE_URL") == "${aws_lambda_function_url.viewer.function_url}"
     assert env == EXPECTED_ENV
+
+
+def test_worker_replay_base_url_is_viewer_function_url():
+    """T075: the replay footer's base rides the viewer Function URL
+    resource attribute — never a committed literal (PR #167 canonical
+    LOW posture); outside the §8 12-var contract (spec PR #168)."""
+    env = _worker_env_map()
+    assert env["REPLAY_BASE_URL"] == "${aws_lambda_function_url.viewer.function_url}"
 
 
 def test_withdrawn_env_names_absent():
