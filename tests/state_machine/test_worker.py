@@ -339,6 +339,7 @@ def test_first_delivery_posts_and_finalizes():
     assert item["comment_id"] == POST_ID
     (line,) = h.log_lines()
     assert line["status"] == "published"
+    assert line["pipeline"] == "single_pass"  # T077: routing discriminator on the log line
     assert line["generation"] == 0
     assert line["token_usage"] == 15
     assert line["stale_discarded"] is False  # nothing stale discarded on this path

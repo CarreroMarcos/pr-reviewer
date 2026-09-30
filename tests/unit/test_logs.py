@@ -44,6 +44,7 @@ EXPECTED_FIELDS = frozenset(
         "duration_ms",
         "token_usage",
         "status",
+        "pipeline",
         "error_class",
         "stale_discarded",
         "failure_notice_published",
@@ -734,3 +735,20 @@ def test_emit_ingress_event_names_tampered_field():
         emit_ingress_event(lines.append, tampered)
     assert excinfo.value.field == "reason"
     assert lines == []
+
+
+def test_pipeline_field_validation():
+    """T077: pipeline is None unless set; set values are the known
+    discriminators (the pipeline-mix metric filters key on this field)."""
+    base = dict(
+        repo_full_name=REPO,
+        pr_number=42,
+        head_sha=HEAD_SHA,
+        delivery_guid=str(uuid.uuid4()),
+        **_metrics(),
+    )
+    assert build_event(**base)["pipeline"] is None
+    for known in ("multi_agent", "single_pass", "phase0_shadow"):
+        assert build_event(**base, pipeline=known)["pipeline"] == known
+    with pytest.raises(LogsError):
+        build_event(**base, pipeline="bogus")

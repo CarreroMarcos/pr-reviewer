@@ -103,6 +103,124 @@ resource "aws_cloudwatch_log_metric_filter" "worker_contention" {
   }
 }
 
+# --- Pipeline-mix signals (T077, Gate-56 advisory A2 carrier) ---------------
+# The drift alarm is an ABSENCE alarm, not a per-run difference. Its traffic
+# term counts NON-docs publishes only (Gate-58 advisory to SPR-167):
+# deliberate T076 docs-only routes are subtracted via runs_docs_only, so
+# prose-heavy repos never false-page. Contender races and degraded
+# fallbacks remain traffic — sustained contention without any multi_agent
+# run is itself worth a look. It breaches only when non-docs publishing
+# continues (>= 3) while the multi_agent count stays under 1 across 3
+# consecutive 20-min periods.
+
+resource "aws_cloudwatch_log_metric_filter" "runs_published" {
+  name           = "pr-reviewer-worker-runs-published"
+  log_group_name = aws_cloudwatch_log_group.worker.name
+  # Only the happy-path publish status counts as traffic; degraded and
+  # discarded lines carry their own dispositions (and their own signals).
+  pattern = "{ $.status = \"published\" }"
+
+  metric_transformation {
+    name      = "RunsPublished"
+    namespace = "pr-reviewer/worker"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "runs_multi_agent" {
+  name           = "pr-reviewer-worker-runs-multi-agent"
+  log_group_name = aws_cloudwatch_log_group.worker.name
+  # The publish log line carries pipeline (resolve_pipeline of the run's
+  # own events, T077); a window with no matching lines yields no datapoints
+  # — the alarm's FILL rewrites that absence to 0.
+  pattern = "{ $.pipeline = \"multi_agent\" }"
+
+  metric_transformation {
+    name      = "RunsMultiAgent"
+    namespace = "pr-reviewer/worker"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "runs_docs_only" {
+  name           = "pr-reviewer-worker-runs-docs-only"
+  log_group_name = aws_cloudwatch_log_group.worker.name
+  # The docs-skip path logs the bare term (T048b precedent: the envelope
+  # event never reaches logs); counts deliberate T076 docs routes so the
+  # drift alarm's traffic term can exclude them (Gate-58 advisory to
+  # SPR-167 — prose-heavy repos must not false-page).
+  pattern = "docs_only"
+
+  metric_transformation {
+    name      = "RunsDocsOnly"
+    namespace = "pr-reviewer/worker"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "pipeline_mix_drift" {
+  alarm_name          = "pr-reviewer-pipeline-mix-drift"
+  alarm_description   = "Reviews keep publishing but the window holds zero multi_agent runs — silent MULTI_AGENT env-drift downgrade; check the worker env and resolve_pipeline events (Gate-56 A2). Owner: ${var.alert_owner}."
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 3
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  # Numeric form (house precedent: worker_error_rate): healthy routing
+  # scores 0 or 1; drift scores -1. FILL makes an empty window evaluate as
+  # 0 — without it the missing multi series would fall to the alarm-level
+  # notBreaching and silence exactly the drift case.
+  metric_query {
+    id          = "drift"
+    expression  = "(FILL(multi, 0) >= 1) - (FILL(published, 0) - FILL(docs, 0) >= 3)"
+    label       = "Publishing without multi_agent runs"
+    return_data = true
+  }
+
+  metric_query {
+    id          = "multi"
+    return_data = false
+
+    metric {
+      metric_name = aws_cloudwatch_log_metric_filter.runs_multi_agent.metric_transformation[0].name
+      namespace   = "pr-reviewer/worker"
+      period      = 1200
+      stat        = "Sum"
+    }
+  }
+
+  metric_query {
+    id          = "published"
+    return_data = false
+
+    metric {
+      metric_name = aws_cloudwatch_log_metric_filter.runs_published.metric_transformation[0].name
+      namespace   = "pr-reviewer/worker"
+      period      = 1200
+      stat        = "Sum"
+    }
+  }
+
+  metric_query {
+    id          = "docs"
+    return_data = false
+
+    metric {
+      metric_name = aws_cloudwatch_log_metric_filter.runs_docs_only.metric_transformation[0].name
+      namespace   = "pr-reviewer/worker"
+      period      = 1200
+      stat        = "Sum"
+    }
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    Owner = var.alert_owner
+  }
+}
+
 # 1. DLQ depth > 0 — the primary failure signal (HLD §4.3).
 
 resource "aws_cloudwatch_metric_alarm" "dlq_depth" {

@@ -976,6 +976,13 @@ def _make_review(
                 # contender-path event (never degraded_to_single_pass:
                 # fan-out was not attempted, Gate-15/ADV-4 discipline);
                 # reason rides the enum extended with docs_only.
+                # Metric-filter signal (T048b precedent; Gate-58 advisory
+                # to SPR-167): the envelope event never reaches logs, so a
+                # line led by the bare term is logged for the
+                # runs_docs_only filter — the drift alarm's traffic term
+                # excludes deliberate docs routes (prose-heavy repos must
+                # not false-page).
+                logger.info("docs_only fanout_skip=1")
                 evts.append(concurrency_single_pass(reason="docs_only", elapsed_ms=0, run_id=rid))
             content = _single_pass_inline(diff_result, head_sha, generation)
         # Release AFTER the last lease-covered LLM call, BEFORE
@@ -1663,6 +1670,7 @@ def _emit(
     stale_discarded: bool = False,
     failure_notice_published: str = "false",
     prompt_sha256: str | None = None,
+    pipeline: str | None = None,
 ) -> None:
     """Best-effort structured log (HLD §5.4): emission never masks the
     record disposition — a logging fault is a plain warning, not a retry."""
@@ -1678,6 +1686,7 @@ def _emit(
                 token_usage=token_usage,
                 status=status,
                 error_class=error_class,
+                pipeline=pipeline,
                 generation=generation,
                 stale_discarded=stale_discarded,
                 failure_notice_published=failure_notice_published,
@@ -1886,6 +1895,7 @@ def _process_record(
         duration_ms=duration_ms,
         token_usage=usage["tokens"],
         status=status,
+        pipeline=archive_mod.resolve_pipeline(record_events),
         error_class=None,
         generation=outcome.generation,
         stale_discarded=outcome.kind in _STALE_DISCARDED_KINDS,
