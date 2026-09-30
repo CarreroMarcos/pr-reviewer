@@ -67,5 +67,16 @@
       "forbidden_hits": [],
       "passed": true
     }
+  },
+  "band_resolution": {
+    "resolved": true,
+    "mechanic": "T071: precision verdict \"rerun\" resolves via a second same-state capture; pass iff mean >= 0.08",
+    "mean_precision_p": 0.09374999999999999,
+    "components": {
+      "r6": 0.08564814814814814,
+      "r7": 0.10185185185185182
+    },
+    "verdict": "pass",
+    "note": "effort is derived from gates; with this resolution all gates pass"
   }
 }

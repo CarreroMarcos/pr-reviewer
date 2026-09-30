@@ -17,7 +17,7 @@
     "prior_record": {
       "sha256": "63afe5e59f2658716d169876ce20d3793f3bb94768c43ef80e8696be46ed9015",
       "bytes": 4769309,
-      "note": "63afe5e5 record pre-T072/T073; backed up /tmp/opencode/pinned_multi_agent.pre-t072.json"
+      "note": "63afe5e5 record pre-T072/T073; raw artifact intentionally untracked (4.7MB exceeds the repo large-file cap) \u2014 sha256/bytes above are the durable pointer; no durable raw copy exists (capture-box local backup /tmp/opencode, ephemeral by design)"
     }
   },
   "reproduction": {
@@ -95,7 +95,7 @@
     "tests/model_evals/results/multi-run-20260928-pin-first-window-15-verifier-errors.json (pre-#138 first window: 15/72 verifier errors)",
     "tests/model_evals/results/multi-run-20260928-window2-36runs-5errored.json (pre-#138 targeted re-run: 5/36)"
   ],
-  "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask) | related: pinned_outputs.json naive_aware_datetime retains a capture-time markdown fence (verifier fence-tolerant since #138; scored unaffected \u2014 see PR #139 body) | 2026-09-30 promotion: r7 record (wrongful 0, subtle 0, fidelity 0/0, floors 0, recall_d +0.0185); precision band resolved by T071 mechanics: mean(r6 0.0856, r7 0.1019) = 0.0937 >= 0.08; r6 retained as paired-round evidence (wrongful 1 vs prior-record 3, Mars same-or-better directive 2026-09-29)",
+  "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask) | related: pinned_outputs.json naive_aware_datetime retains a capture-time markdown fence (verifier fence-tolerant since #138; scored unaffected \u2014 see PR #139 body) | 2026-09-30 promotion: r7 record (wrongful 0, subtle 0, fidelity 0/0, floors 0, recall_d +0.0185); precision band resolved by T071 mechanics: mean(r6 0.0856, r7 0.1019) = 0.0937 >= 0.08; r6 retained as paired-round evidence (wrongful 1 vs prior-record 3, Mars same-or-better directive 2026-09-29) | kills_checked is capture-dependent by design: the kill gate checks only killed candidates that actually surfaced in the capture (multi_agent_scoring.py:258-260); r7 surfaced 1 and kept it correctly \u2014 0-wrongful is a deterministic bar, not a rate; discrimination evidence: r5-control killed 8 of 14 under unhardened prompts",
   "verification_mode": "manual-only: recompute sha256 on the capture box against pin.sha256 \u2014 the artifact is intentionally outside CI reach; no automated check exists",
   "rebaseline_aggregate_scope": "results/baseline.json aggregate intentionally covers the original 13-case set; the 11 corpus additions since then have single-case pins in pinned_outputs.json but no baseline aggregate rows \u2014 extending the aggregate is future capture work"
 }
