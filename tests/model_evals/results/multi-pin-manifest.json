@@ -8,13 +8,17 @@
     "retrieval": "recompute sha256 against pin.sha256 after retrieval; if the box is reaped, the pin is regenerable via reproduction.full_corpus_pass + topup_pass (nomic embedder required)"
   },
   "pin": {
-    "sha256": "63afe5e59f2658716d169876ce20d3793f3bb94768c43ef80e8696be46ed9015",
-    "bytes": 4769309,
+    "sha256": "3a0c5a5ea4a38d1617d44043800ce63eb792026282d97c727dc6e85ea43f30a9",
+    "bytes": 4687988,
     "corpus": "24 cases x 3 runs (multi-agent, FANOUT_CONCURRENCY=3)",
     "runs_total": 72,
     "runs_errored": 0,
-    "verified_by": "error summed over every run of every case in this exact artifact (post-top-up state)",
-    "rehash_note": "Re-hashed 2026-09-29 for the T070 R1 re-capture, attempt 2 (verifier prompt hardened per the exit-report recommendation + synthesizer \u00a75 no-launder precedence rule after attempt 1 leaked injection payload quotes into the posted comment \u2014 attempt-1 pin sha d8ea9b19b2568e71647c6cabce65d3ddf954528837ba43b939b61dfc5356341e, 4953663 bytes, backed up at /tmp/opencode/pinned_multi_agent.r1-verifier-only.json (EPHEMERAL \u2014 durability boundary in t070-verifier-hardening-evidence.md); pre-R1 before-side sha 5508f9a98bd21016d1e3bb040d01346ac334d5f64cda517ccff3693c8bf4eada). 72 runs, 0 errored."
+    "verified_by": "error summed over every run of every case in this exact artifact (r7 capture, 2026-09-30); r6/r7 attempt scorings preserved locally (t046-scoring-r6/r7-attempt.json)",
+    "prior_record": {
+      "sha256": "63afe5e59f2658716d169876ce20d3793f3bb94768c43ef80e8696be46ed9015",
+      "bytes": 4769309,
+      "note": "63afe5e5 record pre-T072/T073; raw artifact intentionally untracked (4.7MB exceeds the repo large-file cap) \u2014 sha256/bytes above are the durable pointer; no durable raw copy exists (capture-box local backup /tmp/opencode, ephemeral by design)"
+    }
   },
   "reproduction": {
     "full_corpus_pass": {
@@ -91,7 +95,7 @@
     "tests/model_evals/results/multi-run-20260928-pin-first-window-15-verifier-errors.json (pre-#138 first window: 15/72 verifier errors)",
     "tests/model_evals/results/multi-run-20260928-window2-36runs-5errored.json (pre-#138 targeted re-run: 5/36)"
   ],
-  "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask) | related: pinned_outputs.json naive_aware_datetime retains a capture-time markdown fence (verifier fence-tolerant since #138; scored unaffected \u2014 see PR #139 body)",
+  "note": "verifier format-fumble rate across windows: 15/72 -> 5/36 -> 1/72 (fixed by PR #138: fence-tolerant parse + one bounded re-ask) | related: pinned_outputs.json naive_aware_datetime retains a capture-time markdown fence (verifier fence-tolerant since #138; scored unaffected \u2014 see PR #139 body) | 2026-09-30 promotion: r7 record (wrongful 0, subtle 0, fidelity 0/0, floors 0, recall_d +0.0185); precision band resolved by T071 mechanics: mean(r6 0.0856, r7 0.1019) = 0.0937 >= 0.08; r6 retained as paired-round evidence (wrongful 1 vs prior-record 3, Mars same-or-better directive 2026-09-29) | kills_checked is capture-dependent by design: the kill gate checks only killed candidates that actually surfaced in the capture (multi_agent_scoring.py:258-260); r7 surfaced 1 and kept it correctly \u2014 0-wrongful is a deterministic bar, not a rate; discrimination evidence: r5-control killed 8 of 14 under unhardened prompts",
   "verification_mode": "manual-only: recompute sha256 on the capture box against pin.sha256 \u2014 the artifact is intentionally outside CI reach; no automated check exists",
   "rebaseline_aggregate_scope": "results/baseline.json aggregate intentionally covers the original 13-case set; the 11 corpus additions since then have single-case pins in pinned_outputs.json but no baseline aggregate rows \u2014 extending the aggregate is future capture work"
 }

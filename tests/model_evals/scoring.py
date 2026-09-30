@@ -19,7 +19,7 @@ _FINDINGS_HEAD_RE = re.compile(r"^##\s+Findings\s*$", re.MULTILINE)
 _NEXT_SECTION_RE = re.compile(r"^##\s+\S.*$", re.MULTILINE)
 _BULLET_RE = re.compile(r"^\s*[-*]\s+(.*)$")
 _SEVERITY_RE = re.compile(r"\[\s*(HIGH|MEDIUM|LOW)\s*\]", re.IGNORECASE)
-_LOCATION_RE = re.compile(r"`([^`\s]+?)\s*:\s*(\d+)`")
+_LOCATION_RE = re.compile(r"`([^`\s]+?)\s*:\s*(\d+)(?:\s*-\s*\d+)?`")
 
 
 @dataclass(frozen=True)

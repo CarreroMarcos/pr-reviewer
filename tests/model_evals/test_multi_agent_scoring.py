@@ -456,3 +456,14 @@ def test_compute_ab_deltas_enforces_symmetry():
         assert "recall-only=['b']" in str(exc)
     else:
         raise AssertionError("expected asymmetric A/B inputs to raise ValueError")
+
+
+def test_location_regex_range_anchor_tolerance():
+    """T073: range anchors parse at their START line; bare lines unchanged;
+    a trailing dash without end digits is not a location at all."""
+    import scoring
+
+    assert scoring._LOCATION_RE.search("`src/a.py:7-8`").groups() == ("src/a.py", "7")
+    assert scoring._LOCATION_RE.search("`src/a.py:7`").groups() == ("src/a.py", "7")
+    assert scoring._LOCATION_RE.search("`src/a.py:7-`") is None
+    assert scoring._LOCATION_RE.search("`src/a.py:7-8-9`") is None
