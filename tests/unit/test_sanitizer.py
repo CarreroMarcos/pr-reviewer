@@ -188,3 +188,21 @@ def test_structure_phases_still_apply_before_redaction():
     )
     assert sanitize("see [link](http://x.test) now") == "see link (http://x.test) now"
     assert sanitize("see <http://x.test/a> now") == "see `<http://x.test/a>` now"
+
+
+def test_sanitize_idempotent_on_shipped_mix():
+    # Gate-54 coverage gap 1: reconcile re-publishes shipped text, so
+    # sanitize∘sanitize must be identity over the structure outputs.
+    once = sanitize(
+        "see ![img](http://x.test/i.png), <http://x.test/a>, "
+        f"`tok {CANARY_SUBSTRING}` and a@b.test\n\n```\n9f3a7c2e1b4d6a8e\n```"
+    )
+    assert sanitize(once) == once
+
+
+def test_email_inside_inline_code_span_redacted():
+    # Gate-54 F5: the fence row pins crossing fenced blocks; this pins
+    # inline spans (same phase-4 pass over fully-restored text).
+    out = sanitize("`mail bob@corp.example` end")
+    assert "bob@corp.example" not in out
+    assert "[redacted:email]" in out

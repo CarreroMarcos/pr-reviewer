@@ -79,7 +79,7 @@ from common.config import multi_agent_config  # noqa: E402
 from common.diff import DiffFile, DiffResult  # noqa: E402
 from common.fanout import FanoutDegraded, run_fanout  # noqa: E402
 from common.llm import review_diff  # noqa: E402
-from common.sanitize import sanitize  # noqa: E402
+from common.sanitize import SanitizeError, sanitize  # noqa: E402
 
 REGION = "us-west-2"
 OLLAMA_URL = "http://localhost:11434"
@@ -414,15 +414,22 @@ def run_case(
         texts = [text for _, text in requests]
         got = embed_fn(texts)
         vectors = dict(zip([key for key, _ in requests], got, strict=True))
+    # HLD-004 §5 item 5: the harness records the SHIPPED comment —
+    # the same sanitize() the worker applies before PATCH — so the
+    # eval floors measure shipped behavior, not raw model text.
+    # Gate-54 Finding 2: SanitizeError (NUL in model output — never
+    # observed in corpus history) must not abort the batch; record the
+    # raw comment so floors fail loudly on the evidence instead.
+    try:
+        shipped_comment = sanitize(comment)
+    except SanitizeError:
+        shipped_comment = comment
     record = {
         "case_id": case_id,
         "run_index": run_index,
         "effort": effort,
         "run_id": run_id,
-        # HLD-004 §5 item 5: the harness records the SHIPPED comment —
-        # the same sanitize() the worker applies before PATCH — so the
-        # eval floors measure shipped behavior, not raw model text.
-        "comment": sanitize(comment),
+        "comment": shipped_comment,
         "latency_ms": latency_ms,
         "wave_survivors": verdict.get("wave_survivors", 0),
         "candidates": candidates,

@@ -132,7 +132,7 @@ from common.reconcile import (
 from common.residuals import load_accepted_residuals, residuals_for
 from common.sanitize import sanitize
 from common.state import build_clear_comment_expressions, expression_names, review_pk
-from common.validate import PROMPT_VERSION
+from common.validate import CANARY_SUBSTRING, PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -1389,6 +1389,11 @@ def _make_publish(
         # defense-in-depth, never the canary's silencer. Idempotence:
         # [redacted:*] placeholders carry no @ and no ≥16-hex run, so
         # re-publish paths (reconcile) are no-ops.
+        if CANARY_SUBSTRING in content:
+            # Gate-54 Finding 1: the canary reaching publish means the
+            # upstream build_comment → validate_comment gate was
+            # bypassed — warn so defense-in-depth firing is observable.
+            logger.warning("canary_leaked_at_publish: upstream gate bypassed; redacting")
         content = sanitize(content)
         item = table.get_item(pk) or {}
         comment_id = item.get("comment_id")
