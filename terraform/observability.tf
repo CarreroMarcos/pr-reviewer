@@ -13,6 +13,13 @@ resource "aws_cloudwatch_log_group" "worker" {
   retention_in_days = 7
 }
 
+# T056: viewer replay site log group — same 7-day retention discipline
+# (HLD §4.3; cost budget §4.1).
+resource "aws_cloudwatch_log_group" "viewer" {
+  name              = "/aws/lambda/pr-reviewer-viewer"
+  retention_in_days = 7
+}
+
 # --- T055 alarms (HLD §4.3; SC-006) ------------------------------------------
 #
 # Seven alarms, each wired to the shared SNS topic and each carrying the

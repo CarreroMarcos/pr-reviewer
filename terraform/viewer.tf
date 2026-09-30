@@ -63,6 +63,20 @@ resource "aws_iam_role_policy" "viewer" {
         # the same change.
         Resource = [local.ssm_parameter_arn.replay_token]
       },
+      {
+        # T056 fix-loop r1: runtime logging (house pattern = iam.tf
+        # ingress/worker statements; log group in observability.tf).
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ]
+        Resource = [
+          aws_cloudwatch_log_group.viewer.arn,
+          "${aws_cloudwatch_log_group.viewer.arn}:*",
+        ]
+      },
     ]
   })
 }
