@@ -40,7 +40,11 @@ from common.fanout import (
 from common.llm import LlmError, ReviewResult
 
 # Byte-compat mirror of tests/model_evals/scoring.py:18-22 (see module
-# docstring for why mirrored, not imported).
+# docstring for why mirrored, not imported). _LOCATION_RE here is
+# DELIBERATELY stricter than the scorer's: no range-anchor branch — the
+# mirror enforces the synth prompt's single-line-anchor ban at contract
+# level, so scorer-parseable stays a superset. Do not sync them
+# (Gate 55 advisory 1).
 _HEAD_RE = re.compile(r"^##\s+Findings\s*$", re.MULTILINE)
 _BULLET_RE = re.compile(r"^\s*[-*]\s+(.*)$")
 _SEVERITY_RE = re.compile(r"\[\s*(HIGH|MEDIUM|LOW)\s*\]", re.IGNORECASE)

@@ -127,6 +127,7 @@ Verdicts: **APPROVE** → squash-merge on green CI, comment `Oracle: APPROVE. Me
 - **Worker logs are lowercase structured JSON (2026-09-20/27):** filter by field (`'{ $.error_class = "..." }'`) or pull the window and grep locally; `retry_queued` redelivers, `discarded_error` is terminal. Logger `extra` fields are dropped by the formatter — grep the raw window and read the emitting code.
 - **The HCP workspace plans run remotely — saved plans are banned (orchestrator, 2026-09-28):** `terraform plan -out` dies with "Saved plans not allowed for workspaces with a VCS connection" and every plan executes in HCP against the VCS-tracked config; the provider-resolved evidence surface is registered state (`terraform show -json`), which lags config until the next apply.
 - **Separate shells after cred export (2026-09-20):** exported AWS creds break 8 fake-AWS integration tests — run capture/terraform and full pytest in different shells (`docs/process/pr-protocol.md`).
+- **A bare exit line or empty log is not capture death (orchestrator, 2026-09-29):** Python block-buffers stdout to files and stale wrapper "Exited" lines happen — `pgrep -af capture_multi_agent` before any relaunch; two concurrent captures on one checkpoint is a write race (`docs/process/model-eval-capture.md`).
 
 ### Jira hygiene
 
