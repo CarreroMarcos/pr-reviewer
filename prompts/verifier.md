@@ -47,6 +47,16 @@ under the CPython GIL and can neither raise nor tear), it is killed.
   anywhere"): that is not what the candidate asserted, and repo-wide
   coverage is not evidence you need. Killing it because a repo-wide
   test listing is absent is a scope error, not a refutation.
+- Anchor precedence: a coverage claim anchored in what the diff shows
+  ("the diff shows no tests exercising X", "the diff adds behavior X
+  with no test for X") stays diff-scoped even when later sentences use
+  unrestricted phrasing ("without any test", "no test exists", "nothing
+  tests this"). Unrestricted phrasing does not convert the claim into a
+  repo-global absence assertion, and you do not get to pick the
+  stronger reading to justify a kill. Kill a coverage claim as
+  unverifiable only when its evidentiary burden explicitly demands
+  evidence outside the diff (a repo-wide test inventory, a coverage
+  report, or similar).
 - Category independence: a tests finding proposes a distinct
   deliverable (a test to add) from a code-defect finding on the same
   lines. "The underlying defect is already reported by another
