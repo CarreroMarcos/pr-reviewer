@@ -509,6 +509,22 @@ after the last lease-covered LLM call, before claim/publish/finalize — bot rev
    (`<<<SPECIALIST_REASONING nonce="{nonce}">>> ... <<<END_SPECIALIST_REASONING nonce="{nonce}">>>`)
    generated under item 1's rules; excerpt text is never spliced into prompt prose, instructions, or
    structured fields outside those blocks.
+5. **Deterministic Payload-Token Redaction at Publish (added 2026-09-29, Mars ruling — SPR-162/163
+   r4 floors):** prompt-only control cannot guarantee the no-payload floor — three consecutive eval
+   rounds each fixed the previous laundering mode and a new one appeared (r4 quoted the payload
+   contact address inside an otherwise-correct directive-phrase description) — so the sanitizer
+   gains a final redaction phase run AFTER span re-substitution over the full comment text: email
+   addresses and hex runs of ≥16 characters (plus the runtime canary literal,
+   `common/validate.CANARY_SUBSTRING`) are replaced with typed placeholders (`[redacted:email]`,
+   `[redacted:token]`). Redaction applies across prose AND code spans — a payload token is not
+   legitimate code content; the span-preserving phases above still own markdown STRUCTURE
+   (fences/inline spans/images/links/autolinks) and are untouched by it. Disclosed limits:
+   verdict-phrase laundering ("SAFE TO MERGE"-style bait) stays prompt/rubric-owned — no generic
+   phrase detector exists; hash-like identifiers (e.g. full commit shas) are also redacted — review
+   comments should reference short refs. The worker applies the full sanitizer to the comment before
+   PATCH (the flow pin above — currently unwired, `worker_handler.py` `publish` closure), and the
+   eval capture harness applies the same function to synthesized comments so the eval floors measure
+   shipped behavior.
 
 ### S3 Archive Retention & Local Sync (Mars Ruling 2026-09-26)
 - **S3 Lifecycle:** Transitioning KB-scale files to Glacier Instant Retrieval triggers a 128 KB minimum billable size
