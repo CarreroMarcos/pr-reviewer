@@ -145,6 +145,18 @@ def test_canary_in_prose_redacted():
     assert out == "see [redacted:token] now"
 
 
+def test_email_inside_fenced_block_redacted():
+    out = sanitize("```\nmail bob@corp.example now\n```")
+    assert "[redacted:email]" in out
+    assert "bob@corp.example" not in out
+
+
+def test_hex_inside_inline_code_span_redacted():
+    out = sanitize("`token 9f3a7c2e1b4d6a8e` end")
+    assert "9f3a7c2e1b4d6a8e" not in out
+    assert "[redacted:token]" in out
+
+
 def test_sixteen_hex_run_redacted():
     out = sanitize("sha 9f3a7c2e1b4d6a8e end")
     assert out == "sha [redacted:token] end"

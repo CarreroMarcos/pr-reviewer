@@ -1383,6 +1383,12 @@ def _make_publish(
         # HLD-004 §5 item 5: the full sanitizer (structure phases +
         # payload-token redaction) runs at publish, so the PATCH/POST
         # body is the shipped text — never the raw model content.
+        # Ordering note: canary DETECTION lives upstream — every model
+        # content path passes build_comment → validate_comment, which
+        # rejects canary_leaked BEFORE publish — so this redaction is
+        # defense-in-depth, never the canary's silencer. Idempotence:
+        # [redacted:*] placeholders carry no @ and no ≥16-hex run, so
+        # re-publish paths (reconcile) are no-ops.
         content = sanitize(content)
         item = table.get_item(pk) or {}
         comment_id = item.get("comment_id")
