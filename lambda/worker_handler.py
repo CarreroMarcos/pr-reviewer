@@ -1659,11 +1659,11 @@ def _emit(
     token_usage: int,
     status: str,
     error_class: str | None,
-    pipeline: str | None = None,
     generation: int | None,
     stale_discarded: bool = False,
     failure_notice_published: str = "false",
     prompt_sha256: str | None = None,
+    pipeline: str | None = None,
 ) -> None:
     """Best-effort structured log (HLD §5.4): emission never masks the
     record disposition — a logging fault is a plain warning, not a retry."""

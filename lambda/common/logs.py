@@ -349,12 +349,12 @@ def build_event(
     token_usage: Any,
     status: Any,
     error_class: Any = None,
-    pipeline: Any = None,
     generation: Any = None,
     stale_discarded: Any = False,
     failure_notice_published: Any = "false",
     prompt_version: Any = None,
     prompt_sha256: Any = None,
+    pipeline: Any = None,
 ) -> dict[str, Any]:
     """Build a fixed-field log event.
 
