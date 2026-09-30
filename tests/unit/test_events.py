@@ -300,6 +300,12 @@ def test_enum_fields_reject_unknown_values(thunk, field):
     assert excinfo.value.field == field
 
 
+def test_concurrency_single_pass_accepts_docs_only_reason():
+    """T076: docs_only joins the deliberate-single-pass reason enum."""
+    evt = concurrency_single_pass(reason="docs_only", elapsed_ms=0)
+    assert evt["reason"] == "docs_only"
+
+
 def test_bad_run_id_rejected():
     with pytest.raises(EventsError) as excinfo:
         agent_started(specialty="correctness", run_id="not-a-run-id")

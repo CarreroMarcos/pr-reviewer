@@ -37,7 +37,7 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 REVIEW_SKIPPED_REASONS = frozenset({"empty_diff", "phase0_no_budget"})
 CHECKPOINT_STAGES = frozenset({"established", "diff_fetched", "claimed", "published", "finalized"})
 FAILED_STAGES = frozenset({"wave", "verifier", "synthesizer"})
-CONCURRENCY_SINGLE_PASS_REASONS = frozenset({"mutex_held", "mutex_held_no_budget"})
+CONCURRENCY_SINGLE_PASS_REASONS = frozenset({"mutex_held", "mutex_held_no_budget", "docs_only"})
 
 _ENVELOPE_KEYS = frozenset({"v", "run_id", "ts", "type"})
 
