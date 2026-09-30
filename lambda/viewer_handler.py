@@ -140,9 +140,18 @@ def _serve_s3(key: str) -> dict:
                 # answers missing keys with AccessDenied). API stays 404,
                 # but the degradation signal is explicit in logs — a role
                 # regression must be grep-able, never silent (canonical
-                # review #2, PR #167).
+                # review #2, PR #167). The requested key rides the line
+                # (T078, Gate-56 advisory A3): pure path data the
+                # requester already sent — 404-vs-denied is diagnosable
+                # from CloudWatch alone.
                 print(
-                    json.dumps({"event": "viewer_s3_access_denied", "decision": "404"}),
+                    json.dumps(
+                        {
+                            "event": "viewer_s3_access_denied",
+                            "decision": "404",
+                            "key": key,
+                        }
+                    ),
                     flush=True,
                 )
             return _not_found()
