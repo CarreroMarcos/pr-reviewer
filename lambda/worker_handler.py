@@ -403,15 +403,16 @@ def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
     LOW posture) — it rides the worker env from the viewer Function URL
     resource (terraform contract pin, test_terraform_multi_agent.py)."""
     base = replay_base_url()
-    # Idempotency anchors to the STRUCTURAL link signature, not the bare
-    # phrase: model-generated bodies may quote "Full agent replay" (PR #169
-    # r1 LOW) — only an already-present footer link suppresses the append.
-    link_head = f"[{REPLAY_FOOTER_MARK}]({base}/runs/"
-    if not base or link_head in content:
+    # Idempotency anchors to the EXACT footer link for THIS run (r2): a
+    # model-quoted phrase (r1 LOW) or a decoy link for a different run
+    # (r2 LOW) cannot suppress the append — only a body already carrying
+    # this run's footer can, which is precisely the re-publish case.
+    footer_link = f"[{REPLAY_FOOTER_MARK}]({base}/runs/{pr_number}/{sha}/)"
+    if not base or footer_link in content:
         return content
     return (
         content
-        + f"\n\n---\n🔬 {link_head}{pr_number}/{sha}/)"
+        + f"\n\n---\n🔬 {footer_link}"
         + " — agent DAG, per-agent reasoning, and checkpoints for this review.\n"
     )
 
