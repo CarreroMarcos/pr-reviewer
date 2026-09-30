@@ -1,13 +1,16 @@
-"""Span-preserving markdown sanitization (HLD-004 §5 item 2).
+"""Span-preserving markdown sanitization (HLD-004 §5 items 2 and 5).
 
 Naive neutralization of `<...>` or `[...]` corrupts generic type
 signatures (`List<T>`, `Dict[str, Any]`), JSX tags, and code blocks, so
-this sanitizer works in three phases: (1) extract fenced code blocks and
+this sanitizer works in four phases: (1) extract fenced code blocks and
 inline backtick spans into indexed `\x00CODE_SPAN_N\x00` placeholders,
 (2) neutralize exactly four prose constructs — `![img](url)` →
 `[Image: img] (url)`, `[link](url)` → `link (url)`, `<http...>` (bare
-angle-bracket autolink) → `` `<http...>` `` — and (3) re-substitute the
-original spans byte-identical.
+angle-bracket autolink) → `` `<http...>` `` — (3) re-substitute the
+original spans byte-identical, then (4) redact payload tokens over the
+fully-restored text: email addresses → `[redacted:email]`, the runtime
+canary literal (`common.validate.CANARY_SUBSTRING`) and hex runs of
+≥16 chars → `[redacted:token]`.
 
 Collision discipline: the `\x00` framing is the anti-collision mechanism
 — NUL never occurs in legitimate finding/markdown text (control
@@ -23,6 +26,13 @@ link; link/image text tolerates one nested bracket pair so linked images
 Placeholders carry no bracket/paren/angle characters, so transforms can
 never touch them.
 
+Redaction crosses code spans by design: a payload token is not
+legitimate code content, so phase 4 runs AFTER re-substitution over the
+full text. Disclosed limits (HLD-004 §5 item 5): verdict-phrase
+laundering like "SAFE TO MERGE" stays prompt/rubric-owned — no generic
+phrase detector exists; hash-like identifiers (e.g. full commit shas)
+are redacted — review comments should reference short refs.
+
 Non-goals (untouched by design): tilde fences, indented code blocks,
 reference-style links, and bare URLs without angle brackets are not
 spec'd constructs and pass through; an unclosed fence runs to end of
@@ -36,6 +46,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from common.validate import CANARY_SUBSTRING
+
 _FENCE_OPEN_RE = re.compile(r"^[ \t]*(`{3,})([^`]*)$")
 
 # Link/image text tolerates one nested bracket pair (see module docstring).
@@ -45,6 +57,14 @@ _LINK_RE = re.compile(r"\[(" + _NESTED_TEXT + r")\]\(([^)]*)\)")
 # Bare angle-bracket autolink: `<http` (any case) + ≥1 non-space,
 # non-angle char. `<http>` alone, generics, JSX, and spaced text stay.
 _AUTOLINK_RE = re.compile(r"<[Hh][Tt][Tt][Pp]([^<>\s]+)>")
+
+# Payload-token redaction (HLD-004 §5 item 5): runs AFTER span
+# re-substitution over the full text, so it crosses code spans by
+# design. Order: emails, then the canary literal, then hex runs (the
+# canary's hex tail would otherwise match the hex rule first and split
+# the literal's redaction).
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_HEX_RUN_RE = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 
 
 class SanitizeError(ValueError):
@@ -149,6 +169,15 @@ def sanitize(text: Any) -> str:
     Total on strings: always returns a string, never raises for
     well-formed text. Raises `SanitizeError` only for non-string input
     or NUL-containing input (the placeholder-collision domain).
+
+    After the span-preserving structure phases (fences, inline spans,
+    images, links, autolinks — restored byte-identical), a final
+    redaction phase replaces payload tokens over the fully-restored
+    text: email addresses → `[redacted:email]`; the runtime canary
+    literal and hex runs of ≥16 chars → `[redacted:token]`. Redaction
+    crosses code spans by design. Disclosed limits: verdict-phrase
+    laundering stays prompt/rubric-owned (no generic phrase detector);
+    hash-like ids such as full commit shas are redacted by design.
     """
     if not isinstance(text, str):
         raise SanitizeError("text", "bad_type")
@@ -162,4 +191,7 @@ def sanitize(text: Any) -> str:
     prose = _AUTOLINK_RE.sub(lambda match: f"`{match.group(0)}`", prose)
     for index, span in enumerate(stash):
         prose = prose.replace(_placeholder(index), span)
+    prose = _EMAIL_RE.sub("[redacted:email]", prose)
+    prose = prose.replace(CANARY_SUBSTRING, "[redacted:token]")
+    prose = _HEX_RUN_RE.sub("[redacted:token]", prose)
     return prose

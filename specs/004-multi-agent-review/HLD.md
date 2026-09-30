@@ -522,7 +522,7 @@ after the last lease-covered LLM call, before claim/publish/finalize — bot rev
    verdict-phrase laundering ("SAFE TO MERGE"-style bait) stays prompt/rubric-owned — no generic
    phrase detector exists; hash-like identifiers (e.g. full commit shas) are also redacted — review
    comments should reference short refs. The worker applies the full sanitizer to the comment before
-   PATCH (the flow pin above — currently unwired, `worker_handler.py` `publish` closure), and the
+   PATCH (the flow pin above — wired T074, `worker_handler.py` `publish` closure), and the
    eval capture harness applies the same function to synthesized comments so the eval floors measure
    shipped behavior.
 
