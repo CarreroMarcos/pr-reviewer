@@ -50,3 +50,5 @@ def test_suffixes_are_exact():
 def test_empty_file_set_never_skips():
     assert not _docs_only(SimpleNamespace(files=()))
     assert not _docs_only(SimpleNamespace(files=None))
+    # Defensive getattr contract: no files attribute at all.
+    assert not _docs_only(SimpleNamespace())

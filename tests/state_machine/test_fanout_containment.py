@@ -634,6 +634,49 @@ def test_docs_only_diff_skips_fanout(multi_agent, stubbed_fanout):
     (evt,) = events_of_type(events, "concurrency_single_pass")
     assert evt["reason"] == "docs_only"
     assert events_of_type(events, "degraded_to_single_pass") == []
+    # Spec verify letter: NO fanout-stage events anywhere in the chain —
+    # the type set admits only the single-pass routing vocabulary.
+    assert {e["type"] for e in events} <= {
+        "review_started",
+        "checkpoint",
+        "concurrency_single_pass",
+    }
+
+
+def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout):
+    """T076 spec verify letter, end to end: a docs-only diff publishes
+    through the full record path with the routing chain
+    review_started → concurrency_single_pass(docs_only) → published and
+    zero fanout-stage events (agent/wave/verifier/synthesizer types
+    absent from the chain)."""
+    stubbed_fanout(REVIEW_TEXT)
+    events = []
+    result = _process_record(
+        {"body": json.dumps(envelope_dict())},
+        table=InMemoryTable(),
+        provider=make_provider(),
+        clock=lambda: NOW,
+        diff_transport=FakeDiffTransport(
+            meta=[(200, SHA_B)],
+            files=[file_entry("README.md"), file_entry("docs/guide.md")],
+        ),
+        llm_factory=lambda host, port, *, timeout: FakeLLMConnection([], []),
+        github_transport=FakeGitHub(),
+        sink=[].append,
+        system_prompt="SYSTEM-PROMPT",
+        remaining_time_ms=lambda: 900_000,
+        events=events,
+    )
+    assert result == "published"
+    assert {e["type"] for e in events} <= {
+        "review_started",
+        "checkpoint",
+        "concurrency_single_pass",
+        "review_published",
+    }
+    (evt,) = events_of_type(events, "concurrency_single_pass")
+    assert evt["reason"] == "docs_only"
+    assert events_of_type(events, "review_published")
 
 
 def test_docs_only_no_event_without_multi_agent(stubbed_fanout):
