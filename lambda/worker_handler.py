@@ -396,18 +396,22 @@ def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
     body — code-side, never model-side (the synthesizer prompt and output
     contract are untouched). Omitted entirely when `REPLAY_BASE_URL` is
     unset; exactly-once under re-publish: a body already carrying the
-    mark is returned unchanged (constitution IV discipline extends to
+    footer link is returned unchanged (constitution IV discipline extends to
     the footer — a PATCH of a re-composed body can never stack footers).
     The URL targets the unauth shell + bearer-gated artifacts (HLD §7);
     the base never appears as a committed literal (PR #167 canonical
     LOW posture) — it rides the worker env from the viewer Function URL
     resource (terraform contract pin, test_terraform_multi_agent.py)."""
     base = replay_base_url()
-    if not base or REPLAY_FOOTER_MARK in content:
+    # Idempotency anchors to the STRUCTURAL link signature, not the bare
+    # phrase: model-generated bodies may quote "Full agent replay" (PR #169
+    # r1 LOW) — only an already-present footer link suppresses the append.
+    link_head = f"[{REPLAY_FOOTER_MARK}]({base}/runs/"
+    if not base or link_head in content:
         return content
     return (
         content
-        + f"\n\n---\n🔬 [{REPLAY_FOOTER_MARK}]({base}/runs/{pr_number}/{sha}/)"
+        + f"\n\n---\n🔬 {link_head}{pr_number}/{sha}/)"
         + " — agent DAG, per-agent reasoning, and checkpoints for this review.\n"
     )
 
@@ -1035,7 +1039,7 @@ def _make_review(
             review_number=generation + 1,
             now=(clock if clock is not None else time.time)(),
         )
-        return _with_replay_footer(comment.content, pr_number=pr_number, sha=head_sha)
+        return comment.content
 
     def _fanout_content(
         diff_result: Any,
@@ -1145,7 +1149,7 @@ def _make_review(
             review_number=generation + 1,
             now=(clock if clock is not None else time.time)(),
         )
-        return _with_replay_footer(comment.content, pr_number=pr_number, sha=head_sha)
+        return comment.content
 
     def _safe_remaining_ms() -> int | None:
         """Fail-closed remaining-time read (mirrors the `_call_llm`
@@ -1419,6 +1423,11 @@ def _make_publish(
             # bypassed — warn so defense-in-depth firing is observable.
             logger.warning("canary_leaked_at_publish: upstream gate bypassed; redacting")
         content = sanitize(content)
+        # T075: the footer rides AFTER the sanitizer — it is code-side
+        # decoration (the sha is public PR metadata, not model output);
+        # inside the sanitizer the 40-hex sha reads as a payload token
+        # (PR #169 r2 find).
+        content = _with_replay_footer(content, pr_number=pr_number, sha=envelope.head_sha)
         item = table.get_item(pk) or {}
         comment_id = item.get("comment_id")
         if isinstance(comment_id, bool):

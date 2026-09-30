@@ -619,6 +619,32 @@ def test_legacy_path_never_attempts_fanout(stubbed_fanout):
     assert events_of_type(events, "review_started")
 
 
+def test_replay_footer_on_fanout_published_body(multi_agent, stubbed_fanout, monkeypatch):
+    """T075 wiring (fanout side, publish boundary): the POSTed canonical
+    body carries the footer with pr_number + head_sha interpolated —
+    appended after the §5 sanitizer, so the sha survives it (PR #169 r1
+    MEDIUM wiring + r2 sha-redaction find)."""
+    stubbed_fanout(REVIEW_TEXT)
+    monkeypatch.setenv("REPLAY_BASE_URL", "https://viewer.example.test")
+    github = FakeGitHub()
+    result = _process_record(
+        {"body": json.dumps(envelope_dict())},
+        table=InMemoryTable(),
+        provider=make_provider(),
+        clock=lambda: NOW,
+        diff_transport=FakeDiffTransport(meta=[(200, SHA_B)]),
+        llm_factory=lambda host, port, *, timeout: FakeLLMConnection([], []),
+        github_transport=github,
+        sink=[].append,
+        system_prompt="SYSTEM-PROMPT",
+        remaining_time_ms=lambda: 900_000,
+        events=[],
+    )
+    assert result == "published"
+    (post,) = [c for c in github.calls if c["method"] == "POST"]
+    assert f"/runs/{PR_NUMBER}/{SHA_B}/" in post["body"]["body"]
+
+
 # --- boundary proofs: run_review, record, handler ----------------------------------------
 
 

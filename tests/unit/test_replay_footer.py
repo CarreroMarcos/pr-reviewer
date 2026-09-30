@@ -36,6 +36,22 @@ def test_footer_exactly_once_on_republish(monkeypatch):
     assert twice == once
 
 
+def test_quoted_phrase_without_link_does_not_suppress(monkeypatch):
+    """PR #169 r1 LOW: a model-quoted 'Full agent replay' phrase (no link)
+    must not read as an existing footer — idempotency anchors to the
+    structural link signature, so the footer still lands exactly once."""
+    monkeypatch.setenv("REPLAY_BASE_URL", BASE)
+    quoted = BODY + "\n\nThe verifier noted the Full agent replay idea.\n"
+    out = _with_replay_footer(quoted, pr_number=167, sha=SHA)
+    assert f"]({BASE}/runs/167/{SHA}/)" in out
+    assert out.count(f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/") == 1
+
+
+def test_footer_omitted_for_whitespace_only_env(monkeypatch):
+    monkeypatch.setenv("REPLAY_BASE_URL", "   \n")
+    assert _with_replay_footer(BODY, pr_number=167, sha=SHA) == BODY
+
+
 def test_config_replay_base_url_strips_trailing_slashes(monkeypatch):
     monkeypatch.setenv("REPLAY_BASE_URL", BASE + "//")
     assert config.replay_base_url() == BASE
