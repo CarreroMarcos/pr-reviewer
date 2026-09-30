@@ -124,8 +124,29 @@ def _serve_s3(key: str) -> dict:
     s3 = _client("s3")
     try:
         obj = s3.get_object(Bucket=ARCHIVES_BUCKET, Key=key)
-    except s3.exceptions.NoSuchKey:
-        return _not_found()
+    except s3.exceptions.ClientError as e:
+        # Live S3 without s3:ListBucket answers GetObject for a MISSING
+        # key with AccessDenied (anti-enumeration); moto returns
+        # NoSuchKey, so CI only saw the modeled branch (canonical
+        # review #1, PR #167). All three "absent" codes — NoSuchKey,
+        # the listless NotFound variant, and AccessDenied — map to
+        # 404: the surface stays {200, 401, 404} and the 500 path
+        # never fires for absent keys. Error classes ride the boto3
+        # client instance (stdlib+boto3 import contract,
+        # tests/unit/test_runtime_imports.py).
+        if e.response.get("Error", {}).get("Code") in {"NoSuchKey", "NotFound", "AccessDenied"}:
+            if e.response["Error"]["Code"] == "AccessDenied":
+                # Ambiguous absent-vs-denied (no s3:ListBucket → live S3
+                # answers missing keys with AccessDenied). API stays 404,
+                # but the degradation signal is explicit in logs — a role
+                # regression must be grep-able, never silent (canonical
+                # review #2, PR #167).
+                print(
+                    json.dumps({"event": "viewer_s3_access_denied", "decision": "404"}),
+                    flush=True,
+                )
+            return _not_found()
+        raise
     try:
         return _response(200, obj["Body"].read().decode("utf-8"), content_type)
     except UnicodeDecodeError:

@@ -174,6 +174,52 @@ def test_static_regex_rejects_out_of_class_paths(aws, path):
     assert _call(path)["statusCode"] == 404
 
 
+@pytest.mark.parametrize("code", ["NoSuchKey", "NotFound", "AccessDenied"])
+def test_missing_s3_key_maps_to_404_across_error_semantics(aws, monkeypatch, capsys, code):
+    # Canonical review #1 (PR #167): live S3 without s3:ListBucket
+    # answers GetObject for a MISSING key with AccessDenied
+    # (anti-enumeration); moto returns NoSuchKey, so CI never saw the
+    # branch. All three "absent" codes must map to 404 — the surface
+    # stays {200, 401, 404} (bot R2 discipline).
+    s3 = boto3.client("s3", region_name=REGION)
+
+    class _Stub:
+        exceptions = s3.exceptions  # mirror the real client's error classes —
+        # the handler matches on `s3.exceptions.ClientError` via the
+        # instance, so the stub must carry the same surface.
+
+        def get_object(self, **kw):
+            raise s3.exceptions.ClientError({"Error": {"Code": code}}, "GetObject")
+
+    monkeypatch.setattr(viewer_handler, "_client", lambda name: _Stub())
+    assert _call("/static/app.css")["statusCode"] == 404
+    # Canonical review #3: the AccessDenied degradation signal is the
+    # point of the branch — pin the log event, and pin that the
+    # unambiguous absent codes stay silent.
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    if code == "AccessDenied":
+        assert events == [{"event": "viewer_s3_access_denied", "decision": "404"}]
+    else:
+        assert events == []
+
+
+@pytest.mark.parametrize("code", ["SlowDown", "ServiceUnavailable", "ThrottlingException"])
+def test_non_absent_s3_errors_take_the_reraise_branch(aws, monkeypatch, code):
+    # Canonical review #2 (PR #167): the re-raise branch must stay —
+    # non-absent codes (throttling/outage) surface as the controlled
+    # 500 boundary, never as a 404 that masks an outage as "not found".
+    s3 = boto3.client("s3", region_name=REGION)
+
+    class _Stub:
+        exceptions = s3.exceptions
+
+        def get_object(self, **kw):
+            raise s3.exceptions.ClientError({"Error": {"Code": code}}, "GetObject")
+
+    monkeypatch.setattr(viewer_handler, "_client", lambda name: _Stub())
+    assert _call("/static/app.css")["statusCode"] == 500
+
+
 # --- /api/runs/{pr}/latest (bearer + GSI) --------------------------------
 
 

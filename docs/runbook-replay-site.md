@@ -7,9 +7,15 @@ static assets, and the logs.
 
 ## Endpoint
 
-```text
-https://tmvyxasvjrxmllf6fjf3x2r73a0yzahp.lambda-url.us-west-2.on.aws/
+```bash
+aws lambda get-function-url-config \
+  --function-name pr-reviewer-viewer \
+  --query FunctionUrl --output text
 ```
+
+The live URL is distributed out of band with the bearer token (canonical
+review #1, PR #167: the endpoint is public-by-design but not committed to
+the repo — defense-in-depth against low-cost reconnaissance).
 
 Auth model (HLD §7): the URL itself is `authorization_type = "NONE"` —
 enforcement happens in the handler. Static shell/assets and dot-segment
@@ -54,14 +60,14 @@ aws s3 cp static/ s3://pr-reviewer-archives/static/ --recursive
 
 Logs: `/aws/lambda/pr-reviewer-viewer` (7-day retention).
 
-## Known divergence (T056 live verify, 2026-09-30)
+## Missing-key behavior (T056 live verify, 2026-09-30)
 
-Requesting a **nonexistent** S3 key (e.g. a stale static path) returns
-500 instead of the designed 404: without `s3:ListBucket`, S3 answers
-GetObject for a missing key with `AccessDenied` (anti-enumeration), which
-the handler's `NoSuchKey` catch does not cover. `moto` returns
-`NoSuchKey` for the same call, so `tests/integration/test_viewer_routing.py`
-stays green. All referenced routes serve real objects; treat any 500 in
-the viewer logs as a candidate missing-key probe and check the requested
-path. Follow-up ticket candidate (handler: map `NoSuchKey`/`AccessDenied`/
-`NotFound` → 404, or grant `s3:ListBucket` on the archives bucket).
+Without `s3:ListBucket`, live S3 answers GetObject for a **missing** key
+with `AccessDenied` (anti-enumeration); `moto` returns `NoSuchKey`, so CI
+originally never saw the branch and the first deploy returned 500 there
+(canonical review #1, PR #167). The handler now maps `NoSuchKey`,
+`NotFound`, and `AccessDenied` to 404 — the API surface stays
+{200, 401, 404} — and `test_missing_s3_key_maps_to_404_across_error_
+semantics` pins all three codes via a stubbed `ClientError`. Deployed
+behavior follows the handler zip baked at apply time; re-apply after any
+handler change.
