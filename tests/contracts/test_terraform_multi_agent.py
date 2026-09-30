@@ -44,11 +44,12 @@ VARIABLES_TF = (TERRAFORM_DIR / "variables.tf").read_text(encoding="utf-8")
 VIEWER_TF = (TERRAFORM_DIR / "viewer.tf").read_text(encoding="utf-8")
 IAM_TF = (TERRAFORM_DIR / "iam.tf").read_text(encoding="utf-8")
 
-# The 12 HLD §8 checklist-7 vars with the T005 defaults, exactly as they
-# appear in HCL (all quoted — Lambda env is strings, matching the
-# os.environ reads in common/config.py).
+# The 12 HLD §8 checklist-7 vars. T005 defaults for all but MULTI_AGENT,
+# which T050 flipped to "1" at deploy time (Mars approval 2026-09-30; D8
+# gates passed via the r7 record — DECISIONS 2026-09-30). All quoted —
+# Lambda env is strings, matching the os.environ reads in common/config.py.
 EXPECTED_ENV = {
-    "MULTI_AGENT": "0",
+    "MULTI_AGENT": "1",  # T050 activation; common.config default stays 0 (shadow fallback)
     "MULTI_AGENT_PHASE0": "1",
     "FANOUT_CONCURRENCY": "3",
     "MUTEX_LEASE_TTL_S": "900",
@@ -254,8 +255,12 @@ def test_env_defaults_match_config():
             f"{name} must be int/str for the str() cross-check, got {type(value).__name__}"
         )
 
+    # MULTI_AGENT is the ONE documented divergence from the three-way pin:
+    # deployed "1" per T050 activation (Mars approval 2026-09-30), while
+    # the code default stays 0 so a lost env var degrades to shadow mode,
+    # never single-pass. Every other var: terraform == config default.
     assert EXPECTED_ENV == {
-        "MULTI_AGENT": str(DEFAULT_MULTI_AGENT),
+        "MULTI_AGENT": "1",
         "MULTI_AGENT_PHASE0": str(DEFAULT_MULTI_AGENT_PHASE0),
         "FANOUT_CONCURRENCY": str(DEFAULT_FANOUT_CONCURRENCY),
         "MUTEX_LEASE_TTL_S": str(DEFAULT_MUTEX_LEASE_TTL_S),
