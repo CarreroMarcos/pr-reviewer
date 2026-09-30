@@ -654,6 +654,7 @@ def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout, caplog
     stubbed_fanout(REVIEW_TEXT)
     caplog.set_level(logging.INFO, logger="worker_handler")
     events = []
+    sink_lines = []
     result = _process_record(
         {"body": json.dumps(envelope_dict())},
         table=InMemoryTable(),
@@ -665,12 +666,17 @@ def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout, caplog
         ),
         llm_factory=lambda host, port, *, timeout: FakeLLMConnection([], []),
         github_transport=FakeGitHub(),
-        sink=[].append,
+        sink=sink_lines.append,
         system_prompt="SYSTEM-PROMPT",
         remaining_time_ms=lambda: 900_000,
         events=events,
     )
     assert result == "published"
+    (pub,) = [json.loads(x) for x in sink_lines if json.loads(x).get("status") == "published"]
+    # Gate-58 advisory semantics: the docs-only publish resolves
+    # single_pass and must stay out of the runs_multi_agent metric —
+    # the drift traffic term subtracts it via runs_docs_only instead.
+    assert pub["pipeline"] == "single_pass"
     assert {e["type"] for e in events} <= {
         "review_started",
         "checkpoint",
