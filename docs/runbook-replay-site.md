@@ -13,6 +13,12 @@ aws lambda get-function-url-config \
   --query FunctionUrl --output text
 ```
 
+Every canonical review comment ends with a `[🔬 Full agent replay]` footer
+linking `<endpoint>/runs/{pr}/{sha}/` for that exact run (T075; the worker
+resolves the base from its `REPLAY_BASE_URL` env — set in compute.tf from
+the viewer Function URL, never committed). The page shell is unauthenticated;
+artifacts behind the bearer token (below).
+
 The live URL is distributed out of band with the bearer token (canonical
 review #1, PR #167: the endpoint is public-by-design but not committed to
 the repo — defense-in-depth against low-cost reconnaissance).
