@@ -966,7 +966,7 @@ _PROMPT_SHAS = {
     # Pinned since 2026-09-29 (T070): the synthesizer is security-load-bearing
     # (floors-gate owner for injection laundering) — its sha is pinned so any
     # edit forces a conscious update. No trap arms depend on this stage.
-    "synthesizer": "912aa24773c676b091ddbf347f80d001d772fb16e7f5019c13f1eff282fa3f83",
+    "synthesizer": "6c046ad4f4b085a8d521068db16a6608560f7e7f044a6bfbdaef539a579bb975",
 }
 
 TRAP_VETTING: dict[str, dict] = {
