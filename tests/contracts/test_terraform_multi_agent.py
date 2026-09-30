@@ -504,7 +504,9 @@ def test_pipeline_mix_drift_alarm():
     single-agent publishes never breach on their own."""
     alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "pipeline_mix_drift")
     assert "FILL(multi, 0) >= 1" in alarm, "multi-absence term missing"
-    assert "FILL(published, 0) >= 3" in alarm, "traffic-continued term missing"
+    assert "FILL(published, 0) - FILL(docs_only, 0) >= 3" in alarm, (
+        "traffic-continued term missing (docs exclusion per Gate-58 advisory)"
+    )
     assert re.search(r"evaluation_periods\s*=\s*3", alarm)
     assert re.search(r"period\s*=\s*1200", alarm)
     assert re.search(r'comparison_operator\s*=\s*"LessThanThreshold"', alarm)
@@ -519,3 +521,26 @@ def test_pipeline_mix_drift_alarm():
         r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.runs_published",
         alarm,
     )
+    assert re.search(
+        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.runs_docs_only",
+        alarm,
+    )
+
+
+def test_runs_docs_only_metric_filter():
+    """T077 (Gate-58 advisory to SPR-167): the worker log group carries a
+    filter counting deliberate docs-only routes (the bare term logged at
+    the T076 skip path) so the drift alarm's traffic term excludes them —
+    prose-heavy repos must not false-page."""
+    filt = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "runs_docs_only")
+    assert "log_group_name = aws_cloudwatch_log_group.worker.name" in filt
+    pattern = re.search(r'^\s*pattern\s*=\s*"(.*)"\s*$', filt, re.MULTILINE)
+    assert pattern is not None, "filter pattern not found"
+    assert "docs_only" in pattern.group(1), (
+        f"filter does not count docs-only routes: {pattern.group(1)!r}"
+    )
+    m = re.search(r"metric_transformation\s*\{([^}]*)\}", filt)
+    assert m is not None, "metric_transformation block not found"
+    body = m.group(1)
+    assert re.search(r'name\s*=\s*"RunsDocsOnly"', body)
+    assert re.search(r'namespace\s*=\s*"pr-reviewer/worker"', body)

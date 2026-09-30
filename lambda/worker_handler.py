@@ -976,6 +976,13 @@ def _make_review(
                 # contender-path event (never degraded_to_single_pass:
                 # fan-out was not attempted, Gate-15/ADV-4 discipline);
                 # reason rides the enum extended with docs_only.
+                # Metric-filter signal (T048b precedent; Gate-58 advisory
+                # to SPR-167): the envelope event never reaches logs, so a
+                # line led by the bare term is logged for the
+                # runs_docs_only filter — the drift alarm's traffic term
+                # excludes deliberate docs routes (prose-heavy repos must
+                # not false-page).
+                logger.info("docs_only fanout_skip=1")
                 evts.append(concurrency_single_pass(reason="docs_only", elapsed_ms=0, run_id=rid))
             content = _single_pass_inline(diff_result, head_sha, generation)
         # Release AFTER the last lease-covered LLM call, BEFORE
