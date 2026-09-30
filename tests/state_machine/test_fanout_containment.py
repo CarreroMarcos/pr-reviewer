@@ -53,6 +53,7 @@ collection errors on import.
 """
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,7 @@ from dynamodb_stub import InMemoryTable
 import worker_handler
 from common.config import ConfigError
 from common.envelope import validate_envelope
+from common.events import agent_started
 from common.failure_notice import NoticeTrigger
 from common.fanout import FanoutDegraded
 from common.llm import LlmError
@@ -643,13 +645,14 @@ def test_docs_only_diff_skips_fanout(multi_agent, stubbed_fanout):
     }
 
 
-def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout):
+def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout, caplog):
     """T076 spec verify letter, end to end: a docs-only diff publishes
     through the full record path with the routing chain
     review_started → concurrency_single_pass(docs_only) → published and
     zero fanout-stage events (agent/wave/verifier/synthesizer types
     absent from the chain)."""
     stubbed_fanout(REVIEW_TEXT)
+    caplog.set_level(logging.INFO, logger="worker_handler")
     events = []
     result = _process_record(
         {"body": json.dumps(envelope_dict())},
@@ -677,6 +680,11 @@ def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout):
     (evt,) = events_of_type(events, "concurrency_single_pass")
     assert evt["reason"] == "docs_only"
     assert events_of_type(events, "review_published")
+    # T077 (Gate-58 advisory carrier): the bare term logged at the skip
+    # path is the sole signal feeding the runs_docs_only metric filter.
+    assert any(rec.message == "docs_only fanout_skip=1" for rec in caplog.records), (
+        "bare-term docs_only metric signal missing at the skip path"
+    )
 
 
 def test_docs_only_no_event_without_multi_agent(stubbed_fanout):
@@ -728,6 +736,33 @@ def test_replay_footer_on_fanout_published_body(multi_agent, stubbed_fanout, mon
     assert result == "published"
     (post,) = [c for c in github.calls if c["method"] == "POST"]
     assert f"/runs/{PR_NUMBER}/{SHA_B}/" in post["body"]["body"]
+
+
+def test_publish_log_line_carries_pipeline_multi_agent(multi_agent, stubbed_fanout):
+    """T077: the happy-path publish log line carries the routing
+    discriminator from the run's own event chain — multi_agent when the
+    chain holds fanout-stage events. The run_fanout stub bypasses the
+    specialist chain, so it is pre-seeded with one real fanout-stage
+    event (canonical r3: the single_pass row alone left multi_agent
+    resolution unpinned)."""
+    stubbed_fanout(REVIEW_TEXT)
+    sink_lines = []
+    result = _process_record(
+        {"body": json.dumps(envelope_dict())},
+        table=InMemoryTable(),
+        provider=make_provider(),
+        clock=lambda: NOW,
+        diff_transport=FakeDiffTransport(meta=[(200, SHA_B)]),
+        llm_factory=lambda host, port, *, timeout: FakeLLMConnection([], []),
+        github_transport=FakeGitHub(),
+        sink=sink_lines.append,
+        system_prompt="SYSTEM-PROMPT",
+        remaining_time_ms=lambda: 900_000,
+        events=[agent_started(specialty="correctness", run_id=RUN_ID)],
+    )
+    assert result == "published"
+    (line,) = [json.loads(x) for x in sink_lines if json.loads(x).get("status") == "published"]
+    assert line["pipeline"] == "multi_agent"
 
 
 # --- boundary proofs: run_review, record, handler ----------------------------------------

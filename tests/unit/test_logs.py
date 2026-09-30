@@ -748,7 +748,7 @@ def test_pipeline_field_validation():
         **_metrics(),
     )
     assert build_event(**base)["pipeline"] is None
-    event = build_event(**base, pipeline="multi_agent")
-    assert event["pipeline"] == "multi_agent"
+    for known in ("multi_agent", "single_pass", "phase0_shadow"):
+        assert build_event(**base, pipeline=known)["pipeline"] == known
     with pytest.raises(LogsError):
         build_event(**base, pipeline="bogus")

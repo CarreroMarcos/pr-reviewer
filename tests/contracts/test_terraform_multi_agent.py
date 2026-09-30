@@ -504,7 +504,7 @@ def test_pipeline_mix_drift_alarm():
     single-agent publishes never breach on their own."""
     alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "pipeline_mix_drift")
     assert "FILL(multi, 0) >= 1" in alarm, "multi-absence term missing"
-    assert "FILL(published, 0) - FILL(docs_only, 0) >= 3" in alarm, (
+    assert "FILL(published, 0) - FILL(docs, 0) >= 3" in alarm, (
         "traffic-continued term missing (docs exclusion per Gate-58 advisory)"
     )
     assert re.search(r"evaluation_periods\s*=\s*3", alarm)

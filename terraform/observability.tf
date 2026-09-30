@@ -172,7 +172,7 @@ resource "aws_cloudwatch_metric_alarm" "pipeline_mix_drift" {
   # notBreaching and silence exactly the drift case.
   metric_query {
     id          = "drift"
-    expression  = "(FILL(multi, 0) >= 1) - (FILL(published, 0) - FILL(docs_only, 0) >= 3)"
+    expression  = "(FILL(multi, 0) >= 1) - (FILL(published, 0) - FILL(docs, 0) >= 3)"
     label       = "Publishing without multi_agent runs"
     return_data = true
   }
