@@ -294,7 +294,7 @@ def make_provider():
     )
 
 
-def make_closure(events, *, remaining=900_000, run_id=RUN_ID, llm_script=None):
+def make_closure(events, *, remaining=900_000, run_id=RUN_ID, llm_script=None, files=None):
     provider = make_provider()
     conns = []
 
@@ -305,7 +305,7 @@ def make_closure(events, *, remaining=900_000, run_id=RUN_ID, llm_script=None):
         envelope=validate_envelope(envelope_dict()),
         creds=_Credentials(provider),
         usage={},
-        diff_transport=FakeDiffTransport(meta=[(200, SHA_B)]),
+        diff_transport=FakeDiffTransport(meta=[(200, SHA_B)], files=files),
         llm_factory=factory,
         system_prompt="SYSTEM-PROMPT",
         allowed_hosts=provider.allowed_hosts,
@@ -617,6 +617,35 @@ def test_legacy_path_never_attempts_fanout(stubbed_fanout):
     assert stub.calls == []
     assert events_of_type(events, "degraded_to_single_pass") == []
     assert events_of_type(events, "review_started")
+
+
+def test_docs_only_diff_skips_fanout(multi_agent, stubbed_fanout):
+    """T076: MULTI_AGENT=1 + every file docs-shaped routes single-pass —
+    the fanout stub observes zero calls (wave/verifier/synthesizer LLM
+    spend never happens) and the event carries the true disposition:
+    concurrency_single_pass/docs_only, never a fabricated degradation
+    (Gate-15/ADV-4: fan-out was not attempted)."""
+    stub = stubbed_fanout(REVIEW_TEXT)
+    events = []
+    closure = make_closure(events, files=[file_entry("README.md"), file_entry("docs/guide.md")])
+    content = closure(SHA_B, 0)
+    assert REVIEW_TEXT in content
+    assert stub.calls == []
+    (evt,) = events_of_type(events, "concurrency_single_pass")
+    assert evt["reason"] == "docs_only"
+    assert events_of_type(events, "degraded_to_single_pass") == []
+
+
+def test_mixed_diff_still_fans_out(multi_agent, stubbed_fanout):
+    """T076 boundary: ONE code file anywhere keeps the full battery —
+    the docs predicate never downgrades a mixed diff."""
+    stub = stubbed_fanout(REVIEW_TEXT)
+    events = []
+    closure = make_closure(events, files=[file_entry("README.md"), file_entry("src/main.py")])
+    content = closure(SHA_B, 0)
+    assert REVIEW_TEXT in content
+    assert stub.calls  # fanout attempted
+    assert events_of_type(events, "concurrency_single_pass") == []
 
 
 def test_replay_footer_on_fanout_published_body(multi_agent, stubbed_fanout, monkeypatch):

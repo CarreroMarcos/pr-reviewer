@@ -715,6 +715,27 @@ def _run_phase0_shadow(
     return True
 
 
+_DOCS_SUFFIXES = (".md", ".txt", ".rst", ".mdx")
+_DOCS_PREFIX = "docs/"
+
+
+def _docs_only(diff_result: Any) -> bool:
+    """T076: True when EVERY changed file is docs-shaped — a prose
+    extension or a path under docs/. The fanout battery targets code
+    defects (correctness/security arms), so a prose-only diff routes
+    single-pass: the ~4-5× LLM spend of wave+verifier+synthesizer buys
+    nothing there. ONE code file anywhere keeps the full battery. Empty
+    file set ⇒ False (never skip on nothing)."""
+    files = getattr(diff_result, "files", ())
+    if not files:
+        return False
+    for file in files:
+        name = file.filename
+        if not (name.startswith(_DOCS_PREFIX) or name.endswith(_DOCS_SUFFIXES)):
+            return False
+    return True
+
+
 def _make_review(
     *,
     envelope: Envelope,
@@ -945,11 +966,17 @@ def _make_review(
                 diff_result, head_sha, generation, ma_cfg, rid, evts, now, t_acquired
             )
             return content
-        if ma_cfg.multi_agent == 1:
+        if ma_cfg.multi_agent == 1 and not _docs_only(diff_result):
             content = _fanout_content(
                 diff_result, head_sha, generation, ma_cfg, rid, evts, now, lease, t_acquired
             )
         else:
+            if ma_cfg.multi_agent == 1:
+                # T076: deliberate docs-only single-pass routing — the
+                # contender-path event (never degraded_to_single_pass:
+                # fan-out was not attempted, Gate-15/ADV-4 discipline);
+                # reason rides the enum extended with docs_only.
+                evts.append(concurrency_single_pass(reason="docs_only", elapsed_ms=0, run_id=rid))
             content = _single_pass_inline(diff_result, head_sha, generation)
         # Release AFTER the last lease-covered LLM call, BEFORE
         # claim/fence/publish/finalize (all run after review() returns).
