@@ -1,8 +1,10 @@
 """T076: the `_docs_only` fanout-skip predicate.
 
-Every changed file docs-shaped (prose extension or under `docs/`) ⇒
-single-pass; ONE code file anywhere keeps the full battery; empty file
-sets never skip.
+Every changed file prose-suffixed (.md/.txt/.rst/.mdx, exact case) ⇒
+single-pass; ONE code file anywhere keeps the full battery; empty or
+attribute-less file sets never skip. Path prefixes are deliberately not
+consulted (PR #173 r1: docs/ must never route executable code away from
+the battery).
 """
 
 from types import SimpleNamespace
@@ -45,6 +47,10 @@ def test_docsify_is_not_docs():
 def test_suffixes_are_exact():
     assert not _docs_only(SimpleNamespace(files=(dfile("notes.md.bak"),)))
     assert _docs_only(SimpleNamespace(files=(dfile("docs.md"),)))
+    # Case-sensitive by design — fail-safe direction: an uppercase suffix
+    # fans out (full battery) rather than silently widening the skip
+    # (Gate-58 coverage-2 pin).
+    assert not _docs_only(SimpleNamespace(files=(dfile("README.MD"),)))
 
 
 def test_empty_file_set_never_skips():
