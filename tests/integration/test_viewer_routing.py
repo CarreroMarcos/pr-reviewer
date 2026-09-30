@@ -198,7 +198,11 @@ def test_missing_s3_key_maps_to_404_across_error_semantics(aws, monkeypatch, cap
     # unambiguous absent codes stay silent.
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
     if code == "AccessDenied":
-        assert events == [{"event": "viewer_s3_access_denied", "decision": "404"}]
+        # T078 (Gate-56 advisory A3): the denied line carries the
+        # requested S3 key — 404-vs-denied diagnosable from CloudWatch.
+        assert events == [
+            {"event": "viewer_s3_access_denied", "decision": "404", "key": "static/app.css"}
+        ]
     else:
         assert events == []
 
