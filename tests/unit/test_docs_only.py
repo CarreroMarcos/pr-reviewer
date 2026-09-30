@@ -30,11 +30,16 @@ def test_one_code_file_keeps_fanout():
     assert not _docs_only(SimpleNamespace(files=files))
 
 
-def test_docs_prefix_is_exact_not_fuzzy():
-    # "docsify/" is not under docs/ — code there keeps the battery.
+def test_code_under_docs_keeps_fanout():
+    """PR #173 r1 MEDIUM: a docs/ path never routes executable code away
+    from the security battery — classification is suffix-only."""
+    assert not _docs_only(SimpleNamespace(files=(dfile("docs/examples/x.py"),)))
+    assert not _docs_only(SimpleNamespace(files=(dfile("docs/Makefile"),)))
+
+
+def test_docsify_is_not_docs():
     assert not _docs_only(SimpleNamespace(files=(dfile("docsify/app.py"),)))
-    # A code-suffixed file UNDER docs/ is docs-shaped by path.
-    assert _docs_only(SimpleNamespace(files=(dfile("docs/examples/x.py"),)))
+    assert not _docs_only(SimpleNamespace(files=(dfile("docsify/notes.md.bak"),)))
 
 
 def test_suffixes_are_exact():

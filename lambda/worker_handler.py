@@ -716,22 +716,22 @@ def _run_phase0_shadow(
 
 
 _DOCS_SUFFIXES = (".md", ".txt", ".rst", ".mdx")
-_DOCS_PREFIX = "docs/"
 
 
 def _docs_only(diff_result: Any) -> bool:
-    """T076: True when EVERY changed file is docs-shaped — a prose
-    extension or a path under docs/. The fanout battery targets code
-    defects (correctness/security arms), so a prose-only diff routes
-    single-pass: the ~4-5× LLM spend of wave+verifier+synthesizer buys
-    nothing there. ONE code file anywhere keeps the full battery. Empty
-    file set ⇒ False (never skip on nothing)."""
+    """T076: True when EVERY changed file is prose-shaped — extension in
+    `_DOCS_SUFFIXES`. The fanout battery targets code defects
+    (correctness/security arms), so a prose-only diff routes single-pass:
+    the ~4-5× LLM spend of wave+verifier+synthesizer buys nothing there.
+    ONE code file anywhere keeps the full battery. Path prefix is
+    deliberately NOT consulted (PR #173 r1 MEDIUM): a docs/ path alone
+    must never route executable code away from the battery — suffix-only
+    classification, empty file set ⇒ False (never skip on nothing)."""
     files = getattr(diff_result, "files", ())
     if not files:
         return False
     for file in files:
-        name = file.filename
-        if not (name.startswith(_DOCS_PREFIX) or name.endswith(_DOCS_SUFFIXES)):
+        if not file.filename.endswith(_DOCS_SUFFIXES):
             return False
     return True
 

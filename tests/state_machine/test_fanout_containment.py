@@ -636,6 +636,19 @@ def test_docs_only_diff_skips_fanout(multi_agent, stubbed_fanout):
     assert events_of_type(events, "degraded_to_single_pass") == []
 
 
+def test_docs_only_no_event_without_multi_agent(stubbed_fanout):
+    """T076 (PR #173 r1 LOW): with MULTI_AGENT unset the docs predicate is
+    irrelevant — the else-branch must NOT emit a spurious
+    concurrency_single_pass/docs_only event (there was no fanout decision
+    to record)."""
+    stubbed_fanout(REVIEW_TEXT)
+    events = []
+    closure = make_closure(events, files=[file_entry("README.md")])
+    content = closure(SHA_B, 0)  # no multi_agent fixture: legacy inline
+    assert REVIEW_TEXT in content
+    assert events_of_type(events, "concurrency_single_pass") == []
+
+
 def test_mixed_diff_still_fans_out(multi_agent, stubbed_fanout):
     """T076 boundary: ONE code file anywhere keeps the full battery —
     the docs predicate never downgrades a mixed diff."""
