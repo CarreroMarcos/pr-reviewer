@@ -93,7 +93,7 @@ from urllib.request import Request, urlopen
 from common import archive as archive_mod
 from common import mutex as mutex_mod
 from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
-from common.config import ConfigError, ConfigProvider, multi_agent_config
+from common.config import ConfigError, ConfigProvider, multi_agent_config, replay_base_url
 from common.diff import DiffError, fetch_diff, fetch_pr_head_sha, post_image_lengths
 from common.envelope import Envelope, EnvelopeError, validate_envelope
 from common.events import (
@@ -388,6 +388,35 @@ def _github_headers(token: str) -> dict[str, str]:
 
 # SQS `ChangeMessageVisibility` ceiling: 12 hours. A `Retry-After` beyond
 # it (or garbage) is ignored — the queue default applies.
+REPLAY_FOOTER_MARK = "Full agent replay"
+
+
+def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
+    """T075: deterministic replay-link footer on the published canonical
+    body — code-side, never model-side (the synthesizer prompt and output
+    contract are untouched). Omitted entirely when `REPLAY_BASE_URL` is
+    unset; exactly-once under re-publish: a body already carrying the
+    footer link is returned unchanged (constitution IV discipline extends to
+    the footer — a PATCH of a re-composed body can never stack footers).
+    The URL targets the unauth shell + bearer-gated artifacts (HLD §7);
+    the base never appears as a committed literal (PR #167 canonical
+    LOW posture) — it rides the worker env from the viewer Function URL
+    resource (terraform contract pin, test_terraform_multi_agent.py)."""
+    base = replay_base_url()
+    # Idempotency anchors to the EXACT footer link for THIS run (r2): a
+    # model-quoted phrase (r1 LOW) or a decoy link for a different run
+    # (r2 LOW) cannot suppress the append — only a body already carrying
+    # this run's footer can, which is precisely the re-publish case.
+    footer_link = f"[{REPLAY_FOOTER_MARK}]({base}/runs/{pr_number}/{sha}/)"
+    if not base or footer_link in content:
+        return content
+    return (
+        content
+        + f"\n\n---\n🔬 {footer_link}"
+        + " — agent DAG, per-agent reasoning, and checkpoints for this review.\n"
+    )
+
+
 _MAX_VISIBILITY_TIMEOUT = 12 * 3600
 
 
@@ -1395,6 +1424,11 @@ def _make_publish(
             # bypassed — warn so defense-in-depth firing is observable.
             logger.warning("canary_leaked_at_publish: upstream gate bypassed; redacting")
         content = sanitize(content)
+        # T075: the footer rides AFTER the sanitizer — it is code-side
+        # decoration (the sha is public PR metadata, not model output);
+        # inside the sanitizer the 40-hex sha reads as a payload token
+        # (PR #169 r2 find).
+        content = _with_replay_footer(content, pr_number=pr_number, sha=envelope.head_sha)
         item = table.get_item(pk) or {}
         comment_id = item.get("comment_id")
         if isinstance(comment_id, bool):

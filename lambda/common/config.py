@@ -222,6 +222,15 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def replay_base_url() -> str:
+    """Viewer Function URL for the canonical comment's replay footer
+    (T075). Empty string = footer omitted (feature off). NOT a §8
+    multi-agent var — publish decoration only, read directly by the
+    worker publish path. Trailing slashes stripped so the footer can
+    append `/runs/...` unconditionally."""
+    return os.environ.get("REPLAY_BASE_URL", "").strip().rstrip("/")
+
+
 def multi_agent_config() -> MultiAgentConfig:
     """Read the 12 HLD-004 §8 item-7 knobs from the environment."""
     return MultiAgentConfig(

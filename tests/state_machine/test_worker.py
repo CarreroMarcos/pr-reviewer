@@ -357,6 +357,44 @@ def test_new_revision_posts_pending_reconcile():
     assert h.table.items[PK]["generation"] == 6
 
 
+def test_replay_footer_on_published_comment(monkeypatch):
+    """T075 wiring (single-pass): the POSTed canonical body carries the
+    replay footer with pr_number + head_sha interpolated (PR #169 r1
+    MEDIUM — the publish-boundary wiring is pinned end-to-end, not just
+    the helper in isolation)."""
+    monkeypatch.setenv("REPLAY_BASE_URL", "https://viewer.example.test")
+    h = Harness(meta=[(200, SHA_B)])
+    assert h.run(envelope(sha=SHA_B)) == {"ok": True, "results": ["published"]}
+    posted = next(c for c in h.github.calls if c["method"] == "POST")["body"]["body"]
+    assert (
+        f"🔬 [Full agent replay](https://viewer.example.test/runs/{PR_NUMBER}/{SHA_B}/)" in posted
+    )
+
+
+def test_replay_footer_absent_when_env_unset(monkeypatch):
+    monkeypatch.delenv("REPLAY_BASE_URL", raising=False)
+    h = Harness(meta=[(200, SHA_B)])
+    h.run(envelope(sha=SHA_B))
+    posted = next(c for c in h.github.calls if c["method"] == "POST")["body"]["body"]
+    assert "Full agent replay" not in posted
+
+
+def test_replay_footer_exactly_once_across_republish(monkeypatch):
+    """PR #169 r2 MEDIUM: same-revision re-publish re-composes +
+    re-sanitizes + re-decorates — the final PATCHed body carries exactly
+    one footer (the exactly-once contract proven through the real PATCH
+    path, not just the helper)."""
+    monkeypatch.setenv("REPLAY_BASE_URL", "https://viewer.example.test")
+    h = Harness(meta=[(200, SHA_B)])
+    assert h.run(envelope(sha=SHA_B)) == {"ok": True, "results": ["published"]}
+    assert h.run(envelope(sha=SHA_B)) == {"ok": True, "results": ["published"]}
+    patched = next(c for c in h.github.calls if c["method"] == "PATCH")["body"]["body"]
+    assert patched.count("Full agent replay") == 1
+    assert (
+        f"🔬 [Full agent replay](https://viewer.example.test/runs/{PR_NUMBER}/{SHA_B}/)" in patched
+    )
+
+
 def test_same_revision_replay_patches_same_comment_never_reposts():
     """Mars ruling 2: no ACTIVE same-owner short-circuit — sequential
     same-owner+SHA replay publishes again; ruling 1: that re-publish is a

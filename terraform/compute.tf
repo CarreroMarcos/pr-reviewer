@@ -139,6 +139,11 @@ resource "aws_lambda_function" "worker" {
       SINGLE_PASS_WAIT_FOR_S = "240"
       SOCKET_READ_TIMEOUT_S  = "240"
       BUDGET_MARGIN_S        = "60"
+      # T075: replay-link footer base — wired from the viewer Function URL
+      # resource, never a committed literal (PR #167 canonical LOW posture).
+      # Outside the §8 12-var contract (spec PR #168); read directly by the
+      # worker publish path via common.config.replay_base_url().
+      REPLAY_BASE_URL = "${aws_lambda_function_url.viewer.function_url}"
     }
   }
 }
