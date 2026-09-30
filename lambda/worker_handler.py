@@ -130,6 +130,7 @@ from common.reconcile import (
     validate_page,
 )
 from common.residuals import load_accepted_residuals, residuals_for
+from common.sanitize import sanitize
 from common.state import build_clear_comment_expressions, expression_names, review_pk
 from common.validate import PROMPT_VERSION
 
@@ -1379,6 +1380,10 @@ def _make_publish(
             raise GitHubError(404, "http_404") from None
 
     def publish(content: str) -> int:
+        # HLD-004 §5 item 5: the full sanitizer (structure phases +
+        # payload-token redaction) runs at publish, so the PATCH/POST
+        # body is the shipped text — never the raw model content.
+        content = sanitize(content)
         item = table.get_item(pk) or {}
         comment_id = item.get("comment_id")
         if isinstance(comment_id, bool):

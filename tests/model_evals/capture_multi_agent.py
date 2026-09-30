@@ -79,6 +79,7 @@ from common.config import multi_agent_config  # noqa: E402
 from common.diff import DiffFile, DiffResult  # noqa: E402
 from common.fanout import FanoutDegraded, run_fanout  # noqa: E402
 from common.llm import review_diff  # noqa: E402
+from common.sanitize import sanitize  # noqa: E402
 
 REGION = "us-west-2"
 OLLAMA_URL = "http://localhost:11434"
@@ -418,7 +419,10 @@ def run_case(
         "run_index": run_index,
         "effort": effort,
         "run_id": run_id,
-        "comment": comment,
+        # HLD-004 §5 item 5: the harness records the SHIPPED comment —
+        # the same sanitize() the worker applies before PATCH — so the
+        # eval floors measure shipped behavior, not raw model text.
+        "comment": sanitize(comment),
         "latency_ms": latency_ms,
         "wave_survivors": verdict.get("wave_survivors", 0),
         "candidates": candidates,

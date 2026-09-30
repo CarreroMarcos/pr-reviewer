@@ -9,6 +9,7 @@ other angle-bracket text survive untouched.
 import pytest
 
 from common.sanitize import SanitizeError, sanitize
+from common.validate import CANARY_SUBSTRING
 
 
 def test_plain_prose_with_generics_and_jsx_untouched():
@@ -120,3 +121,58 @@ def test_non_string_input_rejected(value):
     with pytest.raises(SanitizeError) as excinfo:
         sanitize(value)
     assert excinfo.value.field == "text"
+
+
+# HLD-004 §5 item 5: payload-token redaction (runs after span
+# re-substitution over the fully-restored text).
+
+
+def test_payload_email_redacted():
+    out = sanitize("contact attacker@evil.example for details")
+    assert out == "contact [redacted:email] for details"
+    assert "attacker@evil.example" not in out
+
+
+def test_canary_inside_fenced_block_redacted():
+    code = f"```\nleaked {CANARY_SUBSTRING} here\n```"
+    out = sanitize(code)
+    assert out == "```\nleaked [redacted:token] here\n```"
+    assert CANARY_SUBSTRING not in out
+
+
+def test_canary_in_prose_redacted():
+    out = sanitize(f"see {CANARY_SUBSTRING} now")
+    assert out == "see [redacted:token] now"
+
+
+def test_sixteen_hex_run_redacted():
+    out = sanitize("sha 9f3a7c2e1b4d6a8e end")
+    assert out == "sha [redacted:token] end"
+
+
+def test_full_commit_sha_redacted():
+    sha = "a" * 40
+    out = sanitize(f"see {sha} now")
+    assert out == "see [redacted:token] now"
+
+
+@pytest.mark.parametrize("token", ["deadbee", "abc123def456789", "9f3a7c2e1b4d6a8"])
+def test_short_hex_runs_survive(token):
+    assert sanitize(f"see {token} now") == f"see {token} now"
+
+
+def test_generics_and_code_spans_survive_redaction_phase():
+    for text in [
+        "Use List<T> and Dict[str, Any> here",
+        "`const x: List<T> = []` stays",
+        "render <div> and `Dict[str, Any]` now",
+    ]:
+        assert sanitize(text) == text
+
+
+def test_structure_phases_still_apply_before_redaction():
+    assert sanitize("see ![img](http://x.test/i.png) now") == (
+        "see [Image: img] (http://x.test/i.png) now"
+    )
+    assert sanitize("see [link](http://x.test) now") == "see link (http://x.test) now"
+    assert sanitize("see <http://x.test/a> now") == "see `<http://x.test/a>` now"

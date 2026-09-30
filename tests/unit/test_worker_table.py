@@ -144,3 +144,35 @@ def test_publish_posts_when_comment_id_absent() -> None:
     assert [method for method, _ in calls] == ["GET", "POST", "GET"]
     assert calls[1][0] == "POST"
     assert calls[1][1].endswith("/issues/7/comments")
+
+
+def test_publish_sanitizes_content_before_patch() -> None:
+    """HLD-004 §5 item 5: the PATCH body carries the sanitized text —
+    structure neutralized AND payload tokens redacted, raw bytes absent."""
+    import json
+
+    bodies: list[bytes] = []
+
+    def transport(method: str, url: str, headers: dict, body: bytes):
+        if method == "PATCH":
+            bodies.append(body)
+        if method == "GET":
+            return 200, b"[]"
+        return 200, b'{"id": 5658256138}'
+
+    publish = _make_publish(
+        envelope=_envelope(),
+        creds=_FakeCreds(),
+        table=_BotoTable(_FakeBotoTable(_stored_item())),
+        pk="review:org/repo#7",
+        owner="guid-1",
+        clock=lambda: 1_750_000_000,
+        github_transport=transport,
+    )
+    content = "see ![x](http://e.invalid/x.png) contact attacker@evil.example now"
+    assert publish(content) == 5658256138
+    assert len(bodies) == 1
+    shipped = json.loads(bodies[0].decode())["body"]
+    assert "[Image: x] (http://e.invalid/x.png)" in shipped
+    assert "[redacted:email]" in shipped
+    assert "attacker@evil.example" not in shipped
