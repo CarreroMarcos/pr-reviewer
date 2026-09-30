@@ -65,6 +65,7 @@ FIXED_FIELDS = frozenset(
         "duration_ms",
         "token_usage",
         "status",
+        "pipeline",
         "error_class",
         "stale_discarded",
         "failure_notice_published",
@@ -230,6 +231,18 @@ def _clean_status(value: Any) -> str:
     return value
 
 
+def _clean_pipeline(value: Any) -> str | None:
+    """T077: the pipeline discriminator on terminal worker lines — None on
+    lines that predate routing (error-path emits); a known discriminator
+    on publish-path lines (the metric filters key on it)."""
+    if value is None:
+        return None
+    if value not in ("multi_agent", "single_pass", "phase0_shadow"):
+        raise LogsError("pipeline", "bad_pipeline")
+    assert_clean(value, field="pipeline")
+    return value
+
+
 def _clean_error_class(value: Any) -> str | None:
     if value is None:
         return None
@@ -336,6 +349,7 @@ def build_event(
     token_usage: Any,
     status: Any,
     error_class: Any = None,
+    pipeline: Any = None,
     generation: Any = None,
     stale_discarded: Any = False,
     failure_notice_published: Any = "false",
@@ -369,6 +383,7 @@ def build_event(
         "duration_ms": _clean_count(duration_ms, "duration_ms", "bad_duration"),
         "token_usage": _clean_count(token_usage, "token_usage", "bad_token_usage"),
         "status": _clean_status(status),
+        "pipeline": _clean_pipeline(pipeline),
         "error_class": _clean_error_class(error_class),
         "stale_discarded": _clean_stale_discarded(stale_discarded),
         "failure_notice_published": _clean_failure_notice_published(failure_notice_published),

@@ -458,3 +458,64 @@ def test_no_kms_actions_anywhere_in_terraform():
             f"kms: action present in {tf.name} — KMS grants require a "
             "Mars ruling amending DECISIONS 2026-09-28 first"
         )
+
+
+def test_runs_published_metric_filter():
+    """T077: the worker log group carries a filter counting published
+    review lines — the traffic term of the pipeline-mix drift alarm."""
+    filt = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "runs_published")
+    assert "log_group_name = aws_cloudwatch_log_group.worker.name" in filt
+    pattern = re.search(r'^\s*pattern\s*=\s*"(.*)"\s*$', filt, re.MULTILINE)
+    assert pattern is not None, "filter pattern not found"
+    assert '$.status = \\"published\\"' in pattern.group(1), (
+        f"filter does not count published lines: {pattern.group(1)!r}"
+    )
+    m = re.search(r"metric_transformation\s*\{([^}]*)\}", filt)
+    assert m is not None, "metric_transformation block not found"
+    body = m.group(1)
+    assert re.search(r'name\s*=\s*"RunsPublished"', body)
+    assert re.search(r'namespace\s*=\s*"pr-reviewer/worker"', body)
+    assert re.search(r'value\s*=\s*"1"', body)
+
+
+def test_runs_multi_agent_metric_filter():
+    """T077: the worker log group carries a filter counting lines whose
+    pipeline discriminator is multi_agent — the routing term of the
+    pipeline-mix drift alarm."""
+    filt = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "runs_multi_agent")
+    assert "log_group_name = aws_cloudwatch_log_group.worker.name" in filt
+    pattern = re.search(r'^\s*pattern\s*=\s*"(.*)"\s*$', filt, re.MULTILINE)
+    assert pattern is not None, "filter pattern not found"
+    assert '$.pipeline = \\"multi_agent\\"' in pattern.group(1), (
+        f"filter does not count multi_agent lines: {pattern.group(1)!r}"
+    )
+    m = re.search(r"metric_transformation\s*\{([^}]*)\}", filt)
+    assert m is not None, "metric_transformation block not found"
+    body = m.group(1)
+    assert re.search(r'name\s*=\s*"RunsMultiAgent"', body)
+    assert re.search(r'namespace\s*=\s*"pr-reviewer/worker"', body)
+
+
+def test_pipeline_mix_drift_alarm():
+    """T077: the absence-semantics drift alarm — publishing traffic with
+    zero multi_agent runs across 3x20min pages via the shared topic.
+    FILL(., 0) makes an empty window evaluate as 0 instead of falling to
+    notBreaching (which would silence exactly the drift case); legitimate
+    single-agent publishes never breach on their own."""
+    alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "pipeline_mix_drift")
+    assert "FILL(multi, 0) >= 1" in alarm, "multi-absence term missing"
+    assert "FILL(published, 0) >= 3" in alarm, "traffic-continued term missing"
+    assert re.search(r"evaluation_periods\s*=\s*3", alarm)
+    assert re.search(r"period\s*=\s*1200", alarm)
+    assert re.search(r'comparison_operator\s*=\s*"LessThanThreshold"', alarm)
+    assert re.search(r"threshold\s*=\s*0", alarm)
+    assert re.search(r'treat_missing_data\s*=\s*"notBreaching"', alarm)
+    assert "aws_sns_topic.alerts.arn" in alarm, "alarm not wired to the shared topic"
+    assert re.search(
+        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.runs_multi_agent",
+        alarm,
+    )
+    assert re.search(
+        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.runs_published",
+        alarm,
+    )
