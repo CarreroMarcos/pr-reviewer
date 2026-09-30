@@ -726,9 +726,14 @@ def _docs_only(diff_result: Any) -> bool:
     ONE code file anywhere keeps the full battery. Path prefix is
     deliberately NOT consulted (PR #173 r1 MEDIUM): a docs/ path alone
     must never route executable code away from the battery — suffix-only
-    classification, empty file set ⇒ False (never skip on nothing)."""
+    classification, empty file set ⇒ False (never skip on nothing).
+    Truncated diffs ⇒ False (T079): `files` is the post-budget kept
+    list, so a truncated diff's kept set can be all-prose while dropped
+    files carried code — classification is unreliable, fail safe."""
     files = getattr(diff_result, "files", ())
     if not files:
+        return False
+    if getattr(diff_result, "truncated", False):
         return False
     for file in files:
         if not file.filename.endswith(_DOCS_SUFFIXES):

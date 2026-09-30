@@ -55,12 +55,14 @@ collection errors on import.
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from dynamodb_stub import InMemoryTable
 
 import worker_handler
 from common.config import ConfigError
+from common.diff import MAX_INPUT_BYTES
 from common.envelope import validate_envelope
 from common.events import agent_started
 from common.failure_notice import NoticeTrigger
@@ -122,12 +124,12 @@ def envelope_dict(*, sha=SHA_B, guid=GUID_1):
     }
 
 
-def file_entry(name="src/main.py"):
+def file_entry(name="src/main.py", patch=None):
     return {
         "filename": name,
         "additions": 5,
         "deletions": 2,
-        "patch": "@@ -1,2 +1,2 @@\n-old\n+new\n",
+        "patch": patch or "@@ -1,2 +1,2 @@\n-old\n+new\n",
     }
 
 
@@ -713,6 +715,70 @@ def test_mixed_diff_still_fans_out(multi_agent, stubbed_fanout):
     events = []
     closure = make_closure(events, files=[file_entry("README.md"), file_entry("src/main.py")])
     content = closure(SHA_B, 0)
+    assert REVIEW_TEXT in content
+    assert stub.calls  # fanout attempted
+    assert events_of_type(events, "concurrency_single_pass") == []
+
+
+def test_docs_only_is_false_when_truncated():
+    """T079: the guard executes on the truncated flag itself — a
+    truncated diff never routes docs-only, whatever the kept set."""
+    assert (
+        worker_handler._docs_only(
+            SimpleNamespace(files=[SimpleNamespace(filename="a.md")], truncated=True)
+        )
+        is False
+    )
+    assert (
+        worker_handler._docs_only(
+            SimpleNamespace(files=[SimpleNamespace(filename="a.md")], truncated=False)
+        )
+        is True
+    )
+
+
+def test_truncated_mixed_diff_keeps_the_battery(multi_agent, stubbed_fanout):
+    """T079: files is the post-budget kept list — a diff over the caps
+    can keep only prose while dropping code files. Routing must fail
+    safe on truncation: the fanout battery runs even though the kept
+    set is docs-only (pre-fix this silently routed single_pass)."""
+    stub = stubbed_fanout(REVIEW_TEXT)
+    events = []
+    closure = make_closure(
+        events,
+        files=[
+            file_entry("a.md"),
+            file_entry("z.py", patch="x" * (MAX_INPUT_BYTES + 1)),
+        ],
+    )
+    content = closure(SHA_B, 0)
+    # Truncation actually occurred: the budget dropped exactly z.py, so
+    # the kept list the router classified holds one file (a cap change
+    # that stops the drop fails here loudly, not vacuously).
+    (started,) = events_of_type(events, "review_started")
+    assert started["diff_stats"]["files"] == 1
+    assert REVIEW_TEXT in content
+    assert stub.calls  # fanout attempted
+    assert events_of_type(events, "concurrency_single_pass") == []
+
+
+def test_truncated_docs_only_diff_pays_the_battery(multi_agent, stubbed_fanout):
+    """T079 fail-safe direction: an over-budget docs-only diff still
+    pays the fanout — truncation makes docs-only classification
+    unreliable (dropped files are invisible), so the battery runs."""
+    stub = stubbed_fanout(REVIEW_TEXT)
+    events = []
+    closure = make_closure(
+        events,
+        files=[
+            file_entry("a.md"),
+            file_entry("z.md", patch="x" * (MAX_INPUT_BYTES + 1)),
+        ],
+    )
+    content = closure(SHA_B, 0)
+    # Truncation actually occurred: the budget dropped exactly z.md.
+    (started,) = events_of_type(events, "review_started")
+    assert started["diff_stats"]["files"] == 1
     assert REVIEW_TEXT in content
     assert stub.calls  # fanout attempted
     assert events_of_type(events, "concurrency_single_pass") == []
