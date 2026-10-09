@@ -52,7 +52,8 @@ REVIEW_WITH_BOTH = (
     "## Risk Notes\nNone.\n"
 )
 REVIEW_DESC_ONLY = (
-    "## Summary\nAdds input validation.\n\n" "## Findings\n" + DESC_FINDING + "\n\n"
+    "## Summary\nAdds input validation.\n\n"
+    "## Findings\n" + DESC_FINDING + "\n\n"
     "## Risk Notes\nNone.\n"
 )
 
@@ -290,9 +291,7 @@ def test_meta_changed_emits_suppression_logs(caplog):
         content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True)
     assert DESC_FINDING not in content
     assert [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
-    suppressed = [
-        r for r in caplog.records if r.getMessage() == "description_findings_suppressed"
-    ]
+    suppressed = [r for r in caplog.records if r.getMessage() == "description_findings_suppressed"]
     assert suppressed
     assert suppressed[0].dropped == 1
 
@@ -307,9 +306,7 @@ def test_meta_changed_no_match_emits_no_suppression_log(caplog):
         content, _ = _run(review_body=body, changed=True)
     assert CODE_FINDING in content
     assert [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
-    assert not [
-        r for r in caplog.records if r.getMessage() == "description_findings_suppressed"
-    ]
+    assert not [r for r in caplog.records if r.getMessage() == "description_findings_suppressed"]
 
 
 def test_refetch_never_consumes_401_refresh_budget():
@@ -318,9 +315,7 @@ def test_refetch_never_consumes_401_refresh_budget():
     # belongs to the essential diff/LLM/write path. A regression adding
     # retry-with-refresh to the guard would silently spend it.
     for fail in (False, True):
-        with patch.object(
-            worker_handler._Credentials, "refresh_once", Mock()
-        ) as mock_refresh:
+        with patch.object(worker_handler._Credentials, "refresh_once", Mock()) as mock_refresh:
             _run(review_body=REVIEW_WITH_BOTH, changed=True, fail_refetch=fail)
             mock_refresh.assert_not_called()
 
@@ -340,17 +335,13 @@ def test_fanout_path_drops_description_finding_on_meta_change():
 
 
 def test_meta_title_only_change_drops_description_finding():
-    content, _ = _run(
-        review_body=REVIEW_WITH_BOTH, changed=True, change_mode="title"
-    )
+    content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True, change_mode="title")
     assert DESC_FINDING not in content
     assert CODE_FINDING in content
 
 
 def test_meta_body_only_change_drops_description_finding():
-    content, _ = _run(
-        review_body=REVIEW_WITH_BOTH, changed=True, change_mode="body"
-    )
+    content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True, change_mode="body")
     assert DESC_FINDING not in content
     assert CODE_FINDING in content
 
@@ -377,9 +368,7 @@ def test_filter_drops_continuation_lines_with_bullet():
         "## Findings\n"
         '- [MEDIUM] `src/main.py:9` — The PR description says "one file"\n'
         "   yet the diff touches two lines of wrapped text.\n"
-        "   Fix: update the description.\n"
-        + CODE_FINDING
-        + "\n"
+        "   Fix: update the description.\n" + CODE_FINDING + "\n"
     )
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
@@ -389,11 +378,7 @@ def test_filter_drops_continuation_lines_with_bullet():
 
 
 def test_filter_nonstandard_bullet_shape_blocks_sentinel():
-    body = (
-        "## Findings\n"
-        + DESC_FINDING
-        + "\n- Plain dash bullet finding stays.\n"
-    )
+    body = "## Findings\n" + DESC_FINDING + "\n- Plain dash bullet finding stays.\n"
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
     assert "Plain dash bullet finding stays." in text
@@ -404,13 +389,25 @@ def test_filter_prose_blocks_sentinel():
     # Prose separated from the dropped block by a blank line survives (a
     # non-blank line directly abutting the bullet is a markdown lazy
     # continuation of that bullet, so it drops with the block).
-    body = (
-        "## Findings\n" + DESC_FINDING + "\n\nSome analyst prose remains.\n"
-    )
+    body = "## Findings\n" + DESC_FINDING + "\n\nSome analyst prose remains.\n"
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
     assert "Some analyst prose remains." in text
     assert EMPTY_FINDINGS_SENTINEL not in text
+
+
+def test_filter_loose_list_continuation_drops_with_block():
+    body = (
+        "## Findings\n"
+        + DESC_FINDING
+        + "\n\n    indented loose continuation.\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "indented loose continuation" not in text
+    assert CODE_FINDING in text
 
 
 def test_filter_lazy_continuation_drops_with_block():
@@ -443,11 +440,7 @@ def test_filter_accepted_overmatch_on_title_mention():
 
 def test_filter_bullet_shapes():
     for bullet in ("* ", "+ ", "1. ", "1) "):
-        body = (
-            "## Findings\n"
-            + bullet
-            + 'The PR description says "one file". Fix: update it.\n'
-        )
+        body = "## Findings\n" + bullet + 'The PR description says "one file". Fix: update it.\n'
         text, dropped = _drop_stale_description_findings(body)
         assert dropped == 1, bullet
         assert "The PR description" not in text, bullet
@@ -494,15 +487,10 @@ def test_filter_same_indent_sibling_survives():
 
 
 def test_filter_sanitizes_logged_finding(caplog):
-    body = (
-        "## Findings\n"
-        '- [MEDIUM] The PR description says "x"\nInjected\nnewline.\n'
-    )
+    body = '## Findings\n- [MEDIUM] The PR description says "x"\nInjected\nnewline.\n'
     with caplog.at_level("INFO", logger="worker_handler"):
         _drop_stale_description_findings(body)
-    records = [
-        r for r in caplog.records if r.getMessage() == "description_finding_suppressed"
-    ]
+    records = [r for r in caplog.records if r.getMessage() == "description_finding_suppressed"]
     assert records
     assert "\n" not in records[0].finding
     assert "\r" not in records[0].finding

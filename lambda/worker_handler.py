@@ -423,6 +423,20 @@ _BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s")
 _LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
 
 
+def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -> bool:
+    """True when the next non-blank line after `idx` is indented deeper than
+    `dropped_indent` — a loose-list continuation belonging to the dropped
+    block, not a new block. A `## ` heading or end of input ends the span."""
+    for j in range(idx + 1, len(lines)):
+        nxt = lines[j]
+        if not nxt.strip():
+            continue
+        if nxt.strip().startswith("## "):
+            return False
+        return len(nxt) - len(nxt.lstrip()) > dropped_indent
+    return False
+
+
 def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     """Remove finding blocks that judge the PR description or title.
 
@@ -430,9 +444,10 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     bullet line references the description/title, and the drop spans the
     bullet's continuation lines — including deeper-indented child bullets,
     which belong to the parent block (only a bullet at the same or
-    shallower indent starts a new block). Returns (text, dropped). Other
-    sections pass through byte-identical. The empty-findings sentinel is
-    inserted per Findings section, and only when that section is left
+    shallower indent starts a new block), and loose-list continuations
+    (deeper-indented lines after a blank line). Returns (text, dropped).
+    Other sections pass through byte-identical. The empty-findings sentinel
+    is inserted per Findings section, and only when that section is left
     with no content at all — never alongside surviving findings or prose.
     """
     lines = model_text.split("\n")
@@ -445,7 +460,7 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     sections: list[tuple[int, int, int]] = []
     findings_start = 0
     section_dropped = 0
-    for line in lines:
+    for idx, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("## "):
             if in_findings:
@@ -460,11 +475,7 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
             continue
         if in_findings and _BULLET_RE.match(stripped):
             indent = len(line) - len(line.lstrip())
-            if (
-                in_dropped_span
-                and dropped_indent is not None
-                and indent > dropped_indent
-            ):
+            if in_dropped_span and dropped_indent is not None and indent > dropped_indent:
                 continue  # nested child of the dropped block
             in_dropped_span = False
             dropped_indent = None
@@ -486,6 +497,12 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
         if in_findings and in_dropped_span:
             if stripped:
                 continue  # continuation line of the dropped block
+            # Blank line inside a dropped span: peek ahead. A deeper-indented
+            # next line is a loose-list continuation of the dropped block —
+            # keep the span active and drop the blank with it. Otherwise the
+            # span ends here and the blank survives as a separator.
+            if dropped_indent is not None and _loose_continuation_ahead(lines, idx, dropped_indent):
+                continue
             in_dropped_span = False
             dropped_indent = None
         out.append(line)
