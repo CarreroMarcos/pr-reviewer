@@ -465,7 +465,10 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
         if stripped.startswith("## "):
             if in_findings:
                 sections.append((findings_start, len(out), section_dropped))
-            in_findings = stripped == "## Findings"
+            # Case-insensitive: the model controls the heading text, so
+            # `## findings` / `## FINDINGS` variants must enter filtering
+            # mode too, or the race guard is bypassed on a heading variant.
+            in_findings = stripped.lower() == "## findings"
             in_dropped_span = False
             dropped_indent = None
             out.append(line)

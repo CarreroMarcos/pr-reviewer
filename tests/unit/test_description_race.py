@@ -229,6 +229,56 @@ def test_filter_drops_only_description_findings():
     assert text.startswith("## Summary\nAdds input validation.")
 
 
+def test_filter_drop_path_renders_exact_expected_text():
+    # Review #6 MEDIUM: pin the full rendered output, not just fragments —
+    # separator blank lines preserved, no sentinel alongside survivors.
+    text, dropped = _drop_stale_description_findings(REVIEW_WITH_BOTH)
+    assert dropped == 1
+    assert text == (
+        "## Summary\nAdds input validation.\n\n"
+        "## Findings\n" + CODE_FINDING + "\n\n"
+        "## Risk Notes\nNone.\n"
+    )
+
+
+def test_filter_heading_case_variants_enter_filtering_mode():
+    # Review #6 LOW: the model controls the heading text; variants must
+    # still enter filtering mode or the race guard is bypassed.
+    for heading in ("## findings", "## FINDINGS", "## Findings"):
+        body = (
+            "## Summary\nAdds input validation.\n\n"
+            + heading
+            + "\n"
+            + DESC_FINDING
+            + "\n"
+            + CODE_FINDING
+            + "\n\n## Risk Notes\nNone.\n"
+        )
+        text, dropped = _drop_stale_description_findings(body)
+        assert dropped == 1, heading
+        assert DESC_FINDING not in text, heading
+        assert CODE_FINDING in text, heading
+
+
+def test_filter_regex_alternation_branches():
+    # Review #6 LOW: every _DESC_REF_RE alternation branch must drop;
+    # a refactor losing one branch would otherwise go unnoticed.
+    bullets = [
+        "- [MEDIUM] The pull request description is stale. Fix: update it.",
+        '- [MEDIUM] The pr description claims "one file". Fix: update it.',
+        "- [LOW] The description mentions two files. Fix: update it.",
+        '- [LOW] The description states "one file". Fix: update it.',
+        "- [MEDIUM] The pull request title changed. Fix: update it.",
+        "- [MEDIUM] The pr title is wrong. Fix: update it.",
+    ]
+    for bullet in bullets:
+        body = "## Findings\n" + bullet + "\n" + CODE_FINDING + "\n"
+        text, dropped = _drop_stale_description_findings(body)
+        assert dropped == 1, bullet
+        assert bullet not in text, bullet
+        assert CODE_FINDING in text, bullet
+
+
 def test_filter_emptied_section_gets_sentinel():
     text, dropped = _drop_stale_description_findings(REVIEW_DESC_ONLY)
     assert dropped == 1
@@ -487,10 +537,19 @@ def test_filter_same_indent_sibling_survives():
 
 
 def test_filter_sanitizes_logged_finding(caplog):
-    body = '## Findings\n- [MEDIUM] The PR description says "x"\nInjected\nnewline.\n'
+    # Review #6 LOW: the full [\x00-\x1f] class (ANSI escapes, NUL) must
+    # not reach the log, and the 160-char truncation is pinned.
+    injected = (
+        '- [MEDIUM] The PR description says "x"\x1b[31mred\x00 ' + "y" * 200 + "\n"
+        "Injected\nnewline.\n"
+    )
+    body = "## Findings\n" + injected
     with caplog.at_level("INFO", logger="worker_handler"):
         _drop_stale_description_findings(body)
     records = [r for r in caplog.records if r.getMessage() == "description_finding_suppressed"]
     assert records
-    assert "\n" not in records[0].finding
-    assert "\r" not in records[0].finding
+    finding = records[0].finding
+    assert "\n" not in finding
+    assert "\r" not in finding
+    assert not any(ord(c) < 0x20 for c in finding)
+    assert len(finding) == 160
