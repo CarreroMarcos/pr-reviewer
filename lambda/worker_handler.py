@@ -79,6 +79,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -92,9 +93,15 @@ from urllib.request import Request, urlopen
 
 from common import archive as archive_mod
 from common import mutex as mutex_mod
-from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
+from common.assemble import (
+    EMPTY_FINDINGS_SENTINEL,
+    AssembleError,
+    build_comment,
+    render_diff_text,
+    render_review_payload,
+)
 from common.config import ConfigError, ConfigProvider, multi_agent_config, replay_base_url
-from common.diff import DiffError, fetch_diff, fetch_pr_head_sha, post_image_lengths
+from common.diff import DiffError, fetch_diff, fetch_pr_head_sha, fetch_pr_meta, post_image_lengths
 from common.envelope import Envelope, EnvelopeError, validate_envelope
 from common.events import (
     checkpoint,
@@ -389,6 +396,151 @@ def _github_headers(token: str) -> dict[str, str]:
 # SQS `ChangeMessageVisibility` ceiling: 12 hours. A `Retry-After` beyond
 # it (or garbage) is ignored — the queue default applies.
 REPLAY_FOOTER_MARK = "Full agent replay"
+
+
+# Description-vs-diff race guard: a finding bullet references the PR
+# description or title — the class of finding invalidated when the
+# description changes mid-review. Matching is deliberately conservative
+# (explicit references only); the filter runs solely on a confirmed
+# meta change, so a rare over-match costs one finding, never a review.
+_DESC_REF_RE = re.compile(
+    r"\b(pull request description|pr description|the description|"
+    r"description (says|states|claims|describes|mentions)|"
+    r"pull request title|pr title|the title)\b",
+    re.IGNORECASE,
+)
+
+
+# A finding "block": a bullet line of any common shape (`-`, `*`, `+`,
+# `1.`, `1)`, `- [`) plus its continuation lines — non-blank,
+# non-bullet, non-heading lines that directly follow it, up to the next
+# blank line (standard markdown list-item continuation). Dropping a block
+# removes the whole span so a wrapped bullet leaves no orphaned fragments.
+_BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s")
+
+# Model-controlled text must not reach structured logs raw: embedded
+# newlines/control characters would forge log entries.
+_LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
+
+# Column-0 headings only (CommonMark requires space after hashes, so `#5`
+# isn't a heading). _FINDINGS_HEADING_RE tolerates `##Findings` (no space).
+_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
+_FINDINGS_HEADING_RE = re.compile(r"^#{1,6}\s*findings\b", re.IGNORECASE)
+
+
+def _is_heading(line: str) -> bool:
+    """Column-0 markdown heading: strict CommonMark or lenient `##Findings`."""
+    return bool(_HEADING_RE.match(line) or _FINDINGS_HEADING_RE.match(line))
+
+
+# Fenced code blocks pass through verbatim (up to 3-space indent per CommonMark).
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def _normalize_ws(text: str | None) -> str:
+    """Collapse whitespace runs; None (GitHub null) coerces to ""."""
+    return "\n".join((text or "").split())
+
+
+def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -> bool:
+    """True if the next non-blank line is indented deeper than the dropped
+    block (a loose-list continuation). Max one blank separates; headings
+    and 2nd consecutive blanks end the span."""
+    # If the previous line was a blank, this is the 2nd+ consecutive blank.
+    if idx > 0 and not lines[idx - 1].strip():
+        return False
+    for j in range(idx + 1, len(lines)):
+        nxt = lines[j]
+        if not nxt.strip():
+            continue
+        if _is_heading(nxt):
+            return False
+        return len(nxt) - len(nxt.lstrip()) > dropped_indent
+    return False
+
+
+def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
+    """Drop finding blocks that judge the PR description/title.
+
+    Scans the Findings section; a block drops when its bullet references
+    the description/title, spanning continuations (deeper-indented children,
+    loose-list lines). Returns (text, dropped). Other sections pass through
+    byte-identical. Empty Findings sections get the sentinel.
+    """
+    lines = model_text.split("\n")
+    out: list[str] = []
+    dropped = 0
+    in_findings = False
+    in_dropped_span = False
+    dropped_indent: int | None = None
+    in_fence = False
+    # (start, end, drops) per Findings section for the sentinel.
+    sections: list[tuple[int, int, int]] = []
+    findings_start = 0
+    section_dropped = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        # Fence toggle: ``` or ~~~ at column 0.
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            # A fence boundary ends a dropped span — the fence itself is
+            # not part of the finding block.
+            in_dropped_span = False
+            dropped_indent = None
+            out.append(line)
+            continue
+        # Column-0 headings only; inside a fence, `##` is content, not a boundary.
+        if not in_fence and _is_heading(line):
+            if in_findings:
+                sections.append((findings_start, len(out), section_dropped))
+            in_findings = bool(_FINDINGS_HEADING_RE.match(line))
+            in_dropped_span = False
+            dropped_indent = None
+            out.append(line)
+            if in_findings:
+                findings_start = len(out)
+                section_dropped = 0
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        if in_findings and _BULLET_RE.match(stripped):
+            indent = len(line) - len(line.lstrip())
+            if in_dropped_span and dropped_indent is not None and indent > dropped_indent:
+                continue  # nested child of the dropped block
+            in_dropped_span = False
+            dropped_indent = None
+            if _DESC_REF_RE.search(line):
+                dropped += 1
+                section_dropped += 1
+                logger.info(
+                    "description_finding_suppressed",
+                    extra={
+                        "status": "desc_finding_dropped",
+                        "finding": _LOG_SAFE_RE.sub(" ", line[:160]),
+                    },
+                )
+                dropped_indent = indent
+                in_dropped_span = True
+                continue
+            out.append(line)
+            continue
+        if in_findings and in_dropped_span:
+            if stripped:
+                continue  # continuation line of the dropped block
+            # Blank in a dropped span: peek ahead; a deeper-indented next line
+            # is a loose-list continuation (drop the blank too), else the span ends.
+            if dropped_indent is not None and _loose_continuation_ahead(lines, idx, dropped_indent):
+                continue
+            in_dropped_span = False
+            dropped_indent = None
+        out.append(line)
+    if in_findings:
+        sections.append((findings_start, len(out), section_dropped))
+    for start, end, sdropped in reversed(sections):
+        if sdropped and all(not out[i].strip() for i in range(start, end)):
+            out.insert(start, EMPTY_FINDINGS_SENTINEL)
+    return "\n".join(out), dropped
 
 
 def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
@@ -920,7 +1072,67 @@ def _make_review(
         matches = [c for c in comments if marker in c["body"]]
         if not matches:
             return None
+        # Latent quirk (harmless while the one-canonical-comment invariant
+        # holds): lowest matching id wins, so if duplicate canonical
+        # comments ever recur, the OLDEST (stalest) prior review is used.
         return min(matches, key=lambda c: c["id"])["body"]
+
+    def _refetch_meta() -> tuple[str, str] | None:
+        """Best-effort post-LLM PR-meta re-fetch (description-race guard).
+
+        One live GET for (title, body). ANY failure returns None — the
+        guard degrades to today's behavior; a broken re-fetch must never
+        block or alter a review. NEVER `creds.refresh_once()` (the
+        record's single 401 budget belongs to the essential
+        diff/LLM/write path, same rule as `_fetch_prior_comment`).
+        """
+        try:
+            token = creds.current().github_token
+            _, title, body = fetch_pr_meta(
+                repo, pr_number, github_token=token, _transport=diff_transport
+            )
+        except Exception as exc:  # noqa: BLE001 (best-effort guard)
+            logger.warning(
+                "meta_refetch_unavailable",
+                extra={"status": "meta_refetch_failed", "error_class": _error_class(exc)},
+            )
+            return None
+        return title, body
+
+    def _maybe_suppress_description_findings(model_text: str, diff_result: Any) -> str:
+        """Description-vs-diff race guard: drop findings the changed
+        description invalidates, keep everything else.
+
+        The PR description can be edited during the minutes-long LLM call;
+        a finding that judges the description against the diff is then
+        stale (PR #20 Review #2 MEDIUM #1 was exactly this race). After
+        the model returns, re-fetch (title, body) and compare with the
+        payload's meta: on change, drop only the description-judging
+        finding bullets — the envelope and all code findings survive.
+        Unchanged meta or a failed re-fetch returns the text untouched.
+        """
+        refetched = _refetch_meta()
+        if refetched is None:
+            return model_text
+        title, body = refetched
+        # Normalize whitespace: a trailing-newline or spacing-only edit is
+        # not a semantic description change; tripping the guard on it would
+        # drop findings that are still valid.
+        if _normalize_ws(title) == _normalize_ws(diff_result.title) and _normalize_ws(
+            body
+        ) == _normalize_ws(diff_result.body):
+            return model_text
+        logger.info(
+            "pr_meta_changed_mid_review",
+            extra={"status": "meta_changed", "repo_full_name": repo, "pr_number": pr_number},
+        )
+        filtered, dropped = _drop_stale_description_findings(model_text)
+        if dropped:
+            logger.info(
+                "description_findings_suppressed",
+                extra={"status": "desc_findings_dropped", "dropped": dropped},
+            )
+        return filtered
 
     def review(head_sha: str, generation: int) -> str:
         # One run, one event stream: closure-owned stages (review_started,
@@ -1074,7 +1286,7 @@ def _make_review(
         comment = build_comment(
             repo_full_name=repo,
             pr_number=pr_number,
-            review_content=result.content,
+            review_content=_maybe_suppress_description_findings(result.content, diff_result),
             truncated=diff_result.truncated,
             review_number=generation + 1,
             now=(clock if clock is not None else time.time)(),
@@ -1184,7 +1396,7 @@ def _make_review(
         comment = build_comment(
             repo_full_name=repo,
             pr_number=pr_number,
-            review_content=fanout_body,
+            review_content=_maybe_suppress_description_findings(fanout_body, diff_result),
             truncated=diff_result.truncated,
             review_number=generation + 1,
             now=(clock if clock is not None else time.time)(),
