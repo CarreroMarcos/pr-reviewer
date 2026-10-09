@@ -20,6 +20,7 @@ from contextlib import nullcontext
 from unittest.mock import patch
 
 import worker_handler
+from common.assemble import EMPTY_FINDINGS_SENTINEL
 from common.config import ConfigProvider
 from common.diff import HttpResponse
 from common.envelope import Envelope
@@ -230,8 +231,8 @@ def test_filter_drops_only_description_findings():
 def test_filter_emptied_section_gets_sentinel():
     text, dropped = _drop_stale_description_findings(REVIEW_DESC_ONLY)
     assert dropped == 1
-    assert "No significant issues found." in text
-    assert "## Findings\nNo significant issues found." in text
+    assert EMPTY_FINDINGS_SENTINEL in text
+    assert "## Findings\n" + EMPTY_FINDINGS_SENTINEL in text
 
 
 def test_filter_leaves_other_sections_untouched():
@@ -273,7 +274,7 @@ def test_meta_changed_drops_description_finding():
 def test_meta_changed_all_dropped_yields_sentinel():
     content, _ = _run(review_body=REVIEW_DESC_ONLY, changed=True)
     assert DESC_FINDING not in content
-    assert "No significant issues found." in content
+    assert EMPTY_FINDINGS_SENTINEL in content
 
 
 def test_refetch_failure_degrades_to_unfiltered(caplog):
@@ -282,6 +283,33 @@ def test_refetch_failure_degrades_to_unfiltered(caplog):
     assert DESC_FINDING in content
     assert CODE_FINDING in content
     assert [r for r in caplog.records if r.getMessage() == "meta_refetch_unavailable"]
+
+
+def test_meta_changed_emits_suppression_logs(caplog):
+    with caplog.at_level("INFO", logger="worker_handler"):
+        content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True)
+    assert DESC_FINDING not in content
+    assert [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
+    suppressed = [
+        r for r in caplog.records if r.getMessage() == "description_findings_suppressed"
+    ]
+    assert suppressed
+    assert suppressed[0].dropped == 1
+
+
+def test_meta_changed_no_match_emits_no_suppression_log(caplog):
+    body = (
+        "## Summary\nAdds input validation.\n\n"
+        "## Findings\n" + CODE_FINDING + "\n\n"
+        "## Risk Notes\nNone.\n"
+    )
+    with caplog.at_level("INFO", logger="worker_handler"):
+        content, _ = _run(review_body=body, changed=True)
+    assert CODE_FINDING in content
+    assert [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
+    assert not [
+        r for r in caplog.records if r.getMessage() == "description_findings_suppressed"
+    ]
 
 
 def test_fanout_path_drops_description_finding_on_meta_change():
@@ -324,7 +352,7 @@ def test_meta_changed_without_description_findings_passes_through():
     )
     content, _ = _run(review_body=body, changed=True)
     assert CODE_FINDING in content
-    assert "No significant issues found." not in content
+    assert EMPTY_FINDINGS_SENTINEL not in content
 
 
 # Review #1 follow-ups: block-span accounting, sentinel discipline,
@@ -356,7 +384,7 @@ def test_filter_nonstandard_bullet_shape_blocks_sentinel():
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
     assert "Plain dash bullet finding stays." in text
-    assert "No significant issues found." not in text
+    assert EMPTY_FINDINGS_SENTINEL not in text
 
 
 def test_filter_prose_blocks_sentinel():
@@ -369,7 +397,7 @@ def test_filter_prose_blocks_sentinel():
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
     assert "Some analyst prose remains." in text
-    assert "No significant issues found." not in text
+    assert EMPTY_FINDINGS_SENTINEL not in text
 
 
 def test_filter_lazy_continuation_drops_with_block():
@@ -380,7 +408,7 @@ def test_filter_lazy_continuation_drops_with_block():
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
     assert "Some analyst prose remains." not in text
-    assert "No significant issues found." in text
+    assert EMPTY_FINDINGS_SENTINEL in text
 
 
 def test_filter_accepted_overmatch_on_title_mention():
@@ -410,7 +438,7 @@ def test_filter_bullet_shapes():
         text, dropped = _drop_stale_description_findings(body)
         assert dropped == 1, bullet
         assert "The PR description" not in text, bullet
-        assert "No significant issues found." in text, bullet
+        assert EMPTY_FINDINGS_SENTINEL in text, bullet
 
 
 def test_filter_nested_subbullets_drop_with_parent():
@@ -425,14 +453,31 @@ def test_filter_nested_subbullets_drop_with_parent():
     assert "Child detail" not in text
     assert "Another child" not in text
     assert CODE_FINDING in text
-    assert "No significant issues found." not in text
+    assert EMPTY_FINDINGS_SENTINEL not in text
 
 
 def test_filter_duplicate_findings_headings_each_get_sentinel():
     body = "## Findings\n" + DESC_FINDING + "\n\n## Findings\n" + DESC_FINDING + "\n"
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 2
-    assert text.count("No significant issues found.") == 2
+    assert text.count(EMPTY_FINDINGS_SENTINEL) == 2
+
+
+def test_filter_same_indent_sibling_survives():
+    # Boundary pin for the block-span rule: only STRICTLY deeper-indented
+    # bullets are children of a dropped block. A sibling at the same
+    # indent starts a new surviving block — weakening `>` to `>=` must
+    # fail this test.
+    body = (
+        "## Findings\n"
+        '  - [MEDIUM] The PR description says "one file".\n'
+        "  - [LOW] `src/main.py:12` — Missing bound. Fix: add a check.\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "Missing bound" in text
+    assert "The PR description" not in text
+    assert EMPTY_FINDINGS_SENTINEL not in text
 
 
 def test_filter_sanitizes_logged_finding(caplog):
