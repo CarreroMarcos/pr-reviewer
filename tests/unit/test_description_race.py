@@ -305,11 +305,14 @@ def test_filter_heading_no_space_and_suffix_variants():
 def test_filter_regex_alternation_branches():
     # Review #6 LOW: every _DESC_REF_RE alternation branch must drop;
     # a refactor losing one branch would otherwise go unnoticed.
+    # Review #12 LOW: adds the `describes` verb and bare `the description`.
     bullets = [
         "- [MEDIUM] The pull request description is stale. Fix: update it.",
         '- [MEDIUM] The pr description claims "one file". Fix: update it.',
         "- [LOW] The description mentions two files. Fix: update it.",
         '- [LOW] The description states "one file". Fix: update it.',
+        "- [LOW] The description describes one file. Fix: update.",
+        "- [LOW] Check the description for accuracy. Fix: update.",
         "- [MEDIUM] The pull request title changed. Fix: update it.",
         "- [MEDIUM] The pr title is wrong. Fix: update it.",
     ]
@@ -451,6 +454,38 @@ def test_filter_h3_findings_heading_enters_filtering_mode():
     assert EMPTY_FINDINGS_SENTINEL not in text
 
 
+def test_filter_h1_findings_heading_enters_filtering_mode():
+    # Review #12 LOW: `# Findings` (h1) must also enter filtering mode.
+    body = "# Findings\n" + DESC_FINDING + "\n" + CODE_FINDING + "\n"
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert DESC_FINDING not in text
+    assert CODE_FINDING in text
+    assert EMPTY_FINDINGS_SENTINEL not in text
+
+
+def test_filter_heading_inside_balanced_fence_is_content():
+    # Review #12 MEDIUM: a `##` line inside a balanced fence is content,
+    # not a section boundary — the fence must not be disabled mid-block.
+    body = (
+        "## Findings\n"
+        + "```\n"
+        + "## not a heading\n"
+        + "- [LOW] example bullet\n"
+        + "```\n"
+        + DESC_FINDING
+        + "\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "## not a heading" in text
+    assert "- [LOW] example bullet" in text
+    assert DESC_FINDING not in text
+    assert CODE_FINDING in text
+
+
 def test_filter_fenced_code_block_passes_through_verbatim():
     # Review #10 LOW: fenced code inside Findings is not scanned —
     # a fenced line matching _BULLET_RE must not be dropped.
@@ -492,22 +527,23 @@ def test_filter_tilde_fence_passes_through_verbatim():
     assert CODE_FINDING in text
 
 
-def test_filter_unbalanced_fence_does_not_disable_guard_past_heading():
-    # Review #11 MEDIUM: an unbalanced fence resets at the next heading —
-    # it cannot disable the guard for the rest of the review.
+def test_filter_fence_inside_dropped_span_ends_span():
+    # Review #12 LOW: a fence boundary ends the dropped span — content
+    # after the fence (even indented) survives.
     body = (
-        "## Summary\n"
-        + "```\n"  # unbalanced: no closing fence
-        + "## Findings\n"
+        "## Findings\n"
         + DESC_FINDING
-        + "\n"
+        + "\n```\ncode\n```\n"
+        + "    indented after fence\n"
         + CODE_FINDING
         + "\n"
     )
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
-    assert DESC_FINDING not in text
+    assert "indented after fence" in text
+    assert "```\ncode\n```" in text
     assert CODE_FINDING in text
+    assert EMPTY_FINDINGS_SENTINEL not in text
 
 
 def test_filter_loose_continuation_limited_to_single_blank():

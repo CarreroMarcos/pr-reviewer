@@ -428,11 +428,11 @@ _LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
 # an indented `##` is a continuation or code fence content, not a
 # section boundary — treating it as a heading would exit Findings mode
 # mid-section and publish stale findings unfiltered.
-# Review #10: h3+ `### Findings` must also enter filtering mode —
-# _HEADING_RE already matches it (exiting prior mode), so the findings
-# check must match too or the section is never scanned.
-_HEADING_RE = re.compile(r"^##\s*\S")
-_FINDINGS_HEADING_RE = re.compile(r"^#{2,6}\s*findings\b", re.IGNORECASE)
+# Review #10: h3+ `### Findings` must also enter filtering mode.
+# Review #12: h1 `# Findings` too — broaden to #{1,6}. _HEADING_RE must
+# match h1 as well, or no mode transition occurs.
+_HEADING_RE = re.compile(r"^#{1,6}\s*\S")
+_FINDINGS_HEADING_RE = re.compile(r"^#{1,6}\s*findings\b", re.IGNORECASE)
 # Fenced code blocks: ``` or ~~~ at column 0 (optional info string).
 # Review #10: fenced content inside Findings must pass through verbatim —
 # a fenced line matching _BULLET_RE would otherwise be dropped,
@@ -507,12 +507,12 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
             continue
         # Column-0 headings only (raw line, not stripped): an indented `##`
         # is a continuation or fenced code, not a section boundary.
-        # Review #11 MEDIUM: reset fence state at every heading — an
-        # unbalanced fence must not disable the guard beyond its section.
-        # The heading check comes BEFORE the in_fence verbatim passthrough
-        # so a heading inside an (unbalanced) fence still resets state.
-        if _HEADING_RE.match(line):
-            in_fence = False
+        # Review #12 MEDIUM: when inside a fence, a `##` line is fence
+        # CONTENT, not a heading — do not reset fence state or process it
+        # as a section boundary. (An unbalanced fence bypassing the guard
+        # to end-of-input is a rare model error; corrupting a balanced
+        # fenced code example is worse.)
+        if not in_fence and _HEADING_RE.match(line):
             if in_findings:
                 sections.append((findings_start, len(out), section_dropped))
             # Lenient match: the model controls the heading text, so
