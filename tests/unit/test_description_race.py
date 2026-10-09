@@ -117,19 +117,29 @@ class _StatefulDiffTransport:
             return HttpResponse(status=self._fail_status, body=b"{}", headers={})
         if self._meta_hits == 1 or not self._changed:
             title, body = TITLE_A, BODY_A
+            sha = SHA
         elif self._change_mode == "title":
             title, body = TITLE_B, BODY_A
+            sha = SHA
         elif self._change_mode == "body":
             title, body = TITLE_A, BODY_B
+            sha = SHA
         elif self._change_mode == "whitespace":
             # Review #8 LOW: trailing-newline / spacing-only edit — not a
             # semantic change, so the guard must not trip.
             title, body = TITLE_A + "\n", BODY_A + "  \n"
+            sha = SHA
+        elif self._change_mode == "sha_only":
+            # Review #14 LOW: rebase/force-push mid-review — same title/body,
+            # new head SHA. Must NOT trip the guard (sha is not compared).
+            title, body = TITLE_A, BODY_A
+            sha = SHA + "_rebased"
         else:
             title, body = TITLE_B, BODY_B
+            sha = SHA
         return HttpResponse(
             status=200,
-            body=json.dumps({"head": {"sha": SHA}, "title": title, "body": body}).encode(),
+            body=json.dumps({"head": {"sha": sha}, "title": title, "body": body}).encode(),
             headers={},
         )
 
@@ -368,6 +378,52 @@ def test_meta_whitespace_only_change_does_not_trip_guard(caplog):
     assert DESC_FINDING in content
     assert CODE_FINDING in content
     assert not [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
+
+
+def test_meta_sha_only_change_does_not_trip_guard(caplog):
+    # Review #14 LOW: rebase/force-push mid-review (same title/body, new
+    # head SHA) must NOT trip the guard — sha is deliberately not compared.
+    with caplog.at_level("INFO", logger="worker_handler"):
+        content, transport = _run(
+            review_body=REVIEW_WITH_BOTH, changed=True, change_mode="sha_only"
+        )
+    assert DESC_FINDING in content
+    assert CODE_FINDING in content
+    assert transport._meta_hits == 2
+    assert not [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
+
+
+def test_filter_hash_number_line_is_not_a_heading():
+    # Review #14 MEDIUM: `#5` (no space, CommonMark requires space) is NOT
+    # a heading — it must not exit Findings mode. As a lazy continuation
+    # (no blank line), it drops with the bullet block; the critical assert
+    # is that CODE_FINDING after it is still scanned (Findings mode held).
+    body = (
+        "## Findings\n" + DESC_FINDING + "\n" + "#5 and #6 are off-by-one\n" + CODE_FINDING + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert DESC_FINDING not in text
+    # Findings mode was NOT exited — CODE_FINDING was scanned and survives.
+    assert CODE_FINDING in text
+    assert EMPTY_FINDINGS_SENTINEL not in text
+
+
+def test_filter_hash_number_after_blank_does_not_exit_findings():
+    # Review #14 MEDIUM: `#5` after a blank (not a continuation) survives
+    # as content and does not exit Findings mode.
+    body = (
+        "## Findings\n"
+        + DESC_FINDING
+        + "\n\n"
+        + "#5 is an issue reference\n\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "#5 is an issue reference" in text
+    assert CODE_FINDING in text
 
 
 def test_normalize_ws_newline_to_space_is_not_a_change():

@@ -429,10 +429,21 @@ _LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
 # section boundary — treating it as a heading would exit Findings mode
 # mid-section and publish stale findings unfiltered.
 # Review #10: h3+ `### Findings` must also enter filtering mode.
-# Review #12: h1 `# Findings` too — broaden to #{1,6}. _HEADING_RE must
-# match h1 as well, or no mode transition occurs.
-_HEADING_RE = re.compile(r"^#{1,6}\s*\S")
+# Review #12: h1 `# Findings` too — broaden to #{1,6}.
+# Review #14 MEDIUM: _HEADING_RE requires whitespace after the hashes
+# (CommonMark) — a `#5` issue reference is NOT a heading. The lenient
+# no-space form is restricted to _FINDINGS_HEADING_RE (##Findings is an
+# intentional tolerance); _is_heading() checks both.
+_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
 _FINDINGS_HEADING_RE = re.compile(r"^#{1,6}\s*findings\b", re.IGNORECASE)
+
+
+def _is_heading(line: str) -> bool:
+    """True for a column-0 markdown heading: strict CommonMark (`## ` with
+    space) or the lenient Findings variant (`##Findings`, no space)."""
+    return bool(_HEADING_RE.match(line) or _FINDINGS_HEADING_RE.match(line))
+
+
 # Fenced code blocks: ``` or ~~~ at column 0 (optional info string).
 # Review #10: fenced content inside Findings must pass through verbatim —
 # a fenced line matching _BULLET_RE would otherwise be dropped,
@@ -464,7 +475,7 @@ def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -
         nxt = lines[j]
         if not nxt.strip():
             continue
-        if _HEADING_RE.match(nxt):
+        if _is_heading(nxt):
             return False
         return len(nxt) - len(nxt.lstrip()) > dropped_indent
     return False
@@ -514,7 +525,9 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
         # as a section boundary. (An unbalanced fence bypassing the guard
         # to end-of-input is a rare model error; corrupting a balanced
         # fenced code example is worse.)
-        if not in_fence and _HEADING_RE.match(line):
+        # Review #14: _is_heading() — `#5` is not a heading (CommonMark
+        # requires space); `##Findings` (no space) still enters Findings.
+        if not in_fence and _is_heading(line):
             if in_findings:
                 sections.append((findings_start, len(out), section_dropped))
             # Lenient match: the model controls the heading text, so
