@@ -86,10 +86,13 @@ class _StatefulDiffTransport:
     `changed` is False. `/files` serves one patch. `change_mode` selects
     which field differs on later hits: "both", "title", or "body"."""
 
-    def __init__(self, events, *, changed=True, fail_refetch=False, change_mode="both"):
+    def __init__(
+        self, events, *, changed=True, fail_refetch=False, change_mode="both", fail_status=None
+    ):
         self._events = events
         self._changed = changed
         self._fail_refetch = fail_refetch
+        self._fail_status = fail_status
         self._change_mode = change_mode
         self._meta_hits = 0
 
@@ -108,6 +111,10 @@ class _StatefulDiffTransport:
         self._meta_hits += 1
         if self._meta_hits > 1 and self._fail_refetch:
             raise TimeoutError("meta refetch down")
+        # Review #9 LOW: 401 status (not just exception) must also degrade
+        # without consuming the refresh budget.
+        if self._meta_hits > 1 and self._fail_status is not None:
+            return HttpResponse(status=self._fail_status, body=b"{}", headers={})
         if self._meta_hits == 1 or not self._changed:
             title, body = TITLE_A, BODY_A
         elif self._change_mode == "title":
@@ -167,7 +174,15 @@ class _BodyRecordingConnection:
         pass
 
 
-def _run(*, review_body, changed=True, fail_refetch=False, fanout_body=None, change_mode="both"):
+def _run(
+    *,
+    review_body,
+    changed=True,
+    fail_refetch=False,
+    fanout_body=None,
+    change_mode="both",
+    fail_status=None,
+):
     events: list = []
     ssm = _FakeSSM(_ssm_values())
     provider = ConfigProvider(
@@ -179,7 +194,11 @@ def _run(*, review_body, changed=True, fail_refetch=False, fanout_body=None, cha
         return _BodyRecordingConnection(events, review_body)
 
     transport = _StatefulDiffTransport(
-        events, changed=changed, fail_refetch=fail_refetch, change_mode=change_mode
+        events,
+        changed=changed,
+        fail_refetch=fail_refetch,
+        change_mode=change_mode,
+        fail_status=fail_status,
     )
     kwargs: dict = {}
     if fanout_body is not None:
@@ -348,6 +367,57 @@ def test_meta_whitespace_only_change_does_not_trip_guard(caplog):
     assert not [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
 
 
+def test_guard_no_findings_section_passes_through_byte_identical():
+    # Review #9 LOW: model text with no Findings heading at all — the
+    # filter must not alter it or insert a sentinel.
+    body = "## Summary\nAdds input validation.\n\n## Risk Notes\nNone.\n"
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 0
+    assert text == body
+    assert EMPTY_FINDINGS_SENTINEL not in text
+
+
+def test_filter_heading_ends_dropped_loose_span():
+    # Review #9 MEDIUM: a heading after a blank inside a dropped span ends
+    # the span — the trailing section survives. The emptied Findings
+    # section gets the sentinel; Risk Notes is untouched.
+    body = "## Findings\n" + DESC_FINDING + "\n\n    indented loose.\n\n## Risk Notes\nNone.\n"
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "indented loose" not in text
+    assert "## Risk Notes\nNone." in text
+    assert text.count(EMPTY_FINDINGS_SENTINEL) == 1
+
+
+def test_filter_dropped_block_at_end_of_input_gets_sentinel():
+    # Review #9 MEDIUM: dropped block at end of input — sentinel inserted
+    # exactly once, trailing blank handling pinned.
+    body = "## Findings\n" + DESC_FINDING + "\n\n"
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert text.count(EMPTY_FINDINGS_SENTINEL) == 1
+    # Trailing blank from input is preserved after the sentinel.
+    assert text == "## Findings\n" + EMPTY_FINDINGS_SENTINEL + "\n\n"
+
+
+def test_filter_indented_heading_like_line_is_not_a_section_boundary():
+    # Review #9 LOW: an indented `##` line is a continuation, not a
+    # heading — it must not exit Findings mode mid-section.
+    body = (
+        "## Findings\n"
+        + DESC_FINDING
+        + "\n"
+        + "    ## indented code fence content\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert DESC_FINDING not in text
+    assert "## indented code fence content" not in text
+    assert CODE_FINDING in text
+
+
 def test_meta_changed_drops_description_finding():
     content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True)
     assert DESC_FINDING not in content
@@ -401,6 +471,18 @@ def test_refetch_never_consumes_401_refresh_budget():
         with patch.object(worker_handler._Credentials, "refresh_once", Mock()) as mock_refresh:
             _run(review_body=REVIEW_WITH_BOTH, changed=True, fail_refetch=fail)
             mock_refresh.assert_not_called()
+
+
+def test_refetch_401_status_degrades_without_refresh(caplog):
+    # Review #9 LOW: a 401 STATUS (not just a raised exception) on the
+    # re-fetch must also degrade gracefully without spending the budget.
+    with caplog.at_level("WARNING", logger="worker_handler"):
+        with patch.object(worker_handler._Credentials, "refresh_once", Mock()) as mock_refresh:
+            content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True, fail_status=401)
+    assert DESC_FINDING in content
+    assert CODE_FINDING in content
+    mock_refresh.assert_not_called()
+    assert [r for r in caplog.records if r.getMessage() == "meta_refetch_unavailable"]
 
 
 def test_fanout_path_drops_description_finding_on_meta_change():

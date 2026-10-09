@@ -424,7 +424,10 @@ _LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
 
 # Headings: the model controls the exact text, so match leniently.
 # `##Findings` (no space) and `## Findings (note)` variants must not
-# bypass the race guard.
+# bypass the race guard. Matched against the RAW line (column 0 only):
+# an indented `##` is a continuation or code fence content, not a
+# section boundary — treating it as a heading would exit Findings mode
+# mid-section and publish stale findings unfiltered.
 _HEADING_RE = re.compile(r"^##\s*\S")
 _FINDINGS_HEADING_RE = re.compile(r"^##\s*findings\b", re.IGNORECASE)
 
@@ -438,12 +441,12 @@ def _normalize_ws(text: str) -> str:
 def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -> bool:
     """True when the next non-blank line after `idx` is indented deeper than
     `dropped_indent` — a loose-list continuation belonging to the dropped
-    block, not a new block. A heading or end of input ends the span."""
+    block, not a new block. A column-0 heading or end of input ends the span."""
     for j in range(idx + 1, len(lines)):
         nxt = lines[j]
         if not nxt.strip():
             continue
-        if _HEADING_RE.match(nxt.strip()):
+        if _HEADING_RE.match(nxt):
             return False
         return len(nxt) - len(nxt.lstrip()) > dropped_indent
     return False
@@ -474,14 +477,16 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     section_dropped = 0
     for idx, line in enumerate(lines):
         stripped = line.strip()
-        if _HEADING_RE.match(stripped):
+        # Column-0 headings only (raw line, not stripped): an indented `##`
+        # is a continuation or fenced code, not a section boundary.
+        if _HEADING_RE.match(line):
             if in_findings:
                 sections.append((findings_start, len(out), section_dropped))
             # Lenient match: the model controls the heading text, so
             # `## findings`, `##Findings`, `## Findings (note)` variants
             # must enter filtering mode too, or the race guard is bypassed
             # on a heading variant.
-            in_findings = bool(_FINDINGS_HEADING_RE.match(stripped))
+            in_findings = bool(_FINDINGS_HEADING_RE.match(line))
             in_dropped_span = False
             dropped_indent = None
             out.append(line)
