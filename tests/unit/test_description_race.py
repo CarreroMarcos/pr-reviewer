@@ -546,6 +546,49 @@ def test_filter_fence_inside_dropped_span_ends_span():
     assert EMPTY_FINDINGS_SENTINEL not in text
 
 
+def test_filter_indented_fence_passes_through_verbatim():
+    # Review #13 LOW: fences indented up to 3 spaces (CommonMark) also
+    # toggle — their content must not be scanned as findings.
+    body = (
+        "## Findings\n"
+        + "   ```\n"
+        + "   - [MEDIUM] example: the description says foo\n"
+        + "   ```\n"
+        + DESC_FINDING
+        + "\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "- [MEDIUM] example: the description says foo" in text
+    assert DESC_FINDING not in text
+    assert CODE_FINDING in text
+
+
+def test_filter_unbalanced_fence_opener_passes_through_to_end():
+    # Review #13 LOW: pin the deliberate design decision — an unbalanced
+    # fence (opener, no closer) keeps in_fence True to end-of-input, so
+    # description-judging bullets after it are NOT dropped (fail-open).
+    # Corrupting output is worse than a rare model-error bypass.
+    body = "## Findings\n```\n" + DESC_FINDING + "\n" + CODE_FINDING + "\n"
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 0
+    assert text == body
+
+
+def test_filter_orphan_fence_closer_does_not_enable_passthrough():
+    # Review #13 LOW: mirror case — an orphaned closer (no opener) toggles
+    # in_fence ON, so subsequent lines pass through verbatim. Pin it.
+    body = "## Findings\n" + DESC_FINDING + "\n```\n" + CODE_FINDING + "\n"
+    text, dropped = _drop_stale_description_findings(body)
+    # DESC_FINDING dropped before the fence; CODE_FINDING after the
+    # orphaned closer passes through verbatim (not scanned, not dropped).
+    assert dropped == 1
+    assert DESC_FINDING not in text
+    assert CODE_FINDING in text
+
+
 def test_filter_loose_continuation_limited_to_single_blank():
     # Review #11 LOW: 2+ blank lines end the dropped span — an unrelated
     # indented paragraph after multiple blanks survives.

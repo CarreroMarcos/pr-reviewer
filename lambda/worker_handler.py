@@ -437,7 +437,9 @@ _FINDINGS_HEADING_RE = re.compile(r"^#{1,6}\s*findings\b", re.IGNORECASE)
 # Review #10: fenced content inside Findings must pass through verbatim —
 # a fenced line matching _BULLET_RE would otherwise be dropped,
 # corrupting a published code example.
-_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
+# Review #13: CommonMark allows fences indented up to 3 spaces —
+# an indented fence must also toggle, or its content is mis-scanned.
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def _normalize_ws(text: str) -> str:
