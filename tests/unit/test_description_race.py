@@ -17,7 +17,7 @@ Pins:
 import json
 import os
 from contextlib import nullcontext
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import worker_handler
 from common.assemble import EMPTY_FINDINGS_SENTINEL
@@ -310,6 +310,19 @@ def test_meta_changed_no_match_emits_no_suppression_log(caplog):
     assert not [
         r for r in caplog.records if r.getMessage() == "description_findings_suppressed"
     ]
+
+
+def test_refetch_never_consumes_401_refresh_budget():
+    # Hard invariant, pinned: the best-effort post-LLM meta re-fetch must
+    # NEVER call creds.refresh_once() — the record's single 401 budget
+    # belongs to the essential diff/LLM/write path. A regression adding
+    # retry-with-refresh to the guard would silently spend it.
+    for fail in (False, True):
+        with patch.object(
+            worker_handler._Credentials, "refresh_once", Mock()
+        ) as mock_refresh:
+            _run(review_body=REVIEW_WITH_BOTH, changed=True, fail_refetch=fail)
+            mock_refresh.assert_not_called()
 
 
 def test_fanout_path_drops_description_finding_on_meta_change():
