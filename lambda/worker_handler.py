@@ -422,54 +422,30 @@ _BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s")
 # newlines/control characters would forge log entries.
 _LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
 
-# Headings: the model controls the exact text, so match leniently.
-# `##Findings` (no space) and `## Findings (note)` variants must not
-# bypass the race guard. Matched against the RAW line (column 0 only):
-# an indented `##` is a continuation or code fence content, not a
-# section boundary — treating it as a heading would exit Findings mode
-# mid-section and publish stale findings unfiltered.
-# Review #10: h3+ `### Findings` must also enter filtering mode.
-# Review #12: h1 `# Findings` too — broaden to #{1,6}.
-# Review #14 MEDIUM: _HEADING_RE requires whitespace after the hashes
-# (CommonMark) — a `#5` issue reference is NOT a heading. The lenient
-# no-space form is restricted to _FINDINGS_HEADING_RE (##Findings is an
-# intentional tolerance); _is_heading() checks both.
+# Column-0 headings only (CommonMark requires space after hashes, so `#5`
+# isn't a heading). _FINDINGS_HEADING_RE tolerates `##Findings` (no space).
 _HEADING_RE = re.compile(r"^#{1,6}\s+\S")
 _FINDINGS_HEADING_RE = re.compile(r"^#{1,6}\s*findings\b", re.IGNORECASE)
 
 
 def _is_heading(line: str) -> bool:
-    """True for a column-0 markdown heading: strict CommonMark (`## ` with
-    space) or the lenient Findings variant (`##Findings`, no space)."""
+    """Column-0 markdown heading: strict CommonMark or lenient `##Findings`."""
     return bool(_HEADING_RE.match(line) or _FINDINGS_HEADING_RE.match(line))
 
 
-# Fenced code blocks: ``` or ~~~ at column 0 (optional info string).
-# Review #10: fenced content inside Findings must pass through verbatim —
-# a fenced line matching _BULLET_RE would otherwise be dropped,
-# corrupting a published code example.
-# Review #13: CommonMark allows fences indented up to 3 spaces —
-# an indented fence must also toggle, or its content is mis-scanned.
+# Fenced code blocks pass through verbatim (up to 3-space indent per CommonMark).
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def _normalize_ws(text: str | None) -> str:
-    """Collapse all whitespace runs for meta-change comparison: a
-    spacing-only edit is not a semantic description change.
-    Review #15 MEDIUM: GitHub returns null for empty title/body —
-    coerce None to "" so the guard never crashes the review."""
+    """Collapse whitespace runs; None (GitHub null) coerces to ""."""
     return "\n".join((text or "").split())
 
 
 def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -> bool:
-    """True when the next non-blank line after `idx` is indented deeper than
-    `dropped_indent` — a loose-list continuation belonging to the dropped
-    block, not a new block. A column-0 heading or end of input ends the span.
-    Review #11: at most ONE blank line may separate the continuation —
-    CommonMark loose lists don't span multiple blank-separated blocks, so
-    an unrelated indented paragraph after 2+ blanks must survive. The
-    caller invokes this per blank; if the previous line was also a blank
-    (2nd consecutive), the span ends."""
+    """True if the next non-blank line is indented deeper than the dropped
+    block (a loose-list continuation). Max one blank separates; headings
+    and 2nd consecutive blanks end the span."""
     # If the previous line was a blank, this is the 2nd+ consecutive blank.
     if idx > 0 and not lines[idx - 1].strip():
         return False
@@ -484,17 +460,12 @@ def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -
 
 
 def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
-    """Remove finding blocks that judge the PR description or title.
+    """Drop finding blocks that judge the PR description/title.
 
-    Scans only the `## Findings` section; a block is dropped when its
-    bullet line references the description/title, and the drop spans the
-    bullet's continuation lines — including deeper-indented child bullets,
-    which belong to the parent block (only a bullet at the same or
-    shallower indent starts a new block), and loose-list continuations
-    (deeper-indented lines after a blank line). Returns (text, dropped).
-    Other sections pass through byte-identical. The empty-findings sentinel
-    is inserted per Findings section, and only when that section is left
-    with no content at all — never alongside surviving findings or prose.
+    Scans the Findings section; a block drops when its bullet references
+    the description/title, spanning continuations (deeper-indented children,
+    loose-list lines). Returns (text, dropped). Other sections pass through
+    byte-identical. Empty Findings sections get the sentinel.
     """
     lines = model_text.split("\n")
     out: list[str] = []
@@ -502,10 +473,8 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     in_findings = False
     in_dropped_span = False
     dropped_indent: int | None = None
-    # Review #10: fenced code blocks pass through verbatim — a fenced
-    # line matching _BULLET_RE must not be dropped.
     in_fence = False
-    # (start, end, drops) per ## Findings section for the per-section sentinel.
+    # (start, end, drops) per Findings section for the sentinel.
     sections: list[tuple[int, int, int]] = []
     findings_start = 0
     section_dropped = 0
@@ -520,22 +489,10 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
             dropped_indent = None
             out.append(line)
             continue
-        # Column-0 headings only (raw line, not stripped): an indented `##`
-        # is a continuation or fenced code, not a section boundary.
-        # Review #12 MEDIUM: when inside a fence, a `##` line is fence
-        # CONTENT, not a heading — do not reset fence state or process it
-        # as a section boundary. (An unbalanced fence bypassing the guard
-        # to end-of-input is a rare model error; corrupting a balanced
-        # fenced code example is worse.)
-        # Review #14: _is_heading() — `#5` is not a heading (CommonMark
-        # requires space); `##Findings` (no space) still enters Findings.
+        # Column-0 headings only; inside a fence, `##` is content, not a boundary.
         if not in_fence and _is_heading(line):
             if in_findings:
                 sections.append((findings_start, len(out), section_dropped))
-            # Lenient match: the model controls the heading text, so
-            # `## findings`, `##Findings`, `## Findings (note)` variants
-            # must enter filtering mode too, or the race guard is bypassed
-            # on a heading variant.
             in_findings = bool(_FINDINGS_HEADING_RE.match(line))
             in_dropped_span = False
             dropped_indent = None
@@ -544,8 +501,6 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
                 findings_start = len(out)
                 section_dropped = 0
             continue
-        # While inside a fence (and not at a heading, handled above),
-        # pass through verbatim — fenced content is not scanned.
         if in_fence:
             out.append(line)
             continue
@@ -573,10 +528,8 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
         if in_findings and in_dropped_span:
             if stripped:
                 continue  # continuation line of the dropped block
-            # Blank line inside a dropped span: peek ahead. A deeper-indented
-            # next line is a loose-list continuation of the dropped block —
-            # keep the span active and drop the blank with it. Otherwise the
-            # span ends here and the blank survives as a separator.
+            # Blank in a dropped span: peek ahead; a deeper-indented next line
+            # is a loose-list continuation (drop the blank too), else the span ends.
             if dropped_indent is not None and _loose_continuation_ahead(lines, idx, dropped_indent):
                 continue
             in_dropped_span = False
