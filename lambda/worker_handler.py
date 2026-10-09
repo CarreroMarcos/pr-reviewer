@@ -428,8 +428,16 @@ _LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
 # an indented `##` is a continuation or code fence content, not a
 # section boundary — treating it as a heading would exit Findings mode
 # mid-section and publish stale findings unfiltered.
+# Review #10: h3+ `### Findings` must also enter filtering mode —
+# _HEADING_RE already matches it (exiting prior mode), so the findings
+# check must match too or the section is never scanned.
 _HEADING_RE = re.compile(r"^##\s*\S")
-_FINDINGS_HEADING_RE = re.compile(r"^##\s*findings\b", re.IGNORECASE)
+_FINDINGS_HEADING_RE = re.compile(r"^#{2,6}\s*findings\b", re.IGNORECASE)
+# Fenced code blocks: ``` or ~~~ at column 0 (optional info string).
+# Review #10: fenced content inside Findings must pass through verbatim —
+# a fenced line matching _BULLET_RE would otherwise be dropped,
+# corrupting a published code example.
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
 
 
 def _normalize_ws(text: str) -> str:
@@ -471,12 +479,27 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     in_findings = False
     in_dropped_span = False
     dropped_indent: int | None = None
+    # Review #10: fenced code blocks pass through verbatim — a fenced
+    # line matching _BULLET_RE must not be dropped.
+    in_fence = False
     # (start, end, drops) per ## Findings section for the per-section sentinel.
     sections: list[tuple[int, int, int]] = []
     findings_start = 0
     section_dropped = 0
     for idx, line in enumerate(lines):
         stripped = line.strip()
+        # Fence toggle: ``` or ~~~ at column 0. While inside, verbatim.
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            # A fence boundary ends a dropped span — the fence itself is
+            # not part of the finding block.
+            in_dropped_span = False
+            dropped_indent = None
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
         # Column-0 headings only (raw line, not stripped): an indented `##`
         # is a continuation or fenced code, not a section boundary.
         if _HEADING_RE.match(line):

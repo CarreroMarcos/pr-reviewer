@@ -418,6 +418,54 @@ def test_filter_indented_heading_like_line_is_not_a_section_boundary():
     assert CODE_FINDING in text
 
 
+def test_filter_h3_findings_heading_enters_filtering_mode():
+    # Review #10 LOW: `### Findings` (h3) must enter filtering mode —
+    # _HEADING_RE matches it, so the findings check must too.
+    body = "### Findings\n" + DESC_FINDING + "\n" + CODE_FINDING + "\n"
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert DESC_FINDING not in text
+    assert CODE_FINDING in text
+    assert EMPTY_FINDINGS_SENTINEL not in text
+
+
+def test_filter_fenced_code_block_passes_through_verbatim():
+    # Review #10 LOW: fenced code inside Findings is not scanned —
+    # a fenced line matching _BULLET_RE must not be dropped.
+    body = (
+        "## Findings\n"
+        + DESC_FINDING
+        + "\n"
+        + "```python\n"
+        + "- [MEDIUM] example: the description says foo\n"
+        + "    indented continuation\n"
+        + "```\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert DESC_FINDING not in text
+    # Fenced content survives byte-identical.
+    assert "- [MEDIUM] example: the description says foo" in text
+    assert "    indented continuation" in text
+    assert CODE_FINDING in text
+
+
+def test_refetch_non_401_status_degrades_without_refresh(caplog):
+    # Review #10 LOW: non-401 HTTP errors (403, 500) on the re-fetch must
+    # also degrade gracefully without spending the refresh budget.
+    for status in (403, 500):
+        with caplog.at_level("WARNING", logger="worker_handler"):
+            with patch.object(worker_handler._Credentials, "refresh_once", Mock()) as mock_refresh:
+                content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True, fail_status=status)
+        assert DESC_FINDING in content
+        assert CODE_FINDING in content
+        mock_refresh.assert_not_called()
+        assert [r for r in caplog.records if r.getMessage() == "meta_refetch_unavailable"]
+        caplog.clear()
+
+
 def test_meta_changed_drops_description_finding():
     content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True)
     assert DESC_FINDING not in content
