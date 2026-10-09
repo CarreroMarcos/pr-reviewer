@@ -15,7 +15,11 @@ Pins:
 """
 
 import json
+import os
+from contextlib import nullcontext
+from unittest.mock import patch
 
+import worker_handler
 from common.config import ConfigProvider
 from common.diff import HttpResponse
 from common.envelope import Envelope
@@ -151,7 +155,7 @@ class _BodyRecordingConnection:
         pass
 
 
-def _run(*, review_body, changed=True, fail_refetch=False):
+def _run(*, review_body, changed=True, fail_refetch=False, fanout_body=None):
     events: list = []
     ssm = _FakeSSM(_ssm_values())
     provider = ConfigProvider(
@@ -162,30 +166,46 @@ def _run(*, review_body, changed=True, fail_refetch=False):
     def factory(host, port, *, timeout):
         return _BodyRecordingConnection(events, review_body)
 
-    review = _make_review(
-        envelope=Envelope(
-            envelope_version="v1",
-            event_type="pull_request",
-            action="opened",
-            repo_full_name=REPO,
-            pr_number=PR_NUMBER,
-            head_sha=SHA,
-            base_sha="00" * 20,
-            sender="octo-user",
-            delivery_guid="11111111-1111-4111-8111-111111111111",
-        ),
-        creds=creds,
-        usage={"tokens": 0},
-        diff_transport=_StatefulDiffTransport(
-            events, changed=changed, fail_refetch=fail_refetch
-        ),
-        llm_factory=factory,
-        system_prompt="SYSTEM-PROMPT",
-        allowed_hosts=provider.allowed_hosts,
-        clock=lambda: 1_750_000_000,
-        github_transport=None,
-    )
-    return review(SHA, 0)
+    transport = _StatefulDiffTransport(events, changed=changed, fail_refetch=fail_refetch)
+    kwargs: dict = {}
+    if fanout_body is not None:
+        kwargs["fanout_prompts"] = {
+            "correctness": "c",
+            "security": "s",
+            "tests": "t",
+            "verifier": "v",
+            "synthesizer": "sy",
+        }
+    with patch.dict(os.environ, {"MULTI_AGENT": "1" if fanout_body is not None else "0"}):
+        patcher = (
+            patch.object(worker_handler, "run_fanout", lambda *a, **k: fanout_body)
+            if fanout_body is not None
+            else nullcontext()
+        )
+        with patcher:
+            review = _make_review(
+                envelope=Envelope(
+                    envelope_version="v1",
+                    event_type="pull_request",
+                    action="opened",
+                    repo_full_name=REPO,
+                    pr_number=PR_NUMBER,
+                    head_sha=SHA,
+                    base_sha="00" * 20,
+                    sender="octo-user",
+                    delivery_guid="11111111-1111-4111-8111-111111111111",
+                ),
+                creds=creds,
+                usage={"tokens": 0},
+                diff_transport=transport,
+                llm_factory=factory,
+                system_prompt="SYSTEM-PROMPT",
+                allowed_hosts=provider.allowed_hosts,
+                clock=lambda: 1_750_000_000,
+                github_transport=None,
+                **kwargs,
+            )
+            return review(SHA, 0), transport
 
 
 # Pure filter
@@ -228,27 +248,129 @@ def test_filter_ignores_bare_verb_without_description():
 
 
 def test_meta_unchanged_passes_through():
-    content = _run(review_body=REVIEW_WITH_BOTH, changed=False)
+    content, transport = _run(review_body=REVIEW_WITH_BOTH, changed=False)
     assert DESC_FINDING in content
     assert CODE_FINDING in content
+    # The guard must actually re-fetch: initial meta GET + post-LLM re-fetch.
+    assert transport._meta_hits == 2
 
 
 def test_meta_changed_drops_description_finding():
-    content = _run(review_body=REVIEW_WITH_BOTH, changed=True)
+    content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True)
     assert DESC_FINDING not in content
     assert CODE_FINDING in content
     assert "## Summary" in content
 
 
 def test_meta_changed_all_dropped_yields_sentinel():
-    content = _run(review_body=REVIEW_DESC_ONLY, changed=True)
+    content, _ = _run(review_body=REVIEW_DESC_ONLY, changed=True)
     assert DESC_FINDING not in content
     assert "No significant issues found." in content
 
 
 def test_refetch_failure_degrades_to_unfiltered(caplog):
     with caplog.at_level("WARNING", logger="worker_handler"):
-        content = _run(review_body=REVIEW_WITH_BOTH, fail_refetch=True)
+        content, _ = _run(review_body=REVIEW_WITH_BOTH, fail_refetch=True)
     assert DESC_FINDING in content
     assert CODE_FINDING in content
     assert [r for r in caplog.records if r.getMessage() == "meta_refetch_unavailable"]
+
+
+def test_fanout_path_drops_description_finding_on_meta_change():
+    # The guard is wired into the fanout branch's build_comment call too;
+    # drive the real fanout path (MULTI_AGENT=1, stubbed run_fanout) with
+    # changed meta and assert the wiring holds.
+    content, _ = _run(
+        review_body=REVIEW_WITH_BOTH, changed=True, fanout_body=REVIEW_WITH_BOTH
+    )
+    assert DESC_FINDING not in content
+    assert CODE_FINDING in content
+    assert "## Summary" in content
+
+
+# Review #1 follow-ups: block-span accounting, sentinel discipline,
+# log sanitization, and the pinned over-match contract.
+
+
+def test_filter_drops_continuation_lines_with_bullet():
+    body = (
+        "## Findings\n"
+        '- [MEDIUM] `src/main.py:9` — The PR description says "one file"\n'
+        "   yet the diff touches two lines of wrapped text.\n"
+        "   Fix: update the description.\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "wrapped text" not in text
+    assert "update the description" not in text
+    assert CODE_FINDING in text
+
+
+def test_filter_nonstandard_bullet_shape_blocks_sentinel():
+    body = (
+        "## Findings\n"
+        + DESC_FINDING
+        + "\n- Plain dash bullet finding stays.\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "Plain dash bullet finding stays." in text
+    assert "No significant issues found." not in text
+
+
+def test_filter_prose_blocks_sentinel():
+    # Prose separated from the dropped block by a blank line survives (a
+    # non-blank line directly abutting the bullet is a markdown lazy
+    # continuation of that bullet, so it drops with the block).
+    body = (
+        "## Findings\n" + DESC_FINDING + "\n\nSome analyst prose remains.\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "Some analyst prose remains." in text
+    assert "No significant issues found." not in text
+
+
+def test_filter_lazy_continuation_drops_with_block():
+    # Markdown lazy continuation: a non-blank line directly following the
+    # bullet renders as part of that list item, so it drops with the block
+    # rather than surviving as an orphaned fragment.
+    body = "## Findings\n" + DESC_FINDING + "\nSome analyst prose remains.\n"
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "Some analyst prose remains." not in text
+    assert "No significant issues found." in text
+
+
+def test_filter_accepted_overmatch_on_title_mention():
+    # Contract, pinned: on a confirmed meta change, a code finding whose
+    # prose happens to contain "the title" IS dropped. Accepted over-match
+    # — the guard fires only on confirmed meta change, so this is rare and
+    # costs one finding; the alternative (a tighter regex) risks
+    # under-matching genuine description judgments, which is the race this
+    # guard exists to kill. If the regex changes, this test names the cost.
+    body = (
+        "## Findings\n"
+        "- [LOW] `src/ui.py:3` — Component drops `the title` attribute. "
+        "Fix: pass it through.\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "the title" not in text
+
+
+def test_filter_sanitizes_logged_finding(caplog):
+    body = (
+        "## Findings\n"
+        '- [MEDIUM] The PR description says "x"\nInjected\nnewline.\n'
+    )
+    with caplog.at_level("INFO", logger="worker_handler"):
+        _drop_stale_description_findings(body)
+    records = [
+        r for r in caplog.records if r.getMessage() == "description_finding_suppressed"
+    ]
+    assert records
+    assert "\n" not in records[0].finding
+    assert "\r" not in records[0].finding

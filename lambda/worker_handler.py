@@ -411,41 +411,71 @@ _DESC_REF_RE = re.compile(
 )
 
 
-def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
-    """Remove finding bullets that judge the PR description or title.
+# A finding "block": a bullet line of any common shape (`-`, `*`, `+`,
+# `1.`, `1)`, `- [`) plus its continuation lines — non-blank,
+# non-bullet, non-heading lines that directly follow it, up to the next
+# blank line (standard markdown list-item continuation). Dropping a block
+# removes the whole span so a wrapped bullet leaves no orphaned fragments.
+_BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s")
 
-    Scans only the `## Findings` section; a bullet is dropped when its
-    text references the description/title. Returns (text, dropped).
-    Other sections pass through byte-identical. When every bullet is
-    dropped, the section carries the contract's empty-findings sentinel
-    so the publication gate still sees a well-formed review.
+# Model-controlled text must not reach structured logs raw: embedded
+# newlines/control characters would forge log entries.
+_LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
+
+
+def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
+    """Remove finding blocks that judge the PR description or title.
+
+    Scans only the `## Findings` section; a block is dropped when its
+    bullet line references the description/title, and the drop spans the
+    bullet's continuation lines. Returns (text, dropped). Other sections
+    pass through byte-identical. The empty-findings sentinel is inserted
+    only when the section is left with no content at all — never
+    alongside surviving findings or prose.
     """
     lines = model_text.split("\n")
     out: list[str] = []
     dropped = 0
-    kept_bullets = 0
     in_findings = False
-    findings_idx: int | None = None
+    in_dropped_span = False
+    findings_start: int | None = None
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("## "):
             in_findings = stripped == "## Findings"
-            if in_findings:
-                findings_idx = len(out)
+            in_dropped_span = False
             out.append(line)
+            if in_findings:
+                findings_start = len(out)
             continue
-        if in_findings and stripped.startswith("- ["):
+        if in_findings and _BULLET_RE.match(stripped):
+            in_dropped_span = False
             if _DESC_REF_RE.search(line):
                 dropped += 1
                 logger.info(
                     "description_finding_suppressed",
-                    extra={"status": "desc_finding_dropped", "finding": line[:160]},
+                    extra={
+                        "status": "desc_finding_dropped",
+                        "finding": _LOG_SAFE_RE.sub(" ", line[:160]),
+                    },
                 )
+                in_dropped_span = True
                 continue
-            kept_bullets += 1
+            out.append(line)
+            continue
+        if in_findings and in_dropped_span:
+            if stripped:
+                continue  # continuation line of the dropped block
+            in_dropped_span = False
         out.append(line)
-    if dropped and kept_bullets == 0 and findings_idx is not None:
-        out.insert(findings_idx + 1, EMPTY_FINDINGS_SENTINEL)
+    if dropped and findings_start is not None:
+        end = len(out)
+        for i in range(findings_start, len(out)):
+            if out[i].strip().startswith("## "):
+                end = i
+                break
+        if all(not out[i].strip() for i in range(findings_start, end)):
+            out.insert(findings_start, EMPTY_FINDINGS_SENTINEL)
     return "\n".join(out), dropped
 
 
