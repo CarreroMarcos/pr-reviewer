@@ -79,6 +79,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -92,9 +93,15 @@ from urllib.request import Request, urlopen
 
 from common import archive as archive_mod
 from common import mutex as mutex_mod
-from common.assemble import AssembleError, build_comment, render_diff_text, render_review_payload
+from common.assemble import (
+    EMPTY_FINDINGS_SENTINEL,
+    AssembleError,
+    build_comment,
+    render_diff_text,
+    render_review_payload,
+)
 from common.config import ConfigError, ConfigProvider, multi_agent_config, replay_base_url
-from common.diff import DiffError, fetch_diff, fetch_pr_head_sha, post_image_lengths
+from common.diff import DiffError, fetch_diff, fetch_pr_head_sha, fetch_pr_meta, post_image_lengths
 from common.envelope import Envelope, EnvelopeError, validate_envelope
 from common.events import (
     checkpoint,
@@ -389,6 +396,57 @@ def _github_headers(token: str) -> dict[str, str]:
 # SQS `ChangeMessageVisibility` ceiling: 12 hours. A `Retry-After` beyond
 # it (or garbage) is ignored — the queue default applies.
 REPLAY_FOOTER_MARK = "Full agent replay"
+
+
+# Description-vs-diff race guard: a finding bullet references the PR
+# description or title — the class of finding invalidated when the
+# description changes mid-review. Matching is deliberately conservative
+# (explicit references only); the filter runs solely on a confirmed
+# meta change, so a rare over-match costs one finding, never a review.
+_DESC_REF_RE = re.compile(
+    r"\b(pull request description|pr description|the description|"
+    r"description (says|states|claims|describes|mentions)|"
+    r"pull request title|pr title|the title)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
+    """Remove finding bullets that judge the PR description or title.
+
+    Scans only the `## Findings` section; a bullet is dropped when its
+    text references the description/title. Returns (text, dropped).
+    Other sections pass through byte-identical. When every bullet is
+    dropped, the section carries the contract's empty-findings sentinel
+    so the publication gate still sees a well-formed review.
+    """
+    lines = model_text.split("\n")
+    out: list[str] = []
+    dropped = 0
+    kept_bullets = 0
+    in_findings = False
+    findings_idx: int | None = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_findings = stripped == "## Findings"
+            if in_findings:
+                findings_idx = len(out)
+            out.append(line)
+            continue
+        if in_findings and stripped.startswith("- ["):
+            if _DESC_REF_RE.search(line):
+                dropped += 1
+                logger.info(
+                    "description_finding_suppressed",
+                    extra={"status": "desc_finding_dropped", "finding": line[:160]},
+                )
+                continue
+            kept_bullets += 1
+        out.append(line)
+    if dropped and kept_bullets == 0 and findings_idx is not None:
+        out.insert(findings_idx + 1, EMPTY_FINDINGS_SENTINEL)
+    return "\n".join(out), dropped
 
 
 def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
@@ -920,7 +978,62 @@ def _make_review(
         matches = [c for c in comments if marker in c["body"]]
         if not matches:
             return None
+        # Latent quirk (harmless while the one-canonical-comment invariant
+        # holds): lowest matching id wins, so if duplicate canonical
+        # comments ever recur, the OLDEST (stalest) prior review is used.
         return min(matches, key=lambda c: c["id"])["body"]
+
+    def _refetch_meta() -> tuple[str, str] | None:
+        """Best-effort post-LLM PR-meta re-fetch (description-race guard).
+
+        One live GET for (title, body). ANY failure returns None — the
+        guard degrades to today's behavior; a broken re-fetch must never
+        block or alter a review. NEVER `creds.refresh_once()` (the
+        record's single 401 budget belongs to the essential
+        diff/LLM/write path, same rule as `_fetch_prior_comment`).
+        """
+        try:
+            token = creds.current().github_token
+            _, title, body = fetch_pr_meta(
+                repo, pr_number, github_token=token, _transport=diff_transport
+            )
+        except Exception as exc:  # noqa: BLE001 (best-effort guard)
+            logger.warning(
+                "meta_refetch_unavailable",
+                extra={"status": "meta_refetch_failed", "error_class": _error_class(exc)},
+            )
+            return None
+        return title, body
+
+    def _maybe_suppress_description_findings(model_text: str, diff_result: Any) -> str:
+        """Description-vs-diff race guard: drop findings the changed
+        description invalidates, keep everything else.
+
+        The PR description can be edited during the minutes-long LLM call;
+        a finding that judges the description against the diff is then
+        stale (PR #20 Review #2 MEDIUM #1 was exactly this race). After
+        the model returns, re-fetch (title, body) and compare with the
+        payload's meta: on change, drop only the description-judging
+        finding bullets — the envelope and all code findings survive.
+        Unchanged meta or a failed re-fetch returns the text untouched.
+        """
+        refetched = _refetch_meta()
+        if refetched is None:
+            return model_text
+        title, body = refetched
+        if title == diff_result.title and body == diff_result.body:
+            return model_text
+        logger.info(
+            "pr_meta_changed_mid_review",
+            extra={"status": "meta_changed", "repo_full_name": repo, "pr_number": pr_number},
+        )
+        filtered, dropped = _drop_stale_description_findings(model_text)
+        if dropped:
+            logger.info(
+                "description_findings_suppressed",
+                extra={"status": "desc_findings_dropped", "dropped": dropped},
+            )
+        return filtered
 
     def review(head_sha: str, generation: int) -> str:
         # One run, one event stream: closure-owned stages (review_started,
@@ -1074,7 +1187,7 @@ def _make_review(
         comment = build_comment(
             repo_full_name=repo,
             pr_number=pr_number,
-            review_content=result.content,
+            review_content=_maybe_suppress_description_findings(result.content, diff_result),
             truncated=diff_result.truncated,
             review_number=generation + 1,
             now=(clock if clock is not None else time.time)(),
@@ -1184,7 +1297,7 @@ def _make_review(
         comment = build_comment(
             repo_full_name=repo,
             pr_number=pr_number,
-            review_content=fanout_body,
+            review_content=_maybe_suppress_description_findings(fanout_body, diff_result),
             truncated=diff_result.truncated,
             review_number=generation + 1,
             now=(clock if clock is not None else time.time)(),
