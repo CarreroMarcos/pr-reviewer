@@ -422,16 +422,28 @@ _BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s")
 # newlines/control characters would forge log entries.
 _LOG_SAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
 
+# Headings: the model controls the exact text, so match leniently.
+# `##Findings` (no space) and `## Findings (note)` variants must not
+# bypass the race guard.
+_HEADING_RE = re.compile(r"^##\s*\S")
+_FINDINGS_HEADING_RE = re.compile(r"^##\s*findings\b", re.IGNORECASE)
+
+
+def _normalize_ws(text: str) -> str:
+    """Collapse all whitespace runs for meta-change comparison: a
+    spacing-only edit is not a semantic description change."""
+    return "\n".join(text.split())
+
 
 def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -> bool:
     """True when the next non-blank line after `idx` is indented deeper than
     `dropped_indent` — a loose-list continuation belonging to the dropped
-    block, not a new block. A `## ` heading or end of input ends the span."""
+    block, not a new block. A heading or end of input ends the span."""
     for j in range(idx + 1, len(lines)):
         nxt = lines[j]
         if not nxt.strip():
             continue
-        if nxt.strip().startswith("## "):
+        if _HEADING_RE.match(nxt.strip()):
             return False
         return len(nxt) - len(nxt.lstrip()) > dropped_indent
     return False
@@ -462,13 +474,14 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     section_dropped = 0
     for idx, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith("## "):
+        if _HEADING_RE.match(stripped):
             if in_findings:
                 sections.append((findings_start, len(out), section_dropped))
-            # Case-insensitive: the model controls the heading text, so
-            # `## findings` / `## FINDINGS` variants must enter filtering
-            # mode too, or the race guard is bypassed on a heading variant.
-            in_findings = stripped.lower() == "## findings"
+            # Lenient match: the model controls the heading text, so
+            # `## findings`, `##Findings`, `## Findings (note)` variants
+            # must enter filtering mode too, or the race guard is bypassed
+            # on a heading variant.
+            in_findings = bool(_FINDINGS_HEADING_RE.match(stripped))
             in_dropped_span = False
             dropped_indent = None
             out.append(line)
@@ -1089,7 +1102,12 @@ def _make_review(
         if refetched is None:
             return model_text
         title, body = refetched
-        if title == diff_result.title and body == diff_result.body:
+        # Normalize whitespace: a trailing-newline or spacing-only edit is
+        # not a semantic description change; tripping the guard on it would
+        # drop findings that are still valid.
+        if _normalize_ws(title) == _normalize_ws(diff_result.title) and _normalize_ws(
+            body
+        ) == _normalize_ws(diff_result.body):
             return model_text
         logger.info(
             "pr_meta_changed_mid_review",

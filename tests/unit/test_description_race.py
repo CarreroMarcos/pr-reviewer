@@ -114,6 +114,10 @@ class _StatefulDiffTransport:
             title, body = TITLE_B, BODY_A
         elif self._change_mode == "body":
             title, body = TITLE_A, BODY_B
+        elif self._change_mode == "whitespace":
+            # Review #8 LOW: trailing-newline / spacing-only edit — not a
+            # semantic change, so the guard must not trip.
+            title, body = TITLE_A + "\n", BODY_A + "  \n"
         else:
             title, body = TITLE_B, BODY_B
         return HttpResponse(
@@ -260,6 +264,25 @@ def test_filter_heading_case_variants_enter_filtering_mode():
         assert CODE_FINDING in text, heading
 
 
+def test_filter_heading_no_space_and_suffix_variants():
+    # Review #8 LOW: `##Findings` (no space) and `## Findings (note)`
+    # must still enter filtering mode.
+    for heading in ("##Findings", "## Findings (stale)"):
+        body = (
+            "## Summary\nAdds input validation.\n\n"
+            + heading
+            + "\n"
+            + DESC_FINDING
+            + "\n"
+            + CODE_FINDING
+            + "\n\n## Risk Notes\nNone.\n"
+        )
+        text, dropped = _drop_stale_description_findings(body)
+        assert dropped == 1, heading
+        assert DESC_FINDING not in text, heading
+        assert CODE_FINDING in text, heading
+
+
 def test_filter_regex_alternation_branches():
     # Review #6 LOW: every _DESC_REF_RE alternation branch must drop;
     # a refactor losing one branch would otherwise go unnoticed.
@@ -313,6 +336,16 @@ def test_meta_unchanged_passes_through():
     assert CODE_FINDING in content
     # The guard must actually re-fetch: initial meta GET + post-LLM re-fetch.
     assert transport._meta_hits == 2
+
+
+def test_meta_whitespace_only_change_does_not_trip_guard(caplog):
+    # Review #8 LOW: a trailing-newline / spacing-only edit is not a
+    # semantic change — the guard must pass the text through untouched.
+    with caplog.at_level("INFO", logger="worker_handler"):
+        content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True, change_mode="whitespace")
+    assert DESC_FINDING in content
+    assert CODE_FINDING in content
+    assert not [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
 
 
 def test_meta_changed_drops_description_finding():
