@@ -428,30 +428,49 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
 
     Scans only the `## Findings` section; a block is dropped when its
     bullet line references the description/title, and the drop spans the
-    bullet's continuation lines. Returns (text, dropped). Other sections
-    pass through byte-identical. The empty-findings sentinel is inserted
-    only when the section is left with no content at all — never
-    alongside surviving findings or prose.
+    bullet's continuation lines — including deeper-indented child bullets,
+    which belong to the parent block (only a bullet at the same or
+    shallower indent starts a new block). Returns (text, dropped). Other
+    sections pass through byte-identical. The empty-findings sentinel is
+    inserted per Findings section, and only when that section is left
+    with no content at all — never alongside surviving findings or prose.
     """
     lines = model_text.split("\n")
     out: list[str] = []
     dropped = 0
     in_findings = False
     in_dropped_span = False
-    findings_start: int | None = None
+    dropped_indent: int | None = None
+    # (start, end, drops) per ## Findings section for the per-section sentinel.
+    sections: list[tuple[int, int, int]] = []
+    findings_start = 0
+    section_dropped = 0
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("## "):
+            if in_findings:
+                sections.append((findings_start, len(out), section_dropped))
             in_findings = stripped == "## Findings"
             in_dropped_span = False
+            dropped_indent = None
             out.append(line)
             if in_findings:
                 findings_start = len(out)
+                section_dropped = 0
             continue
         if in_findings and _BULLET_RE.match(stripped):
+            indent = len(line) - len(line.lstrip())
+            if (
+                in_dropped_span
+                and dropped_indent is not None
+                and indent > dropped_indent
+            ):
+                continue  # nested child of the dropped block
             in_dropped_span = False
+            dropped_indent = None
             if _DESC_REF_RE.search(line):
                 dropped += 1
+                section_dropped += 1
                 logger.info(
                     "description_finding_suppressed",
                     extra={
@@ -459,6 +478,7 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
                         "finding": _LOG_SAFE_RE.sub(" ", line[:160]),
                     },
                 )
+                dropped_indent = indent
                 in_dropped_span = True
                 continue
             out.append(line)
@@ -467,15 +487,13 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
             if stripped:
                 continue  # continuation line of the dropped block
             in_dropped_span = False
+            dropped_indent = None
         out.append(line)
-    if dropped and findings_start is not None:
-        end = len(out)
-        for i in range(findings_start, len(out)):
-            if out[i].strip().startswith("## "):
-                end = i
-                break
-        if all(not out[i].strip() for i in range(findings_start, end)):
-            out.insert(findings_start, EMPTY_FINDINGS_SENTINEL)
+    if in_findings:
+        sections.append((findings_start, len(out), section_dropped))
+    for start, end, sdropped in reversed(sections):
+        if sdropped and all(not out[i].strip() for i in range(start, end)):
+            out.insert(start, EMPTY_FINDINGS_SENTINEL)
     return "\n".join(out), dropped
 
 

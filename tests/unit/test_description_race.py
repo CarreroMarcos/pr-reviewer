@@ -81,12 +81,14 @@ class _FakeSSM:
 class _StatefulDiffTransport:
     """PR-meta URL: first hit serves meta A; later hits serve meta B (the
     post-LLM re-fetch), raise when `fail_refetch`, or repeat meta A when
-    `changed` is False. `/files` serves one patch."""
+    `changed` is False. `/files` serves one patch. `change_mode` selects
+    which field differs on later hits: "both", "title", or "body"."""
 
-    def __init__(self, events, *, changed=True, fail_refetch=False):
+    def __init__(self, events, *, changed=True, fail_refetch=False, change_mode="both"):
         self._events = events
         self._changed = changed
         self._fail_refetch = fail_refetch
+        self._change_mode = change_mode
         self._meta_hits = 0
 
     def __call__(self, url, headers):
@@ -106,6 +108,10 @@ class _StatefulDiffTransport:
             raise TimeoutError("meta refetch down")
         if self._meta_hits == 1 or not self._changed:
             title, body = TITLE_A, BODY_A
+        elif self._change_mode == "title":
+            title, body = TITLE_B, BODY_A
+        elif self._change_mode == "body":
+            title, body = TITLE_A, BODY_B
         else:
             title, body = TITLE_B, BODY_B
         return HttpResponse(
@@ -155,7 +161,7 @@ class _BodyRecordingConnection:
         pass
 
 
-def _run(*, review_body, changed=True, fail_refetch=False, fanout_body=None):
+def _run(*, review_body, changed=True, fail_refetch=False, fanout_body=None, change_mode="both"):
     events: list = []
     ssm = _FakeSSM(_ssm_values())
     provider = ConfigProvider(
@@ -166,7 +172,9 @@ def _run(*, review_body, changed=True, fail_refetch=False, fanout_body=None):
     def factory(host, port, *, timeout):
         return _BodyRecordingConnection(events, review_body)
 
-    transport = _StatefulDiffTransport(events, changed=changed, fail_refetch=fail_refetch)
+    transport = _StatefulDiffTransport(
+        events, changed=changed, fail_refetch=fail_refetch, change_mode=change_mode
+    )
     kwargs: dict = {}
     if fanout_body is not None:
         kwargs["fanout_prompts"] = {
@@ -279,13 +287,44 @@ def test_refetch_failure_degrades_to_unfiltered(caplog):
 def test_fanout_path_drops_description_finding_on_meta_change():
     # The guard is wired into the fanout branch's build_comment call too;
     # drive the real fanout path (MULTI_AGENT=1, stubbed run_fanout) with
-    # changed meta and assert the wiring holds.
-    content, _ = _run(
+    # changed meta and assert the wiring holds — including that the
+    # re-fetch actually ran on this branch.
+    content, transport = _run(
         review_body=REVIEW_WITH_BOTH, changed=True, fanout_body=REVIEW_WITH_BOTH
     )
     assert DESC_FINDING not in content
     assert CODE_FINDING in content
     assert "## Summary" in content
+    assert transport._meta_hits == 2
+
+
+def test_meta_title_only_change_drops_description_finding():
+    content, _ = _run(
+        review_body=REVIEW_WITH_BOTH, changed=True, change_mode="title"
+    )
+    assert DESC_FINDING not in content
+    assert CODE_FINDING in content
+
+
+def test_meta_body_only_change_drops_description_finding():
+    content, _ = _run(
+        review_body=REVIEW_WITH_BOTH, changed=True, change_mode="body"
+    )
+    assert DESC_FINDING not in content
+    assert CODE_FINDING in content
+
+
+def test_meta_changed_without_description_findings_passes_through():
+    # No description-judging findings + confirmed meta change: the review
+    # must publish with its findings intact and no sentinel.
+    body = (
+        "## Summary\nAdds input validation.\n\n"
+        "## Findings\n" + CODE_FINDING + "\n\n"
+        "## Risk Notes\nNone.\n"
+    )
+    content, _ = _run(review_body=body, changed=True)
+    assert CODE_FINDING in content
+    assert "No significant issues found." not in content
 
 
 # Review #1 follow-ups: block-span accounting, sentinel discipline,
@@ -359,6 +398,41 @@ def test_filter_accepted_overmatch_on_title_mention():
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
     assert "the title" not in text
+
+
+def test_filter_bullet_shapes():
+    for bullet in ("* ", "+ ", "1. ", "1) "):
+        body = (
+            "## Findings\n"
+            + bullet
+            + 'The PR description says "one file". Fix: update it.\n'
+        )
+        text, dropped = _drop_stale_description_findings(body)
+        assert dropped == 1, bullet
+        assert "The PR description" not in text, bullet
+        assert "No significant issues found." in text, bullet
+
+
+def test_filter_nested_subbullets_drop_with_parent():
+    body = (
+        "## Findings\n"
+        '- [MEDIUM] The PR description says "one file".\n'
+        "  - Child detail referencing the description.\n"
+        "  - Another child.\n" + CODE_FINDING + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "Child detail" not in text
+    assert "Another child" not in text
+    assert CODE_FINDING in text
+    assert "No significant issues found." not in text
+
+
+def test_filter_duplicate_findings_headings_each_get_sentinel():
+    body = "## Findings\n" + DESC_FINDING + "\n\n## Findings\n" + DESC_FINDING + "\n"
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 2
+    assert text.count("No significant issues found.") == 2
 
 
 def test_filter_sanitizes_logged_finding(caplog):
