@@ -453,10 +453,12 @@ def _is_heading(line: str) -> bool:
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
-def _normalize_ws(text: str) -> str:
+def _normalize_ws(text: str | None) -> str:
     """Collapse all whitespace runs for meta-change comparison: a
-    spacing-only edit is not a semantic description change."""
-    return "\n".join(text.split())
+    spacing-only edit is not a semantic description change.
+    Review #15 MEDIUM: GitHub returns null for empty title/body —
+    coerce None to "" so the guard never crashes the review."""
+    return "\n".join((text or "").split())
 
 
 def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -> bool:

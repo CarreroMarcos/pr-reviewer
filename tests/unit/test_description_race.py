@@ -134,6 +134,16 @@ class _StatefulDiffTransport:
             # new head SHA. Must NOT trip the guard (sha is not compared).
             title, body = TITLE_A, BODY_A
             sha = SHA + "_rebased"
+        elif self._change_mode == "null_body":
+            # Review #15 MEDIUM: GitHub returns null body for empty
+            # descriptions — the guard must not crash, must not trip
+            # (None coerces to "" which matches only if original was empty;
+            # here original BODY_A is non-empty, so None != BODY_A... but
+            # the guard must still not CRASH. Pin the no-crash behavior;
+            # the filter decision on None-vs-string is a product choice.
+            # We pin: no exception, review publishes.
+            title, body = TITLE_A, None
+            sha = SHA
         else:
             title, body = TITLE_B, BODY_B
             sha = SHA
@@ -391,6 +401,27 @@ def test_meta_sha_only_change_does_not_trip_guard(caplog):
     assert CODE_FINDING in content
     assert transport._meta_hits == 2
     assert not [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
+
+
+def test_meta_null_body_does_not_crash_guard():
+    # Review #15 MEDIUM: GitHub returns null for empty body — the guard
+    # must not crash. Pin: review publishes (no AttributeError).
+    # The filter decision on None-vs-string is pinned as-is: None coerces
+    # to "", which differs from BODY_A, so the guard trips and filters.
+    # The critical property is no-crash, not the filter outcome.
+    content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True, change_mode="null_body")
+    # Review published (no exception); description finding filtered because
+    # "" != BODY_A is a real change (body was cleared).
+    assert DESC_FINDING not in content
+    assert CODE_FINDING in content
+
+
+def test_normalize_ws_none_coerces_to_empty():
+    # Review #15 MEDIUM: _normalize_ws(None) must not raise.
+    from worker_handler import _normalize_ws
+
+    assert _normalize_ws(None) == ""
+    assert _normalize_ws(None) == _normalize_ws("")
 
 
 def test_filter_hash_number_line_is_not_a_heading():
