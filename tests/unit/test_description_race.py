@@ -367,6 +367,28 @@ def test_meta_whitespace_only_change_does_not_trip_guard(caplog):
     assert not [r for r in caplog.records if r.getMessage() == "pr_meta_changed_mid_review"]
 
 
+def test_normalize_ws_newline_to_space_is_not_a_change():
+    # Review #11 LOW: _normalize_ws joins on split(), so 'a\nb' and 'a b'
+    # normalize identically — a newline→space reflow is not a semantic change.
+    from worker_handler import _normalize_ws
+
+    assert _normalize_ws("line one\nline two") == _normalize_ws("line one line two")
+
+
+def test_normalize_ws_tab_vs_space_is_not_a_change():
+    # Review #11 LOW: tab-vs-space indentation is whitespace-only.
+    from worker_handler import _normalize_ws
+
+    assert _normalize_ws("\tindented") == _normalize_ws("    indented")
+
+
+def test_normalize_ws_added_word_is_a_change():
+    # Review #11 LOW: a genuinely reflowed body (word added) IS a change.
+    from worker_handler import _normalize_ws
+
+    assert _normalize_ws("line one\nline two") != _normalize_ws("line one\nline two plus")
+
+
 def test_guard_no_findings_section_passes_through_byte_identical():
     # Review #9 LOW: model text with no Findings heading at all — the
     # filter must not alter it or insert a sentinel.
@@ -449,6 +471,59 @@ def test_filter_fenced_code_block_passes_through_verbatim():
     # Fenced content survives byte-identical.
     assert "- [MEDIUM] example: the description says foo" in text
     assert "    indented continuation" in text
+    assert CODE_FINDING in text
+
+
+def test_filter_tilde_fence_passes_through_verbatim():
+    # Review #11 LOW: ~~~ fences get the same verbatim treatment as ```.
+    body = (
+        "## Findings\n"
+        + DESC_FINDING
+        + "\n"
+        + "~~~\n"
+        + "- [MEDIUM] example: the description says foo\n"
+        + "~~~\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "- [MEDIUM] example: the description says foo" in text
+    assert CODE_FINDING in text
+
+
+def test_filter_unbalanced_fence_does_not_disable_guard_past_heading():
+    # Review #11 MEDIUM: an unbalanced fence resets at the next heading —
+    # it cannot disable the guard for the rest of the review.
+    body = (
+        "## Summary\n"
+        + "```\n"  # unbalanced: no closing fence
+        + "## Findings\n"
+        + DESC_FINDING
+        + "\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert DESC_FINDING not in text
+    assert CODE_FINDING in text
+
+
+def test_filter_loose_continuation_limited_to_single_blank():
+    # Review #11 LOW: 2+ blank lines end the dropped span — an unrelated
+    # indented paragraph after multiple blanks survives.
+    body = (
+        "## Findings\n"
+        + DESC_FINDING
+        + "\n\n\n"
+        + "    unrelated indented paragraph\n"
+        + CODE_FINDING
+        + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "unrelated indented paragraph" in text
     assert CODE_FINDING in text
 
 
@@ -545,6 +620,30 @@ def test_fanout_path_drops_description_finding_on_meta_change():
     assert CODE_FINDING in content
     assert "## Summary" in content
     assert transport._meta_hits == 2
+
+
+def test_fanout_path_unchanged_meta_passes_through():
+    # Review #11 LOW: fanout + unchanged meta — passthrough, no filtering.
+    content, transport = _run(
+        review_body=REVIEW_WITH_BOTH, changed=False, fanout_body=REVIEW_WITH_BOTH
+    )
+    assert DESC_FINDING in content
+    assert CODE_FINDING in content
+    assert transport._meta_hits == 2
+
+
+def test_fanout_path_refetch_failure_degrades():
+    # Review #11 LOW: fanout + refetch failure — degrade, publish unfiltered.
+    with patch.object(worker_handler._Credentials, "refresh_once", Mock()) as mock_refresh:
+        content, _ = _run(
+            review_body=REVIEW_WITH_BOTH,
+            changed=True,
+            fail_refetch=True,
+            fanout_body=REVIEW_WITH_BOTH,
+        )
+    assert DESC_FINDING in content
+    assert CODE_FINDING in content
+    mock_refresh.assert_not_called()
 
 
 def test_meta_title_only_change_drops_description_finding():

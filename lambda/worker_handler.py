@@ -449,7 +449,15 @@ def _normalize_ws(text: str) -> str:
 def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -> bool:
     """True when the next non-blank line after `idx` is indented deeper than
     `dropped_indent` — a loose-list continuation belonging to the dropped
-    block, not a new block. A column-0 heading or end of input ends the span."""
+    block, not a new block. A column-0 heading or end of input ends the span.
+    Review #11: at most ONE blank line may separate the continuation —
+    CommonMark loose lists don't span multiple blank-separated blocks, so
+    an unrelated indented paragraph after 2+ blanks must survive. The
+    caller invokes this per blank; if the previous line was also a blank
+    (2nd consecutive), the span ends."""
+    # If the previous line was a blank, this is the 2nd+ consecutive blank.
+    if idx > 0 and not lines[idx - 1].strip():
+        return False
     for j in range(idx + 1, len(lines)):
         nxt = lines[j]
         if not nxt.strip():
@@ -488,7 +496,7 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     section_dropped = 0
     for idx, line in enumerate(lines):
         stripped = line.strip()
-        # Fence toggle: ``` or ~~~ at column 0. While inside, verbatim.
+        # Fence toggle: ``` or ~~~ at column 0.
         if _FENCE_RE.match(line):
             in_fence = not in_fence
             # A fence boundary ends a dropped span — the fence itself is
@@ -497,12 +505,14 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
             dropped_indent = None
             out.append(line)
             continue
-        if in_fence:
-            out.append(line)
-            continue
         # Column-0 headings only (raw line, not stripped): an indented `##`
         # is a continuation or fenced code, not a section boundary.
+        # Review #11 MEDIUM: reset fence state at every heading — an
+        # unbalanced fence must not disable the guard beyond its section.
+        # The heading check comes BEFORE the in_fence verbatim passthrough
+        # so a heading inside an (unbalanced) fence still resets state.
         if _HEADING_RE.match(line):
+            in_fence = False
             if in_findings:
                 sections.append((findings_start, len(out), section_dropped))
             # Lenient match: the model controls the heading text, so
@@ -516,6 +526,11 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
             if in_findings:
                 findings_start = len(out)
                 section_dropped = 0
+            continue
+        # While inside a fence (and not at a heading, handled above),
+        # pass through verbatim — fenced content is not scanned.
+        if in_fence:
+            out.append(line)
             continue
         if in_findings and _BULLET_RE.match(stripped):
             indent = len(line) - len(line.lstrip())
