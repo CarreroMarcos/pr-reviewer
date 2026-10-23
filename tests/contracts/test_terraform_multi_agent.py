@@ -289,27 +289,20 @@ def test_env_defaults_match_config():
 # --- daily spend alarm recalibration (checklist 8; T034) ---------------------------------------
 
 
-def test_spend_alarm_threshold():
-    """T042 snapshot (Mars, 2026-09-27): the alarm exists, its threshold
-    derives from the config budget scaled by the 5-call factor, and the
-    budget default is pinned to the Mars-set $1 ($5/day alarm) — any
-    drift from that number fails."""
-    alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "daily_llm_spend")
-    threshold = re.search(r"^\s*threshold\s*=\s*(.+?)\s*(?:#.*)?$", alarm, re.MULTILINE)
-    assert threshold is not None, "daily_llm_spend threshold not found"
-    threshold_norm = " ".join(threshold.group(1).split())
-    # Whitespace-normalized (innocent refactors must not trip drift) but
-    # order-strict: `5 * var.…` or any other factor form still fails, so
-    # the ×5 factor itself stays pinned.
-    assert threshold_norm == "var.daily_llm_spend_budget_usd * 5", (
-        f"threshold not budget x5: {threshold.group(1)!r}"
-    )
+def test_spend_budget_variable_default():
+    """T042 snapshot: budget default is pinned to the Mars-set $1."""
     var_block = _resource_block(VARIABLES_TF, "daily_llm_spend_budget_usd", "", kind="variable")
     default = re.search(r"^\s*default\s*=\s*(\d+(?:\.\d+)?)\s*$", var_block, re.MULTILINE)
     assert default is not None, "budget default is not a numeric literal"
     assert float(default.group(1)) == 1.0, (
         f"budget drifted from the Mars-set $1: {default.group(1)!r}"
     )
+
+
+def test_metric_alarms_absent_for_free_tier():
+    """Metric alarms decommissioned: 0 alarms in observability.tf to stay
+    strictly within the AWS Free Tier 10-alarm limit (Global-CW:AlarmMonitorUsage)."""
+    assert 'resource "aws_cloudwatch_metric_alarm"' not in OBSERVABILITY_TF
 
 
 # --- contention-rate alarm (HLD D9 lease TTL pin; T048a/b, Mars 2026-09-28) ---
@@ -336,28 +329,6 @@ def test_contention_metric_filter():
     assert re.search(r'name\s*=\s*"ContentionCount"', body)
     assert re.search(r'namespace\s*=\s*"pr-reviewer/worker"', body)
     assert re.search(r'value\s*=\s*"1"', body)
-
-
-def test_contention_rate_alarm():
-    """T048a: the contention-rate alarm exists, measures the filter's
-    metric, wires the shared SNS topic, and stays silent on quiet logs
-    (HLD D9: operability signal, not a correctness gate)."""
-    alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "contention_rate")
-    assert re.search(
-        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.worker_contention"
-        r"\.metric_transformation\[0\]\.name",
-        alarm,
-    ), "alarm does not measure the worker_contention filter metric"
-    assert re.search(r'namespace\s*=\s*"pr-reviewer/worker"', alarm)
-    assert re.search(r'statistic\s*=\s*"Sum"', alarm)
-    assert re.search(r'comparison_operator\s*=\s*"GreaterThanThreshold"', alarm)
-    assert re.search(r'treat_missing_data\s*=\s*"notBreaching"', alarm)
-    assert "aws_sns_topic.alerts.arn" in alarm, "alarm not wired to the shared SNS topic"
-    th = re.search(r"^\s*threshold\s*=\s*(.+?)\s*(?:#.*)?$", alarm, re.MULTILINE)
-    assert th is not None, "contention_rate threshold not found"
-    assert th.group(1).strip() == "var.contention_rate_threshold", (
-        f"threshold not the tunable variable: {th.group(1)!r}"
-    )
 
 
 def test_contention_rate_threshold_default():
@@ -494,37 +465,6 @@ def test_runs_multi_agent_metric_filter():
     body = m.group(1)
     assert re.search(r'name\s*=\s*"RunsMultiAgent"', body)
     assert re.search(r'namespace\s*=\s*"pr-reviewer/worker"', body)
-
-
-def test_pipeline_mix_drift_alarm():
-    """T077: the absence-semantics drift alarm — publishing traffic with
-    zero multi_agent runs across 3x20min pages via the shared topic.
-    FILL(., 0) makes an empty window evaluate as 0 instead of falling to
-    notBreaching (which would silence exactly the drift case); legitimate
-    single-agent publishes never breach on their own."""
-    alarm = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_metric_alarm", "pipeline_mix_drift")
-    assert "FILL(multi, 0) >= 1" in alarm, "multi-absence term missing"
-    assert "FILL(published, 0) - FILL(docs, 0) >= 3" in alarm, (
-        "traffic-continued term missing (docs exclusion per Gate-58 advisory)"
-    )
-    assert re.search(r"evaluation_periods\s*=\s*3", alarm)
-    assert re.search(r"period\s*=\s*1200", alarm)
-    assert re.search(r'comparison_operator\s*=\s*"LessThanThreshold"', alarm)
-    assert re.search(r"threshold\s*=\s*0", alarm)
-    assert re.search(r'treat_missing_data\s*=\s*"notBreaching"', alarm)
-    assert "aws_sns_topic.alerts.arn" in alarm, "alarm not wired to the shared topic"
-    assert re.search(
-        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.runs_multi_agent",
-        alarm,
-    )
-    assert re.search(
-        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.runs_published",
-        alarm,
-    )
-    assert re.search(
-        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.runs_docs_only",
-        alarm,
-    )
 
 
 def test_runs_docs_only_metric_filter():
