@@ -67,7 +67,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
                   │  Visibility: 1800s (2 × 900s)   │
                   │  Retention: 4d │ maxReceiveCount 3 │
                   └──────────────┬───────────────────┘
-                                 │ event source mapping (batch = 1)
+                                 │ event source mapping (batch = 1, max_concurrency = 2)
                                  ▼
                   ┌──────────────────────────────────┐        ┌───────────────────┐
                   │         WORKER LAMBDA           │        │  SQS DLQ            │
@@ -75,18 +75,30 @@ The invariant is honest about distributed-systems reality: a database cannot ato
                   │  Reserved: none (2026-09-15)     │        │  (operator redrive  │
                   │  h. Batched secret hydration      │        │   + redrive-allow   │
                   │  i. Fetch + sanitize diff         │        │   policy on source) │
-                  │  j. LLM review (GLM-5.3-Flash)   │        └───────────────────┘
+                  │  j. Multi-agent review pipeline:  │        └───────────────────┘
+                  │     3 specialists (correctness,   │
+                  │     security, tests) → verifier   │
+                  │     → synthesizer (single-pass    │
+                  │     fallback: docs-only / mutex)  │
                   │  k. Conditional claim → live-head │
-                  │     fence → publish → finalize   │
+                  │     fence → publish → finalize    │
                   │  l. Reconcile marker duplicates   │
-                  └──────────┬──────────┬────────────┘
-                             │          │
-                ┌────────────▼───┐  ┌───▼──────────────────┐
-                │    DynamoDB    │  │        GitHub         │
-                │  pr-reviewer-  │  │  canonical PR comment │
-                │  state         │  │  (stable marker)      │
-                │  (provisioned) │  │                       │
-                └────────────────┘  └───────────────────────┘
+                  │  m. Archive events & meta to S3   │
+                  └──────┬──────────┬──────────┬─────┘
+                         │          │          │
+            ┌────────────▼───┐  ┌───▼──────────┴────────┐  ┌───────────────────────┐
+            │    DynamoDB    │  │        GitHub         │  │  S3 ARCHIVES BUCKET   │
+            │  pr-reviewer-  │  │  canonical PR comment │  │  pr-reviewer-archives │
+            │  state         │  │  (stable marker +     │  │  (runs/ 90d lifecycle)│
+            │  (provisioned) │  │   replay footer link) │  └───────────┬───────────┘
+            └────────────────┘  └───────────────────────┘              │
+                                                                       ▼
+                                                           ┌───────────────────────┐
+                                                           │     VIEWER LAMBDA     │
+                                                           │  Function URL         │
+                                                           │  (renders agent replay│
+                                                           │   from S3 archive)    │
+                                                           └───────────────────────┘
 
   SSM PARAMETER STORE (SecureString, out-of-band):
   /pr-reviewer/github-token  /pr-reviewer/webhook-secret
@@ -135,7 +147,7 @@ The invariant is honest about distributed-systems reality: a database cannot ato
 | SQS `SendMessage` failure | 500 | delivery **not** marked (recoverable via redelivery) |
 | Account concurrency throttle (unreserved) | 429 | nothing enqueued; GitHub records a failed delivery |
 
-**Admission semantics:** both functions run unreserved (2026-09-15 quota ruling), so the loss boundary is the **account-level** concurrency pool (quota 10, shared with the worker) — not a per-function reservation. A sustained ingress flood can starve the worker; this is the accepted §6 failure-mode-5 residual, surfaced by the invocation-spike alarm (§4.3) and stoppable by the kill switch. Beyond the account ceiling: HTTP 429, GitHub records a failed delivery, and the **only** recovery path is admin redelivery within 3 days. The zero-silent-loss property applies to deliveries that reach the handler, not the admission edge.
+**Admission semantics:** both functions run unreserved (2026-09-15 quota ruling), so the loss boundary is the **account-level** concurrency pool (quota 10, shared with the worker) — not a per-function reservation. A sustained ingress flood can starve the worker; this is the accepted §6 failure-mode-5 residual, bounded by the account concurrency pool (10) and stopped by the webhook kill switch (disabling the GitHub webhook per `docs/runbook-kill-switch.md`). Beyond the account ceiling: HTTP 429, GitHub records a failed delivery, and the **only** recovery path is admin redelivery within 3 days. The zero-silent-loss property applies to deliveries that reach the handler, not the admission edge.
 
 **Envelope (< 1 KB, typed schema):**
 
@@ -180,7 +192,13 @@ On retryable errors with `Retry-After`, the worker calls `ChangeMessageVisibilit
 2. **Diff retrieval.** Construct `https://api.github.com/repos/{repo}/pulls/{n}` endpoints from envelope identifiers; validate scheme/host/path if a payload URL must be used. Pin `X-GitHub-Api-Version: 2026-03-10` (current version; `2022-11-28` remains supported until March 10, 2028 and is the header-less default). Send an explicit `User-Agent` (GitHub may reject requests without one). `GET /repos/{repo}/pulls/{n}` responses are third-party data: validate shape (HTTP 200, `head.sha` is 40-hex) before the live-head fence consumes them; response-embedded URLs are never used for navigation (§6, failure mode 18).
 3. **Diff budget (deterministic, pre-model):** lockfiles excluded from semantic content but summarized; `MAX_FILES = 500`; `MAX_CHANGED_LINES = 25,000` (additions + deletions); `MAX_INPUT_BYTES = 800,000`. Token count is provider-observed only.
 4. **Lockfile handling.** Excluded from primary review; a **deterministic** dependency-change summary is included (same lockfile delta → identical summary text, so two workers reviewing the same head produce identical model input). Example: `package.json: lodash 4.17.21 → 4.17.22; lockfile: 13 packages changed, 1 transitive removed`.
-5. **Model inference.** Z.ai chat completions at temperature 0.2; model string and endpoint host from SSM (endpoint validated at hydration: HTTPS scheme + host allow-list).
+5. **Multi-agent review fanout and inference pipeline.** Model inference uses Z.ai chat completions at temperature 0.2, with model string and endpoint host from SSM (endpoint validated at hydration: HTTPS scheme + host allow-list). When multi-agent review is active (`MULTI_AGENT=1`):
+   - **Specialist fanout, verification, and synthesis:** Three domain specialists (correctness, security, tests) inspect the diff, followed by a verifier pass that checks candidate findings against the diff and deduplicates them, and a synthesizer pass that authors the unified review body.
+   - **Docs-only skip routing (T076/T079):** Prose-only diffs (all changed files matching documentation extensions such as `.md`, `.txt`, `.rst`) bypass the multi-agent fanout and run fast single-pass (`concurrency_single_pass/docs_only`). If the diff was truncated (`diff_result.truncated`), the docs-only predicate fails safe (`False`) — an over-budget diff pays the fanout rather than misclassifying unexamined files.
+   - **Mutex contention fallback (D9):** A DynamoDB mutex record (`mutex:pr-reviewer-worker`) serializes multi-agent runs to prevent concurrent memory and rate spikes. When the mutex is held, the contending invocation falls back to single-pass review inline (`concurrency_single_pass`) rather than deferring visibility in SQS.
+   - **S3 archiving of events and metadata:** Every review run streams structured run events (`events.jsonl`) and execution summary metadata (`meta.json`) to the S3 archives bucket (`pr-reviewer-archives`) under key prefix `runs/{pr_number}/{head_sha}/{run_id}/` (retained 90 days).
+   - **Replay footer injection (T075):** The worker injects a deterministic footer link `[🔬 Full agent replay]({viewer_url}?run_id={run_id})` pointing to the Viewer Lambda Function URL onto the published canonical comment body, enabling browser-based inspection of agent reasoning.
+   - **Description-vs-diff race guard (PR #177):** After the model returns, the worker re-fetches PR metadata (`title`, `body`). If the PR description changed mid-review, findings referencing the description are suppressed to prevent posting stale description-vs-diff criticisms.
 6. **Fenced publication.** See §3 — claim, then live-head fence, then publish, then conditional finalize, in that exact order (following Establish + Review, §3.3 steps 1–2).
 7. **Comment structural validation (on the worker-assembled comment).** Canonical marker present (worker-injected, §2.8); bounded length; expected sections per the Model I/O contract (§2.7); no credential-like strings; no hidden HTML/script payloads; no control-plane directives.
 8. **Error classification, with the PATCH-404 decision table:**
@@ -234,11 +252,11 @@ Terraform defines IAM read policies only — no `aws_ssm_parameter` resources; n
 
 320B/18B-active MoE, 1M-token context. Published rates ($0.15/M input, $0.03/M cached, $0.50/M output) vary by provider listing ($0.08–$0.15 input observed) — treat all cost figures as order-of-magnitude, configuration-driven values. Benchmarks (Terminal-Bench 2.1: 84.3; DeepSWE v1.1: 63.4) are vendor-reported. Typical review ≈ $0.002; 100K+10K tokens ≈ $0.02; budget-capped large review ≈ $0.02–0.04.
 
-**Model I/O contract:** one versioned system prompt, maintained alongside the worker and exercised by the test suite (§4.4), that fixes the untrusted-data framing (§5.3), forbids tools, and mandates a bounded Markdown shape: `## Summary`; `## Findings` (each finding: severity ∈ {`HIGH`, `MEDIUM`, `LOW`}, `path:LINE` location with LINE ≥ 1, issue, suggested fix; count ≤ `max_findings`, a configuration parameter defaulting to 20); `## Risk Notes`; "No significant issues found." is the defined empty-finding output. Model input is the worker-assembled bounded payload — PR title/description plus the budgeted diff and, on re-reviews, the prior canonical comment (all adversarial data per §5.3) — never bare diff text. Findings never contain `@mentions`, external image URLs, or approval verdicts ("safe to merge" et al.) — §5.3 control-plane separation. The worker injects one deterministic revision header directly under the canonical marker (`**Review #N · updated {stamp} PT**`, `#N` = established generation + 1, stamp in America/Los_Angeles rendered in code) so revision count and freshness are scannable without touching the byte-stable marker. Output length is bounded by the worker-side `max_output_tokens` configuration parameter (never hard-coded — same configuration-parameter rule as §7.2 pricing), and the system prompt carries a `prompt_version` identifier logged per review (§4.3). A configured canary substring from the system prompt is checked during structural validation (§2.3 item 7): output containing it is rejected non-retryably and alerted — a leaked prompt is broadcast to a public comment, so enforcement must be output-side. The model **never** emits the canonical marker: the worker injects it deterministically when assembling the comment (§2.8), so canonical identity cannot regress with model behavior.
+**Model I/O contract:** one versioned system prompt, maintained alongside the worker and exercised by the test suite (§4.4), that fixes the untrusted-data framing (§5.3), forbids tools, and mandates a bounded Markdown shape: `## Summary`; `## Findings` (each finding: severity ∈ {`HIGH`, `MEDIUM`, `LOW`}, `path:LINE` location with LINE ≥ 1, issue, suggested fix; count ≤ `max_findings`, a configuration parameter defaulting to 20); `## Risk Notes`; "No significant issues found." is the defined empty-finding output. Model input is the worker-assembled bounded payload — PR title/description plus the budgeted diff and, on re-reviews, the prior canonical comment (all adversarial data per §5.3) — never bare diff text. Findings never contain `@mentions`, external image URLs, or approval verdicts ("safe to merge" et al.) — §5.3 control-plane separation. The worker injects one deterministic revision header directly under the canonical marker (`**Review #N · updated {stamp} PT**`, `#N` = established generation + 1, stamp in America/Los_Angeles rendered in code) so revision count and freshness are scannable without touching the byte-stable marker. Output length is bounded by the worker-side `max_output_tokens` configuration parameter (never hard-coded — same configuration-parameter rule as §7.2 pricing), and the system prompt carries a `prompt_version` identifier (`prompt_version: v3`, shipped in PR #177) logged per review (§4.3). For re-reviews, prompt v3 enforces the **quote-to-carry rule**: the model carries a prior finding over only when it quotes the exact current lines showing the issue is still present (no quotable lines means the finding is treated as addressed), preventing stale criticisms from echoing indefinitely. A configured canary substring from the system prompt is checked during structural validation (§2.3 item 7): output containing it is rejected non-retryably and alerted — a leaked prompt is broadcast to a public comment, so enforcement must be output-side. The model **never** emits the canonical marker: the worker injects it deterministically when assembling the comment (§2.8), so canonical identity cannot regress with model behavior.
 
 ### 2.8 Comment Strategy
 
-Single evolving PR conversation comment (Issues Comments API) bearing the canonical marker `<!-- pr-reviewer:canonical:v1:{repo_full_name}#{pr_number} -->`. The marker makes canonical identity survivable even if DynamoDB state is lost. The marker is **injected by the worker** when assembling the comment — never generated by the model — so canonical identity cannot regress with model behavior. The marker is an internal convergence mechanism, not a public API: external tooling MUST NOT parse it; format changes are versioned in place (`v1`, `v2`, …). The revision header (`**Review #N · updated {stamp} PT**`) is likewise worker-injected content alongside the marker — never model output — so it cannot regress with model behavior. Inline Reviews API comments: roadmap.
+Single evolving PR conversation comment (Issues Comments API) bearing the canonical marker `<!-- pr-reviewer:canonical:v1:{repo_full_name}#{pr_number} -->`. The marker makes canonical identity survivable even if DynamoDB state is lost. The marker is **injected by the worker** when assembling the comment — never generated by the model — so canonical identity cannot regress with model behavior. The marker is an internal convergence mechanism, not a public API: external tooling MUST NOT parse it; format changes are versioned in place (`v1`, `v2`, …). The revision header (`**Review #N · updated {stamp} PT**`) is likewise worker-injected content alongside the marker — never model output — so it cannot regress with model behavior. The published comment also includes a code-injected footer link `[🔬 Full agent replay]({viewer_url}?run_id={run_id})` pointing to the Viewer Lambda Function URL, allowing any team member to inspect the multi-agent specialist findings, verifier checks, and execution timeline in the browser. Inline Reviews API comments: roadmap.
 
 ---
 
@@ -312,7 +330,21 @@ Ingress < 250ms (deadline 10,000ms). Worker 6–15s typical, hard cap 900s (spec
 
 ### 4.3 Observability
 
-Structured JSON logs (fixed field set, no secrets or raw payloads); DLQ-depth alarm as the primary failure signal; review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`); week-one watch on Worker p95 vs. the 240s LLM read timeout. Alarms — each with threshold, SNS topic, and a named owner: DLQ depth > 0; ingress 401-rate spike (mis-rotation or probing); 429 admission count (§2.1 loss boundary — secondary in the unreserved era: the invocation-spike alarm is the primary flood signal); worker error rate and DynamoDB throttling; work-queue depth abnormal; daily LLM spend vs. a config-driven budget; worker-invocation-spike (≥10 invocations in 600s — the unreserved-era flood signal, spec-002; operator response: sample the triggering deliveries — legitimate multi-repo bursts ride it out, hostile floods trip the kill switch; unattended burn is pool-bounded (≤ 10 concurrent reviews at §2.7's configuration-driven per-review cost) and the daily-spend alarm is the automated escalation backstop); worker-contention rate (D9 mutex signal, spec-004). Nine alarms shipped. Kill switch (restated for the unreserved era): set the worker's reserved concurrency to 0 — valid on an unreserved function; invocations refuse immediately — spend stops and queued work is retained up to the 4-day retention; disable the webhook (or the event source mapping) as well if ingress should stop enqueuing, since an active ingress against a dead worker grows the queue silently to retention expiry.
+Structured JSON logs (fixed field set, no secrets or raw payloads) across 3 Lambda log groups (`/aws/lambda/pr-reviewer-ingress`, `/aws/lambda/pr-reviewer-worker`, `/aws/lambda/pr-reviewer-viewer`; 7-day retention); review metrics (`repo`, `pr_number`, `head_sha`, `generation`, `duration_ms`, provider-observed `token_usage`, `status`, `stale_discarded`, `prompt_version`, `pipeline`); week-one watch on Worker p95 vs. the 240s LLM read timeout.
+
+**Metric alarms decommissioned:** All 10 CloudWatch metric alarms were decommissioned to respect the AWS Free Tier limit (`Global-CW:AlarmMonitorUsage`). Operational alerting and telemetry rely on structured JSON logs, the shared SNS topic (`pr-reviewer-alerts`), and 6 CloudWatch log metric filters:
+1. `ingress_unauthorized` — counts unauthorized 401 webhook attempts.
+2. `worker_token_usage` — sums worker token consumption.
+3. `worker_contention` — counts mutex contention events (`concurrency_single_pass`).
+4. `runs_published` — counts successfully published review comments.
+5. `runs_multi_agent` — counts published reviews executed via the multi-agent pipeline.
+6. `runs_docs_only` — counts prose/docs-only reviews routed single-pass.
+
+**Kill switch (operational reality):** The account Lambda concurrency quota of 10 forbids setting reserved concurrency to 0 (AWS requires ≥ 10 unreserved concurrency account-wide; `put-function-concurrency` is rejected for any value). Therefore, **disabling the GitHub webhook is the primary operational kill switch** (Lever A in `docs/runbook-kill-switch.md`):
+```bash
+gh api repos/OWNER/REPO/hooks/HOOK_ID -X PATCH -f active=false
+```
+Disabling the webhook stops all ingress traffic immediately. In-flight worker runs finish within their 900 s timeout, and queued messages are preserved safely in SQS for up to 4 days.
 
 ### 4.4 Testing & Verification Strategy
 
@@ -364,7 +396,7 @@ Bootstrap OIDC trust stack (HCP plan/apply roles, `StringEquals` exact sub pins 
 
 ### 5.2 Ingress Threat Model
 
-Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded by the account-level concurrency pool (quota 10, both functions unreserved — §2.1), with the 3-day manual redelivery window as the only recovery; a sustained flood can additionally starve the worker (§6 failure mode 5 — spike alarm + kill switch). Stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction. Cost abuse: PR floods — including fork PRs — convert directly into LLM spend, bounded by design to worker concurrency × per-review cost (§2.7), with 4-day queue retention shedding sustained backlog and queue-depth/DLQ alarms surfacing abnormal volume. Replay residual: the GUID-dedup TTL (7 d) is the replay window; HMAC carries no timestamp, so a captured payload replayed after TTL expiry is accepted as new — stale-head replays are discarded by establish, but a current-head replay passes the fence and burns one bounded LLM review; accepted knowingly (bounded spend, no incorrect state).
+Forged requests: full-string HMAC. Cross-event injection: event-type gate. Replay: GUID dedup. Admission loss: bounded by the account-level concurrency pool (quota 10, both functions unreserved — §2.1), with the 3-day manual redelivery window as the only recovery; a sustained flood can additionally starve the worker (§6 failure mode 5 — bounded by the account concurrency pool (10) and stopped by the webhook kill switch). Stated, not overclaimed. CORS: disabled on the Function URL — the only legitimate caller is GitHub's non-browser webhook dispatcher, so any cross-origin request is hostile by construction. Cost abuse: PR floods — including fork PRs — convert directly into LLM spend, bounded by design to worker concurrency × per-review cost (§2.7), with 4-day queue retention shedding sustained backlog; log metric filters and structured log queries surface abnormal volume, and the webhook kill switch stops further intake. Replay residual: the GUID-dedup TTL (7 d) is the replay window; HMAC carries no timestamp, so a captured payload replayed after TTL expiry is accepted as new — stale-head replays are discarded by establish, but a current-head replay passes the fence and burns one bounded LLM review; accepted knowingly (bounded spend, no incorrect state).
 
 ### 5.3 AI Input Security
 
@@ -384,7 +416,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 2 | HMAC prefix bug | Full-string constant-time compare |
 | 3 | Non-PR signed event | Event-type gate |
 | 4 | Claim-before-dispatch loss | Dispatch-before-mark; 500 leaves delivery unconsumed |
-| 5 | Admission-edge 429 loss | Unreserved: the account concurrency quota (10) is the only bound — a flood can starve the worker (accepted residual: spike alarm + kill switch); 3-day redelivery is recovery |
+| 5 | Admission-edge 429 loss | Unreserved: the account concurrency quota (10) is the only bound — a flood can starve the worker (accepted residual: bounded by account concurrency pool (10), stopped by webhook kill switch); 3-day redelivery is recovery |
 | 6 | Out-of-order webhook delivery | Establish gated on live GitHub head (defined comparison); fence after claim |
 | 7 | Read-then-PATCH stale write | Conditional claim/finalize; fence-after-claim ordering |
 | 8 | First-post race | Claim state machine, 780s fixed lease (claim→finalize, no renewal) |
@@ -403,8 +435,8 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | 21 | Redrive permission foot-gun | Operator role named in source-queue redrive allow policy |
 | 22 | Secrets in state/logs | IAM-only Terraform; logging prohibitions |
 | 23 | DynamoDB billing surprise | PROVISIONED mode |
-| 24 | Failed work silent | DLQ + alarm + tested, permissioned redrive |
-| 25 | PR flood cost abuse | Account concurrency pool (10, unreserved) bounds spend; 4 d retention sheds sustained backlog; depth/DLQ/spike alarms surface abnormal volume |
+| 24 | Failed work silent | DLQ + structured log inspection + tested, permissioned redrive (metric alarms decommissioned for Free Tier) |
+| 25 | PR flood cost abuse | Account concurrency pool (10, unreserved) bounds spend; 4 d retention sheds sustained backlog; log metric filters and structured log queries surface abnormal volume; webhook kill switch stops ingress (metric alarms decommissioned for Free Tier) |
 
 ---
 
@@ -412,9 +444,9 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 
 ### 7.1 Terraform BOM
 
-`aws_lambda_function` ×2; `aws_lambda_function_url`; `aws_lambda_event_source_mapping` (batch 1, `scaling_config.maximum_concurrency = 2`); `aws_sqs_queue` ×2 + redrive policy (maxReceiveCount 3) + **redrive allow policy naming the operator role**; `aws_dynamodb_table` (provisioned 20/20 + GSI 5/5); IAM roles ×3 with inline policies; `aws_cloudwatch_log_group` ×2 (7-day retention); 9 `aws_cloudwatch_metric_alarm` (incl. DLQ-depth, worker-invocation-spike, and contention-rate) + SNS topic + 2 log metric filters; `archive_file` ×2. **Absent:** API Gateway, VPC, NAT, S3 backend (MVP), SSM parameter resources, Secrets Manager, EventBridge, Lambda async-invoke config.
+`aws_lambda_function` ×3 (ingress, worker, viewer); `aws_lambda_function_url` ×2 (ingress, viewer); `aws_lambda_event_source_mapping` (batch 1, `scaling_config.maximum_concurrency = 2`); `aws_sqs_queue` ×2 + redrive policy (maxReceiveCount 3) + **redrive allow policy naming the operator role**; `aws_s3_bucket` (`pr-reviewer-archives` with 90-day lifecycle expiration on `runs/`); `aws_dynamodb_table` (provisioned 20/20 + GSI 5/5); IAM roles ×3 with inline policies; `aws_cloudwatch_log_group` ×3 (ingress, worker, viewer; 7-day retention); `aws_sns_topic` (pr-reviewer-alerts); 6 `aws_cloudwatch_log_metric_filter` (ingress_unauthorized, worker_token_usage, worker_contention, runs_published, runs_multi_agent, runs_docs_only); 0 `aws_cloudwatch_metric_alarm` (all 10 decommissioned to respect Free Tier `Global-CW:AlarmMonitorUsage` limit); `archive_file` ×3 (ingress, worker, viewer). **Absent:** API Gateway, VPC, NAT, S3 backend (MVP), SSM parameter resources, Secrets Manager, EventBridge, Lambda async-invoke config.
 
-**Repository layout & packaging:** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **both** deployment zips, and `lambda/ingress_handler.py` / `lambda/worker_handler.py` stay thin entry points. This is a shared contract, not an abstraction — no further layering until a third consumer exists (Rule of Three). Security-sensitive helpers (log redaction, input sanitization) and behaviorally-identical logic (marker construction, envelope validation) are single-implemented here from the first duplication — one implementation is a security requirement, not a style choice. The validator returns a typed envelope (stdlib `dataclass`), and public handlers carry type annotations (stdlib `typing`).
+**Repository layout & packaging:** `lambda/common/` is the single source of truth for the envelope schema/validator (§2.1), marker builder (§2.8), and structured-log helpers (§5.4); `archive_file` packages it into **all three** deployment zips, and `lambda/ingress_handler.py`, `lambda/worker_handler.py`, and `lambda/viewer_handler.py` stay thin entry points. Security-sensitive helpers (log redaction, input sanitization) and behaviorally-identical logic (marker construction, envelope validation) are single-implemented here — one implementation is a security requirement, not a style choice. The validator returns a typed envelope (stdlib `dataclass`), and public handlers carry type annotations (stdlib `typing`).
 
 **Local state guardrails:** `terraform.tfstate` is gitignored, backed up encrypted, and single-operator (the local backend has no locking — never two concurrent applies). Lambda environment variables must never carry secrets: SSM-only is a constraint, not merely a current fact.
 
@@ -430,6 +462,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | Fencing comparison | Defined: first-write, idempotent-equality, or live-head confirmation — never SHA ordering |
 | 404 handling | Explicit decision table |
 | Pricing in alarms/budgets | Configuration parameters, never hard-coded |
+| Metric alarms | 0 (all 10 decommissioned for Free Tier compliance; `Global-CW:AlarmMonitorUsage`) |
 
 **Change history:** superseded values, rulings, and per-revision deltas (v6.1 → v6.10) are recorded in [docs/DECISIONS.md](DECISIONS.md) — append-only. This section carries current values only.
 

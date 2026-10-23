@@ -6,12 +6,13 @@ Resource names below are the real Terraform names
 region is `us-west-2` (`terraform/main.tf`). Do not invent ARNs — resolve
 every ARN through the `get-queue-attributes` commands in the steps.
 
-Trigger: the `pr-reviewer-dlq-depth` alarm (SNS topic `pr-reviewer-alerts`)
-fires when `pr-reviewer-dlq` holds messages. The DLQ retains messages for
-14 days; the work queue (`pr-reviewer-work`) retains for 4 days with
-`maxReceiveCount 5` and 5400 s visibility (spec-002).
-Worst-case poison cycle: 5 exhausted attempts × 5400 s ≈ 7.5 h before the
-DLQ (was ~72 min at the pre-spec-002 720 s visibility).
+Trigger: discovery of messages in `pr-reviewer-dlq` via periodic queue
+inspection or log analysis (metric alarms have been decommissioned for Free Tier
+compliance; check depth via `aws sqs get-queue-attributes`). The DLQ retains
+messages for 14 days; the work queue (`pr-reviewer-work`) retains for 4 days
+with `maxReceiveCount 3` and 1800 s visibility (spec-004 rebalance, was 5400 s).
+Worst-case poison cycle: 3 exhausted attempts × 1800 s ≈ 1.5 h before the
+DLQ (was 5 attempts × 5400 s ≈ 7.5 h under spec-002).
 
 ## Permission set (exact — mirrors `terraform/iam.tf` operator role)
 
@@ -66,8 +67,7 @@ aws sqs receive-message --queue-url "$DLQ_URL" \
 Each body is a worker envelope (`envelope_version`, `repo_full_name`,
 `pr_number`, `head_sha`, `delivery_guid`). Correlate `delivery_guid` /
 `head_sha` with the worker log group (`/aws/lambda/pr-reviewer-worker`,
-7-day retention) and the `pr-reviewer-worker-error-rate` /
-`pr-reviewer-dynamodb-throttling` alarms to classify the cause (provider
+7-day retention) and structured log error events to classify the cause (provider
 5xx/429 exhaustion, persistent 401, poison envelope). Do not proceed until
 the cause is named.
 
@@ -105,17 +105,12 @@ Record the returned `MessageMoveTask` handle for step 5.
 
 ## Step 4 — verify the DLQ drains to zero and canonical comments converge
 
-Poll until the DLQ is empty and the alarm clears:
+Poll until the DLQ is empty:
 
 ```bash
 aws sqs get-queue-attributes --queue-url "$DLQ_URL" \
-  --attribute-names ApproximateNumberOfMessagesVisible \
+  --attribute-names ApproximateNumberOfMessages \
   --region us-west-2
-
-aws cloudwatch describe-alarms \
-  --alarm-names pr-reviewer-dlq-depth \
-  --region us-west-2 \
-  --query 'MetricAlarms[0].StateValue'
 ```
 
 Then confirm convergence per affected PR: exactly one comment bearing the
@@ -134,7 +129,7 @@ not a success. This step is HLD §7.3 acceptance criterion (j).
 
 ## Step 5 — log the drill
 
-Record, in the team ops log: date, DLQ depth at alarm time, root cause
+Record, in the team ops log: date, DLQ depth at discovery/inspection time, root cause
 from step 1, fix reference from step 2, the `MessageMoveTask` handle from
 step 3, drain-to-zero confirmation plus per-PR convergence check from
 step 4, and the operator identity. The redrive drill is a tested

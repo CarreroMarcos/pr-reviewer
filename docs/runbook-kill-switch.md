@@ -6,11 +6,15 @@ immediately and queued work is retained."). Resource names below are the
 real Terraform names (`terraform/compute.tf`, `terraform/messaging.tf`);
 region is `us-west-2` (`terraform/main.tf`).
 
-Trigger: any alarm on `pr-reviewer-alerts` that implies runaway spend or
-a compromise you cannot bound otherwise (runaway LLM spend vs. the
-config-driven daily budget; suspected secret compromise with the rotation
-path unavailable). The kill switch is the stop-everything lever — it is
-not a fix; fix-then-redrive comes after (see `docs/runbook-redrive.md`).
+Trigger: manual CloudWatch Logs inspection, log metric filter anomalies,
+AWS billing alerts, or GitHub webhook delivery inspection that implies
+runaway spend or a compromise you cannot bound otherwise (runaway LLM
+token spend vs. the daily budget; suspected secret compromise with the
+rotation path unavailable; rapid admission flood). Note that CloudWatch
+metric alarms have been decommissioned for Free Tier compliance; detection
+relies on active log/metrics/billing monitoring. The kill switch is the
+stop-everything lever — it is not a fix; fix-then-redrive comes after (see
+`docs/runbook-redrive.md`).
 
 ## Lever A — disable the GitHub webhook (primary, always available)
 
@@ -36,7 +40,7 @@ aws logs tail /aws/lambda/pr-reviewer-ingress --region us-west-2 --since 5m   # 
 aws logs tail /aws/lambda/pr-reviewer-worker  --region us-west-2 --since 5m   # expect: silent
 ```
 
-In-flight work finishes naturally (worker timeout 120 s) — it is not
+In-flight work finishes naturally (worker timeout 900 s) — it is not
 reclaimed; it simply completes or exhausts its retries.
 
 ## Lever B — worker reserved concurrency 0 (HLD's named lever)

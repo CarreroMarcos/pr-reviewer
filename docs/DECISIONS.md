@@ -248,3 +248,15 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 **Consequences:** T072/T073 verify evidence complete (kill-set re-run recorded + DECISIONS entry). T050's 0-wrongful activation bar is met by r7; activation itself stays Mars-gated (bundled with T056 behind one tf-* ask).
 
 **Review-1 dispositions (2026-09-30, bot canonical #1):** kills_checked semantics documented (capture-dependent: only surfaced killed candidates are checked — gate is deterministic 0-wrongful, not a rate); `band_resolution` field added to `t046-scoring.json` so the promoted artifact is self-contained; prior-record note reworded (no durable raw copy exists — size cap); range-anchor parser test added (`test_location_regex_range_anchor_tolerance`).
+
+## 2026-10-22 — Re-review hardening: prompt v3 quote-to-carry rule, description-race guard, and CloudWatch alarm decommissioning (PR #177)
+
+**Context:** Re-reviews on evolving PRs exhibited two failure modes: (1) stale findings persisting across iterations when the model carried over previous criticisms without verifying against current code; and (2) description-vs-diff races where a developer updated the PR description while the minutes-long LLM review ran, causing the published review to criticize discrepancies against an obsolete description. Additionally, AWS Free Tier billing tracking surfaced that the 10 active CloudWatch metric alarms breached the Free Tier allowance (`Global-CW:AlarmMonitorUsage`).
+
+**Decisions:**
+1. **Prompt v3 (`quote-to-carry` rule):** `prompts/system_prompt.md` updated to `prompt_version: v3`. The model is instructed to carry a prior finding over only if it quotes exact current lines proving the defect persists; absence of quotable lines means the finding is addressed.
+2. **Post-LLM description-race guard:** After LLM review execution, `worker_handler.py` re-fetches the latest PR title and body from GitHub. If metadata changed mid-review, finding bullets referencing title/description text (`_DESC_REF_RE`) are pruned before publishing, preventing stale description criticisms from landing.
+3. **Decommission CloudWatch metric alarms for Free Tier compliance:** All 10 CloudWatch metric alarms (`dlq_depth`, `ingress_401`, `ingress_admission_429`, `worker_error_rate`, `dynamodb_throttling`, `work_queue_depth`, `daily_llm_spend`, `worker_invocation_spike`, `contention_rate`, `pipeline_mix_drift`) were removed from `terraform/observability.tf` to eliminate alarm billing under `Global-CW:AlarmMonitorUsage`. Observability and telemetry rely on structured JSON logs across 3 Lambda log groups (7-day retention), the shared SNS topic (`pr-reviewer-alerts`), and 6 log metric filters. Disabling the GitHub webhook is reaffirmed as the primary operational kill switch.
+
+**Consequences:** Re-reviews cleanly prune fixed defects and resist mid-review description edits. Infrastructure maintains $0 steady-state spend under Free Tier limits. Runbooks and HLD aligned with the zero-metric-alarm observability posture.
+**Current truth:** `prompts/system_prompt.md`, `lambda/worker_handler.py`, `terraform/observability.tf`, `docs/HLD.md`.

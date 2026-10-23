@@ -90,7 +90,10 @@ results.
 staleness-guarded results); prompt variants currently need a manual re-capture
 per variant. **Update (2026-09-20):** prompt v2 shipped (xss/injection
 escalation hardening + the T2a output-hygiene bullet), pinned against the
-current payload shape.
+current payload shape. **Update (2026-10-22):** prompt v3 shipped in PR #177
+with the quote-to-carry rule for re-reviews (prior findings are carried over
+only when exact current code lines showing the issue are quoted; unquoted
+findings are treated as addressed).
 
 ## 4. More context for the reviewer — **deferred**
 

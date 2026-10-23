@@ -57,4 +57,6 @@ from `aws lambda get-function-url-config --function-name pr-reviewer-ingress
 - Known live-endpoint latency (HLD §4.2, measured 2026-09-17): expect
   minutes per review, not seconds, until the re-probe says otherwise.
 - Cost stays ~$0 under Free Tier allowances unless a repo gets busy;
-  the budget alarm + kill switch (HLD §4.3) cover the worst case.
+  spend is bounded by account concurrency (10) and the webhook kill
+  switch (HLD §4.3, `docs/runbook-kill-switch.md`) covers the worst case
+  (metric alarms are decommissioned for Free Tier compliance).
