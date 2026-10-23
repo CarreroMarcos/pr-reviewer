@@ -1,7 +1,7 @@
 {
   "meta": {
-    "prompt_version": "v2",
-    "prompt_sha256": "2227575b08945ab6b1ab9b73b5295cdf0ee7ea34aaf09a29c5bcd56ff20711db",
+    "prompt_version": "v3",
+    "prompt_sha256": "be4d6afd3b245e18acd8a972473c486541bc39018434eb213ad82a7cb33f3d91",
     "model": "glm-5.3-flash",
     "payload": {
       "temperature": 0.2,

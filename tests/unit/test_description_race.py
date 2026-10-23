@@ -981,3 +981,62 @@ def test_filter_sanitizes_logged_finding(caplog):
     assert "\r" not in finding
     assert not any(ord(c) < 0x20 for c in finding)
     assert len(finding) == 160
+
+
+def test_filter_nested_longer_fence_content_passes_through():
+    # Four-backtick fence containing a three-backtick line: inner fence does
+    # not toggle in_fence OFF, so the bullet inside remains fenced content.
+    body = (
+        "## Findings\n"
+        "````\n"
+        "```\n"
+        "- [MEDIUM] The PR description says nested fence.\n"
+        "````\n" + CODE_FINDING + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 0
+    assert "The PR description" in text
+    assert CODE_FINDING in text
+
+
+def test_filter_nested_ordered_child_drops_with_parent():
+    # Numbered nested child under a dropped parent bullet drops along with parent.
+    body = (
+        "## Findings\n"
+        '- [MEDIUM] The PR description says "one file".\n'
+        "  1. Child ordered detail.\n" + CODE_FINDING + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "Child ordered detail" not in text
+    assert CODE_FINDING in text
+
+
+def test_filter_four_space_indented_fence_does_not_toggle_fence():
+    # 4+ spaces is an indented code block in CommonMark, not a fence boundary.
+    # It does not toggle in_fence, so subsequent description findings drop.
+    body = (
+        "## Findings\n"
+        '- [MEDIUM] The PR description says "part one".\n'
+        "    ```\n"
+        '- [MEDIUM] The PR description says "part two".\n' + CODE_FINDING + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 2
+    assert "part one" not in text
+    assert "part two" not in text
+    assert CODE_FINDING in text
+
+
+def test_filter_tab_indented_continuation_drops_with_parent():
+    # Tab-indented loose continuation under space-indented dropped bullet drops.
+    body = (
+        "## Findings\n"
+        '  - [MEDIUM] The PR description says "one file".\n'
+        "\n"
+        "\tcontinuation line under tab\n" + CODE_FINDING + "\n"
+    )
+    text, dropped = _drop_stale_description_findings(body)
+    assert dropped == 1
+    assert "continuation line under tab" not in text
+    assert CODE_FINDING in text

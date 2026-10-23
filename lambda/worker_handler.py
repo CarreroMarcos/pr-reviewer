@@ -455,7 +455,8 @@ def _loose_continuation_ahead(lines: list[str], idx: int, dropped_indent: int) -
             continue
         if _is_heading(nxt):
             return False
-        return len(nxt) - len(nxt.lstrip()) > dropped_indent
+        nxt_expanded = nxt.expandtabs(4)
+        return len(nxt_expanded) - len(nxt_expanded.lstrip()) > dropped_indent
     return False
 
 
@@ -474,21 +475,34 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     in_dropped_span = False
     dropped_indent: int | None = None
     in_fence = False
+    fence_char: str | None = None
+    fence_len = 0
     # (start, end, drops) per Findings section for the sentinel.
     sections: list[tuple[int, int, int]] = []
     findings_start = 0
     section_dropped = 0
     for idx, line in enumerate(lines):
         stripped = line.strip()
-        # Fence toggle: ``` or ~~~ at column 0.
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            # A fence boundary ends a dropped span — the fence itself is
-            # not part of the finding block.
-            in_dropped_span = False
-            dropped_indent = None
-            out.append(line)
-            continue
+        # Fence toggle: ``` or ~~~ at column 0-3 (CommonMark: closer matches char & len).
+        m_fence = _FENCE_RE.match(line)
+        if m_fence:
+            marker = m_fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_char = marker[0]
+                fence_len = len(marker)
+                in_dropped_span = False
+                dropped_indent = None
+                out.append(line)
+                continue
+            elif marker[0] == fence_char and len(marker) >= fence_len:
+                in_fence = False
+                fence_char = None
+                fence_len = 0
+                in_dropped_span = False
+                dropped_indent = None
+                out.append(line)
+                continue
         # Column-0 headings only; inside a fence, `##` is content, not a boundary.
         if not in_fence and _is_heading(line):
             if in_findings:
@@ -505,7 +519,8 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
             out.append(line)
             continue
         if in_findings and _BULLET_RE.match(stripped):
-            indent = len(line) - len(line.lstrip())
+            line_expanded = line.expandtabs(4)
+            indent = len(line_expanded) - len(line_expanded.lstrip())
             if in_dropped_span and dropped_indent is not None and indent > dropped_indent:
                 continue  # nested child of the dropped block
             in_dropped_span = False
