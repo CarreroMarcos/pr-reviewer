@@ -1,4 +1,4 @@
-"""SPR-90 T007: candidate-finding schema contract tests (HLD-004 §6).
+"""T007: candidate-finding schema contract tests (HLD-004 §6).
 
 Closed-schema parse of specialist output: the top-level `{"findings"}`
 object and every item reject unknown keys (`additionalProperties` at
@@ -11,8 +11,6 @@ clamps out-of-range coordinates to the file length and returns the
 clamped-coordinate count as data (`ClampResult.clamped_n` — the flag
 `run_fanout` surfaces; flags never travel inside finding JSON, and
 `candidate_id` is assigned by `run_fanout`, never carried in findings).
-
-RED state: `common.findings` does not exist — collection errors.
 """
 
 import pytest

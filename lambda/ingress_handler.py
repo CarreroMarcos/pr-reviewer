@@ -1,23 +1,23 @@
-"""Ingress Lambda entry point (HLD §2.1; contracts/ingress-webhook.md).
+"""Ingress Lambda entry point (ARCHITECTURE.md §2.1, §4).
 
 Security & dispatch gateway: the eight §2.1 responsibilities IN STRICT ORDER —
 1. body normalization (413 pre-decode), 2. HMAC verify (401), 3. event-type
-gate, 4. action filter incl. `reopened` [D1] + draft skip, 5. dedup GetItem,
+gate, 4. action filter incl. `reopened` + draft skip, 5. dedup GetItem,
 6. SQS SendMessage (500 without marking), 7. PutItem `delivery:{guid}` with
 7-day TTL, 8. empty-body 202.
 
 Response contract: the body is always empty; the status code is the entire
-contract (HLD §2.1 table).
+contract (ARCHITECTURE.md §2.1 table).
 
-Secret hydration (carry-forward ⑨): the HLD §5.1 ingress grant is singular
+Secret hydration: the ARCHITECTURE.md §6.1 ingress grant is singular
 `ssm:GetParameter` on the webhook-secret parameter ONLY — ingress MUST NOT
 use the worker-side batched `GetParameters` hydration (`common.config`).
 The secret is fetched at cold start via singular `get_parameter`
 (WithDecryption) and cached warm with a 30-minute refresh; no SSM call sits
 on the 250 ms hot path after the first fetch.
 
-Injection points (HLD §4.4 item 3 — parallel-safe, no module-global state in
-tests): `handler(..., _ssm, _table, _sqs, _now, _secret)`. Production passes
+Injection points (parallel-safe, no module-global state in tests):
+`handler(..., _ssm, _table, _sqs, _now, _secret)`. Production passes
 nothing and boto3 clients are built lazily. An explicitly injected `_ssm`
 always fetches (cache bypassed) so tests stay deterministic; an explicitly
 injected `_secret` skips SSM entirely. The warm-container cache
@@ -55,11 +55,11 @@ from common.state import build_delivery_item, delivery_pk
 
 logger = logging.getLogger(__name__)
 
-MAX_BODY_BYTES = 1_048_576  # 1 MiB — enforced PRE-DECODE (HLD §2.1 step 1)
+MAX_BODY_BYTES = 1_048_576  # 1 MiB — enforced PRE-DECODE (ARCH §2.1 step 1)
 
 ALLOWED_ACTIONS = frozenset({"opened", "synchronize", "ready_for_review", "reopened"})
 
-SECRET_TTL_SECONDS = 30 * 60  # warm-container refresh (HLD §2.1, mirrors §2.3 item 1)
+SECRET_TTL_SECONDS = 30 * 60  # warm-container refresh (ARCH §2.1)
 
 _SIGNATURE_PREFIX = "sha256="
 
@@ -78,7 +78,7 @@ def reset_secret_cache() -> None:
 
 
 def get_header(headers: Any, name: str) -> str | None:
-    """Case-insensitive header lookup (HLD §2.1 step 2)."""
+    """Case-insensitive header lookup (ARCHITECTURE.md §2.1 step 2)."""
     if not isinstance(headers, dict):
         return None
     wanted = name.lower()
@@ -121,7 +121,7 @@ def normalize_body(event: dict[str, Any]) -> bytes:
 
 
 def verify_signature(secret: str | bytes, raw: bytes, provided: Any) -> bool:
-    """Step 2: full-string constant-time compare (HLD §2.1 step 2, mode 2).
+    """Step 2: full-string constant-time compare (ARCHITECTURE.md §2.1).
 
     Compares the COMPLETE `"sha256=" + hexdigest` strings via a single
     `hmac.compare_digest` call — no prefix compare, no early-exit equality.
@@ -136,7 +136,8 @@ def verify_signature(secret: str | bytes, raw: bytes, provided: Any) -> bool:
 
 
 def _fetch_secret(ssm: Any, secret_name: str) -> str:
-    """Singular `get_parameter` hydration — never batched (see ⑨ above)."""
+    """Singular `get_parameter` hydration — never batched (see module
+    docstring)."""
     response = ssm.get_parameter(Name=secret_name, WithDecryption=True)
     return response["Parameter"]["Value"]
 
@@ -146,7 +147,7 @@ def get_webhook_secret(
     secret_name: str = WEBHOOK_SECRET_NAME,
     now: float | None = None,
 ) -> str:
-    """Cold-start fetch + 30-minute warm-container cache (HLD §2.1)."""
+    """Cold-start fetch + 30-minute warm-container cache (ARCH §2.1)."""
     current = time.time() if now is None else now
     cached = _SECRET_CACHE["value"]
     if cached is not None and (current - _SECRET_CACHE["fetched_at"]) < SECRET_TTL_SECONDS:
@@ -206,7 +207,7 @@ def build_envelope_body(payload: Any, delivery_guid: str) -> str | None:
 
 def _respond(status: int, *, decision: str, reason: str) -> dict[str, Any]:
     """Return the empty-body response and emit one structured ingress status
-    line (G6-F3, SPR-62) via `common.logs` — the single logging path.
+    line via `common.logs` — the single logging path.
 
     Every disposition logs (`statusCode` + `decision` + `reason`): the
     ingress-401-spike alarm's metric filter matches
@@ -234,7 +235,7 @@ def handler(
     _now: Callable[[], float] | None = None,
     _secret: str | None = None,
 ) -> dict[str, Any]:
-    """Function-URL proxy event → HTTP response (HLD §2.1, strict order)."""
+    """Function-URL proxy event → HTTP response (ARCH §2.1, strict order)."""
     # --- step 1: body normalization (413 pre-decode) -------------------------
     try:
         raw = normalize_body(event)

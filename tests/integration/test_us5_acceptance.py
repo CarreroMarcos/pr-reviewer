@@ -1,4 +1,4 @@
-"""T057: US5 live acceptance harness (quickstart j, l, l2, m, n; SC-006; D2/D3).
+"""US5 live acceptance harness (quickstart j, l, l2, m, n; SC-006; D2/D3).
 
 Phased live drill over the deployed stack's failure-notice machinery.
 Phases run IN ORDER (each idempotent/resumable via a state file):
@@ -26,9 +26,8 @@ Phases run IN ORDER (each idempotent/resumable via a state file):
         M2 recv#4 push S2 (webhook delivery M3 fails, recovers post-revert)
         M2 recv#5 superseded AT ESTABLISH (M3 rewrote last_seen ~12 min
                    earlier) — stale-delivery rejection [m]
-        M3 recv#4 adaptive timed push S3 (SPR-65 establish-observed gate:
-                    residual measured from observed retry intervals; the old
-                    r4+717s arithmetic survives only as the logged comparison delta)
+        M3 recv#4 adaptive timed push S3 (establish-observed gate:
+                    residual measured from observed retry intervals)
                    inside M3's #5 establish->notice-fence window (driver-executed
                    so it survives the ~15-min AWS credential windows)
         M3 recv#5 notice fence sees live==S3 -> skipped-stale [m]; M3 -> DLQ
@@ -63,10 +62,9 @@ Safety notes (read before running):
 - Injected envelopes are schema-valid v1 (same shape as the ingress), so
   DLQ poisoning is structurally impossible.
 
-Opt-in gate: every test SKIPS unless ACCEPTANCE_LIVE=1 AND the phase env
-matches, so the default `pytest -q` path stays green. The T057 verify is
-the four phases run in order against the live stack (commands in the PR
-evidence).
+Opt-in gate: every test skips unless ACCEPTANCE_LIVE=1 AND the phase env
+matches, so the default `pytest -q` path stays green. The verify is
+the four phases run in order against the live stack.
 
 Env config (defaults match the current live stack):
 
@@ -229,8 +227,8 @@ def _load_state() -> dict[str, Any]:
 def _save_state() -> None:
     # Merge-save: the driver's push watcher writes sha3/t_s3 into this
     # file while a harness process is live; a blind whole-file write
-    # clobbers them (observed live 2026-09-14). Disk keys the loaded
-    # snapshot never had survive; harness keys win on conflict.
+    # clobbers them. Disk keys the loaded snapshot never had survive;
+    # harness keys win on conflict.
     #
     # The secret assert runs on IN-MEMORY state BEFORE merge/scrub: a
     # secret-shaped key must fail LOUD here, never be silently scrubbed.
@@ -740,40 +738,36 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
     # skipped-stale; only then restore the endpoint so recovery traffic
     # succeeds.
     #
-    # Target: S2's OWN webhook delivery ("M3", head==sha2). The injected
-    # M2 (head==sha1) is deterministically superseded AT ESTABLISH when
+    # Target: S2's own webhook delivery ("M3", head==sha2). The injected
+    # M2 (head==sha1) is deterministically superseded at establish when
     # its #5 arrives, because M3's establish rewrote last_seen ~12 min
-    # earlier (observed live; that rejection is asserted in the asserts
-    # phase). M3 keeps the equality path to #5, so its final-attempt
-    # notice runs — and the notice's fence must then see a head NEWER
-    # than sha2.
+    # earlier (that rejection is asserted in the asserts phase). M3 keeps
+    # the equality path to #5, so its final-attempt notice runs — and the
+    # notice's fence must then see a head newer than sha2.
     #
-    # Timing (SPR-65 adaptive establish-observed gate): receive #5 lands
-    # ~5400s after receive #4 (visibility), and the #4 log line is emitted
-    # ~2-3s INTO that receive. The old fixed arithmetic scheduled the push
-    # at r4_ts + 717s (~0.5s into the #5 processing window); the gate below
-    # instead MEASURES the residual from the observed retry intervals
-    # (median log-to-log cycle minus ~2s of end-of-processing offset), so
-    # slow cold starts push later and fast ones sooner while the push still
-    # lands inside the #5 establish->notice-fence window.
-    # The dead-port connect fails in ~1-2s, so the notice's fence reads
-    # ~3-4s after establish — after the push (GitHub's ref moves at push
-    # time, before M3's own delivery even establishes). Both
-    # establish-level superseded and fence-level stale of the NOTICE map
-    # to skipped-stale, so the choreography wins on either route. The
-    # push runs in the DRIVER (gh creds outlive the ~15-min AWS windows):
-    # the harness records push_at in the state file and the driver
-    # executes it, so the timed push survives pytest credential deaths.
+    # Timing (adaptive establish-observed gate): receive #5 lands ~5400s
+    # after receive #4 (visibility), and the #4 log line is emitted
+    # ~2-3s into that receive. The gate measures the residual from the
+    # observed retry intervals (median log-to-log cycle minus ~2s of
+    # end-of-processing offset), so slow cold starts push later and fast
+    # ones sooner while the push still lands inside the #5
+    # establish->notice-fence window. The dead-port connect fails in
+    # ~1-2s, so the notice's fence reads ~3-4s after establish — after
+    # the push (GitHub's ref moves at push time). Both establish-level
+    # superseded and fence-level stale of the notice map to
+    # skipped-stale, so the choreography wins on either route. The push
+    # runs in the driver (gh creds outlive the ~15-min AWS windows): the
+    # harness records push_at in the state file and the driver executes
+    # it, so the timed push survives pytest credential deaths.
     #
-    # INVARIANT — why r4 (non-final) is the gate anchor: r4 still has a
+    # Invariant — why r4 (non-final) is the gate anchor: r4 still has a
     # next retry coming (#5), so a push scheduled off its observed line
     # lands while the race is still live and #5's fence can go stale. A
-    # gate anchored on the FINAL receive's establish would fire the push
-    # after the record's review already completed (post-terminal): the M3
-    # skipped-stale line could then never trigger again and the (m) drill
-    # would go green forever while proving nothing. The M3 skipped-stale
-    # and M2 superseded-at-establish asserts are byte-identical in force:
-    # this gate may change WHEN the S3 push fires, never WHAT is asserted.
+    # gate anchored on the final receive's establish would fire the push
+    # after the record's review already completed (post-terminal): the
+    # M3 skipped-stale line could then never trigger again and the (m)
+    # drill would go green while proving nothing. This gate may change
+    # when the S3 push fires, never what is asserted.
     if "t_restore" not in drill:
         since_f = drill["t_s2"] - 10
 
@@ -795,9 +789,9 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
             )
             # Deterministic pick: most retry_queued attempts wins; ties
             # break on the lexicographically smallest GUID. max() over the
-            # scan-ordered counts dict was nondeterministic under stream
-            # rotation (same input set, different schedule per run). Compute
-            # once — the old key-function re-scanned CloudWatch per
+            # scan-ordered counts dict is nondeterministic under stream
+            # rotation (same input set, different schedule per run).
+            # Compute once — a key-function would re-scan CloudWatch per
             # comparison.
             counts = _cyclers()
             drill["m3_guid"] = sorted(counts, key=lambda g: (-counts[g], g))[0]
@@ -820,7 +814,7 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
         if len(observed) < 4:
             # Fresh-scan regression guard: the poll above converged, so a
             # short re-read means CloudWatch rotation/skew, not absence.
-            # Fail LOUD — never fall back to the old arithmetic silently.
+            # Fail loud — never fall back to the old arithmetic silently.
             pytest.fail(
                 f"SPR-65 gate: r4 converged but fresh scan shows "
                 f"{len(observed)} retry lines (need 4)",
@@ -832,13 +826,13 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
             gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:], strict=False)]
             ordered = sorted(gaps)
             median_gap = ordered[len(ordered) // 2]
-            # Log lines mark END of processing; the next receive starts one
-            # visibility cycle after this receive's START (~2-3s before its
+            # Log lines mark end of processing; the next receive starts one
+            # visibility cycle after this receive's start (~2-3s before its
             # log on the dead-port path). Land the push ~1s after the
             # predicted #5 establish: residual = median cycle - 2s, clamped
             # to [700, 725]s so a skewed scan cannot throw the push outside
-            # the establish->fence window. The old fixed 717.0s survives
-            # only as the logged comparison delta, never as a fallback.
+            # the establish->fence window. The fixed 717.0s survives only
+            # as the logged comparison delta, never as a fallback.
             residual = min(max(median_gap - 2.0, 700.0), 725.0)
             drill["push_at"] = r4_ts + residual
             drill["push_note"] = "us5-s3"
@@ -881,11 +875,11 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
     if "t_n" not in drill:
         if "t_recovery_probe" not in drill:
             # The exhausted delivery sits in the DLQ with nobody left to
-            # recover the CLAIMED state (observed live: after its #5 the
-            # remaining receives crashed on a corrupt key value and
-            # exhausted maxReceiveCount). (n)'s mechanism is "a
-            # post-refetch receive succeeds" — inject one fresh delivery
-            # at the live head to prove the revert end-to-end.
+            # recover the CLAIMED state (after its #5, its remaining
+            # receives crash on a corrupt key value and exhaust
+            # maxReceiveCount). (n)'s mechanism is "a post-refetch
+            # receive succeeds" — inject one fresh delivery at the live
+            # head to prove the revert end-to-end.
             live = _gh_api(f"repos/{REPO}/pulls/{PR_NUMBER}")
             drill["recovery_sha"] = str(live["head"]["sha"])
             drill["recovery_guid"] = _inject(drill["recovery_sha"], str(live["base"]["sha"]))
@@ -927,7 +921,7 @@ def _drill_flip_to_restore(drill: dict[str, Any]) -> None:
         _STATE["n_observed"] = observed
         drill["n_head"] = observed["head"]
         if observed["head"] != drill["sha2"]:
-            drill["sha3"] = observed["head"]  # a recovery push was needed
+            drill["sha3"] = observed["head"]
         drill["t_n"] = time.time()
         _save_state()
 

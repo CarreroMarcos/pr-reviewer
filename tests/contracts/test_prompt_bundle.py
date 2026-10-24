@@ -1,4 +1,4 @@
-"""Prompt-bundle presence contract (T064).
+"""Prompt-bundle presence contract.
 
 `_load_fanout_prompts` resolves every `_FANOUT_PROMPT_FILES` entry
 against the repo `prompts/` directory at runtime; a missing or renamed
@@ -6,7 +6,7 @@ file is a permanent `ConfigError` → worker alert on the first review
 after the bad merge. This row catches that at PR time: every manifest
 entry must exist in the repo with non-empty, decodable UTF-8 content.
 (The zip-packaging half — repo prompts reaching worker.zip — is the
-T068 contract in test_terraform_prompt_packaging.py.)
+contract in test_terraform_prompt_packaging.py.)
 """
 
 from pathlib import Path

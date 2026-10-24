@@ -389,8 +389,7 @@ def test_401_then_timeout_duration_covers_only_the_timed_out_attempt(caplog):
     """Scripted advancing clock, 401 → timeout → retry fires: the
     `llm_timeout_retry` line's `duration_ms` is anchored at the REFRESHED
     attempt (re-anchored after the 401 re-fetch), so it measures only the
-    attempt that timed out — never the 401 round trip + attempt total
-    (Gate #88 advisory A1).
+    attempt that timed out — never the 401 round trip + attempt total.
 
     Clock reads inside `_call_llm`: (1) original anchor 100.0 s, (2)
     re-anchor 200.0 s after the 401 refresh, (3) attempt-window close

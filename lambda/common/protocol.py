@@ -1,4 +1,4 @@
-"""Fenced publication executor (HLD §3.3, exact order).
+"""Fenced publication executor (ARCHITECTURE.md §3.2, exact order).
 
 Runs establish → review(callback) → claim → fence(callback) → publish(callback)
 → conditional finalize, composing ONLY the merged `common.state` expression
@@ -33,7 +33,7 @@ concurrent writer owns the record — never overwrite, never hang).
 
 Claim, fence, and finalize are single-shot: no retry, just a typed outcome.
 
-Flagged interpretations for the review gate:
+Interpretations:
 
 * Self-held lease after establish: establish (a)/(c) grants the caller a live
   lease, so the verbatim step-3 claim condition (`claim_until < :now OR
@@ -42,27 +42,29 @@ Flagged interpretations for the review gate:
   point); on failure it re-reads, and when head+generation still match and
   `claim_owner` is still self, exclusivity already holds and it proceeds to
   the fence. Any other failure (moved head/generation → stale; live lease
-  held by another owner → claim-held) discards. HLD §3.3 does not name the
-  self-claim case; this reading preserves the exact step order and the
-  never-overwrite rule.
+  held by another owner → claim-held) discards. ARCHITECTURE.md §3.2
+  does not name the self-claim case; this reading preserves the exact
+  step order and the never-overwrite rule.
 * Establish (b) is a true no-op write: the conditional guard
   (`last_seen_sha = :sha`) is evaluated, but the written values are the stored
   ones, so an idempotent re-delivery mutates nothing. This keeps the
   mismatch-discards-leave-the-record-unchanged invariant on paths that
   establish (b) and then discard at claim.
 * Fence mismatch after claim leaves the record CLAIMED (no release write):
-  HLD §3.3 step 4 says only "Mismatch → discard as stale"; the claim lease
-  expiry (HLD §3.2, widened to the review budget by T047) is the recovery path.
+  ARCHITECTURE.md §3.2 step 4 says only "Mismatch → discard as stale";
+  the claim lease expiry (ARCHITECTURE.md §3.1) is the recovery path.
 * A superseded establish records the observation: `last_seen_sha` advances
-  to the incoming SHA via `build_advance_last_seen_expressions` (HLD §3.3
-  step 1 — the most recently observed webhook SHA is recorded regardless
-  of acceptance), guarded on equality with the value the attempt read so a
+  to the incoming SHA via `build_advance_last_seen_expressions`
+  (ARCHITECTURE.md §3.2 step 1 — the most recently observed webhook SHA
+  is recorded regardless of acceptance), guarded on equality with the
+  value the attempt read so a
   concurrent accept retries the loop instead of dragging `last_seen_sha`
   backward. ONLY `last_seen_sha` moves; head, generation, lease, and
   comment are untouched.
 * Stale `comment_id` is cleared on re-establish: establish (c) emits
-  `REMOVE comment_id` (HLD §3.1 — `comment_id` is present only on ACTIVE
-  records), so the ACTIVE → CLAIMED transition leaves the record decodable
+  `REMOVE comment_id` (ARCHITECTURE.md §3.1 — `comment_id` is present
+  only on ACTIVE records), so the ACTIVE → CLAIMED transition leaves the
+  record decodable
   by `from_item`. The executor never reads `comment_id`; finalize sets it
   on success.
 
@@ -142,7 +144,8 @@ def run_review(
     publish: Callable[[Any], int],
     max_establish_attempts: int = DEFAULT_MAX_ESTABLISH_ATTEMPTS,
 ) -> Outcome:
-    """Execute the HLD §3.3 fenced publication protocol for one delivery.
+    """Execute the ARCHITECTURE.md §3.2 fenced publication protocol for
+    one delivery.
 
     `owner` is the raw delivery GUID (becomes `claim_owner`). Returns an
     `Outcome`; conditional mismatches discard, never overwrite.
@@ -183,8 +186,8 @@ def run_review(
         if resolved is not None:
             return resolved
         # Self still holds head+generation: exclusivity already holds
-        # (flagged interpretation — see module docstring). Fall through to
-        # the fence, strictly after this claim attempt.
+        # (see module docstring). Fall through to the fence, strictly
+        # after this claim attempt.
 
     if fence() != head_sha:
         # Fence mismatch → discard as stale. Publish is never called and the
@@ -236,7 +239,8 @@ def _establish(
     fence: Callable[[], str],
     max_attempts: int,
 ) -> tuple[str, int] | Outcome:
-    """Establish step (HLD §3.3 step 1): success returns (head_sha, generation).
+    """Establish step (ARCHITECTURE.md §3.2 step 1): success returns
+    (head_sha, generation).
 
     Failure returns an `Outcome`: superseded when the incoming SHA is not the
     live head (the observation is still recorded via `_observe_superseded` —
@@ -273,8 +277,8 @@ def _establish(
 
 
 def _observe_superseded(pk: str, incoming_sha: str, seen_at_read: Any, table: Any) -> None:
-    """Record a superseded event's SHA as the latest observation (HLD §3.3
-    step 1; US3.AC1): ONLY `last_seen_sha` advances. TRUE semantics: a
+    """Record a superseded event's SHA as the latest observation
+    (ARCHITECTURE.md §3.2 step 1): ONLY `last_seen_sha` advances. A
     concurrent accept does not delete the record (no delete path exists on
     review records — the ingress delivery-item write is the sole `put_item`
     in the system), so there is nothing to guard against deletion; instead
@@ -284,7 +288,7 @@ def _observe_superseded(pk: str, incoming_sha: str, seen_at_read: Any, table: An
     is never forced over a newer record, and `last_seen_sha` can never be
     dragged backward off the (b) idempotent path.
 
-    Fault semantics (Gate-3 F3): the observation is a metric, never
+    Fault semantics: the observation is a metric, never
     correctness. `ConditionalCheckFailed` propagates (the loop retries —
     correctness path); any OTHER fault (throttle/transport) is caught, a
     coded warning is logged via the module logger (codebase warning
@@ -336,9 +340,9 @@ def _establish_first_write(
 def _establish_equality(
     pk: str, incoming_sha: str, item: dict[str, Any], table: Any, now: Callable[[], int]
 ) -> tuple[str, int]:
-    # Idempotent re-delivery: evaluate the (b) guard but write back the stored
-    # values, so the record is byte-identical afterwards (flagged — see module
-    # docstring). Fall back to the current clock only if the stored item
+    # Idempotent re-delivery: evaluate the (b) guard but write back the
+    # stored values, so the record is byte-identical afterwards (see
+    # module docstring). Fall back to the current clock only if the stored item
     # predates the `updated_at` contract (never true for codec-written items).
     update, condition, values = build_establish_equality(
         incoming_sha=incoming_sha,
@@ -383,7 +387,7 @@ def _resolve_claim_failure(
 
     None (proceed to fence) applies only when the re-read shows head and
     generation unmoved and the lease still held by the caller — the establish
-    grant already gives exclusivity (flagged interpretation). A failure with a
+    grant already gives exclusivity. A failure with a
     live lease held by another owner can only follow the (b) path (a)/(c)
     always grant self), so no overwrite is possible on any branch.
     """

@@ -1,15 +1,15 @@
-"""T039 out-of-band multi-agent capture (HLD D8 True A/B Call Count).
+"""Out-of-band multi-agent capture (ARCHITECTURE.md §5.4).
 
-Human-run tool that executes the FULL multi-agent pipeline
+Human-run tool that executes the full multi-agent pipeline
 (`common.fanout.run_fanout` — budget gates, nonce authority, clamp, IDs,
 all five legs) per corpus case x 3 runs, then pins each run's comment,
 verifier verdict, stage events, latencies, and embedding vectors
-to `pinned_multi_agent.json` for the offline scorer (T040).
+to `pinned_multi_agent.json` for the offline scorer.
 
-NEVER in any request-serving path: this module is imported only by its
-own smoke tests (stub-injected) and run by humans out-of-band (T045).
+Never in any request-serving path: this module is imported only by its
+own smoke tests (stub-injected) and run by humans out-of-band.
 CI makes zero external calls. Runtime surface is stdlib + boto3 only
-(Constitution II — no numpy/torch; cosine lives in the scorer).
+(no numpy/torch; cosine lives in the scorer).
 
 Usage (after `aws login` + exported creds)::
 
@@ -24,11 +24,12 @@ Design notes (all load-bearing, all pinned by the smoke tests):
 * The harness drives the REAL `run_fanout` with an injected `review_fn`
   (live: `llm.review_diff`; smoke: scripted legs) — the sequencer, not a
   reimplementation, so gate/nonce/clamp behavior is production-faithful.
-* Candidates are recovered from the RECORDED verifier prompt's
-  `CANDIDATE_FINDINGS` block (HLD §5 item 1 verbatim tags, round-trip
-  contract) via a shared extractor — the verdict echoes IDs only, so the
-  block is the sole candidate-text source. Killed finding text resolves
-  through the candidate map (killed items carry `candidate_id` only).
+* Candidates are recovered from the recorded verifier prompt's
+  `CANDIDATE_FINDINGS` block (ARCHITECTURE.md §5.2 verbatim tags,
+  round-trip contract) via a shared extractor — the verdict echoes IDs
+  only, so the block is the sole candidate-text source. Killed finding
+  text resolves through the candidate map (killed items carry
+  `candidate_id` only).
 * Embedding text contract (scorer consumes vectors, never text):
   candidate/killed text = `"{title}. {description}"`; manifest finding
   text = the finding `hint` slug (embedding vectors are semantic — the slug
@@ -39,14 +40,15 @@ Design notes (all load-bearing, all pinned by the smoke tests):
   a fixed 850s-equivalent remaining source — inside a real Lambda
   budget, above every gate total, so gate LOGIC stays exercised without
   faking per-stage outcomes.
-* Cases run SEQUENTIALLY (checkpoint-friendly); wall-clock claims always
-  state `FANOUT_CONCURRENCY=3` beside the number (HLD wall-time rule).
-* A failed run (`FanoutDegraded`) is RECORDED with its error and empty
-  comment — never aborts the batch (a 19h unattended run must survive
-  one bad leg). No separate error penalty exists in HLD D8: scored
-  through the standard functions, an empty comment contributes 0 hits
-  (recall miss) and precision 0.0 on defect cases (`scoring.score_output`
-  convention) — gates 1-2 count the miss mechanically.
+* Cases run sequentially (checkpoint-friendly); wall-clock claims always
+  state `FANOUT_CONCURRENCY=3` beside the number — a bare duration is
+  not a claim.
+* A failed run (`FanoutDegraded`) is recorded with its error and empty
+  comment — never aborts the batch (a long unattended run must survive
+  one bad leg). No separate error penalty exists (ARCHITECTURE.md §5.4):
+  scored through the standard functions, an empty comment contributes
+  0 hits (recall miss) and precision 0.0 on defect cases
+  (`scoring.score_output` convention) — gates 1-2 count the miss.
 """
 
 from __future__ import annotations
@@ -95,9 +97,9 @@ _CANDIDATE_BLOCK_RE = re.compile(
 )
 _CANDIDATE_MARKER = "<<<CANDIDATE_FINDINGS"
 _END_CANDIDATE_MARKER = "<<<END_CANDIDATE_FINDINGS"
-# HLD verbatim-tag delimiter literals: a corpus diff or manifest
-# containing these would be parsed as candidate structure (live AND
-# smoke alike) — the pre-flight scan warns, never aborts.
+# Verbatim-tag delimiter literals (ARCHITECTURE.md §5.2): a corpus diff
+# or manifest containing these would be parsed as candidate structure
+# (live and smoke alike) — the pre-flight scan warns, never aborts.
 _DELIMITER_LITERALS = (_CANDIDATE_MARKER, _END_CANDIDATE_MARKER)
 
 _PROMPT_FILES = {
@@ -259,16 +261,14 @@ def _embed_error_retryable(exc: Exception) -> bool:
 
 
 def ollama_embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed texts with local Ollama `nomic-embed-text` (HLD D8 Offline
-    Embedding Rule — live model at capture time, never CI; provider
-    amended by Mars ruling 2026-09-28 after Bedrock on-demand proved
-    suppressed account-wide).
+    """Embed texts with local Ollama `nomic-embed-text` (ARCHITECTURE.md
+    §5.4: embeddings are generated only in this out-of-band harness,
+    never in CI or a request-serving path).
 
-    Texts embed SERIALLY (checkpoint-friendly; Gate 22 pinned serial —
-    the overnight gap was NO RETRY, not concurrency). Each request
-    retries transient failures (connection errors, timeouts, 429/5xx)
-    with 2s doubling backoff capped at 32s, 6 attempts total; the final
-    failure re-raises. Client errors (4xx) fail fast with no sleep."""
+    Texts embed serially (checkpoint-friendly). Each request retries
+    transient failures (connection errors, timeouts, 429/5xx) with 2s
+    doubling backoff capped at 32s, 6 attempts total; the final failure
+    re-raises. Client errors (4xx) fail fast with no sleep."""
     vectors = []
     for text in texts:
         delay = EMBED_BASE_DELAY_S
@@ -414,12 +414,11 @@ def run_case(
         texts = [text for _, text in requests]
         got = embed_fn(texts)
         vectors = dict(zip([key for key, _ in requests], got, strict=True))
-    # HLD-004 §5 item 5: the harness records the SHIPPED comment —
-    # the same sanitize() the worker applies before PATCH — so the
-    # eval floors measure shipped behavior, not raw model text.
-    # Gate-54 Finding 2: SanitizeError (NUL in model output — never
-    # observed in corpus history) must not abort the batch; record the
-    # raw comment so floors fail loudly on the evidence instead.
+    # HLD-004 §5 item 5: the harness records the shipped comment — the
+    # same sanitize() the worker applies before PATCH — so the eval
+    # floors measure shipped behavior, not raw model text. SanitizeError
+    # (NUL in model output) must not abort the batch; record the raw
+    # comment so floors fail loudly on the evidence instead.
     try:
         shipped_comment = sanitize(comment)
     except SanitizeError:
@@ -446,11 +445,11 @@ def run_case(
 
 
 def preflight_delimiter_scan(case_ids: list[str]) -> list[str]:
-    """T045 pre-flight: scan each case's diff text + manifest for the
-    HLD verbatim-tag delimiter literals. A hit means fixture bytes would
-    parse as candidate structure (in live capture AND in smoke) — warn
-    loudly (one line per hit) and return the hits, but NEVER abort: the
-    run proceeds, and the gate rules on the returned list."""
+    """Pre-flight: scan each case's diff text + manifest for the
+    verbatim-tag delimiter literals (ARCHITECTURE.md §5.2). A hit means
+    fixture bytes would parse as candidate structure (in live capture
+    and in smoke) — warn loudly (one line per hit) and return the hits,
+    but never abort: the run proceeds, and the gate rules on the list."""
     hits: list[str] = []
     for case_id in case_ids:
         diff_text, manifest, _ = fixtures.CORPUS[case_id]()
@@ -472,11 +471,11 @@ def preflight_delimiter_scan(case_ids: list[str]) -> list[str]:
 
 
 def wall_claim(wall_s: float, fanout_concurrency: int, n_runs: int) -> str:
-    """Wall-clock claim WITH the assumed parallelism stated beside it
-    (HLD wall-time rule — a bare duration is not a claim). Per-run
-    `latency_ms` stops at pipeline return and EXCLUDES embedding
-    time — the p95(low)-vs-p95(default) effort comparison measures
-    pipeline latency, never embedding latency."""
+    """Wall-clock claim with the assumed parallelism stated beside it
+    — a bare duration is not a claim. Per-run `latency_ms` stops at
+    pipeline return and excludes embedding time — the
+    p95(low)-vs-p95(default) effort comparison measures pipeline
+    latency, never embedding latency."""
     return (
         f"{wall_s:.1f}s wall for {n_runs} case-runs "
         f"(FANOUT_CONCURRENCY={fanout_concurrency}, cases sequential; "
@@ -574,15 +573,12 @@ def _live_review_fn(api_key: str, model: str, endpoint: str):
     """Production-faithful leg caller: direct `llm.review_diff` with the
     hydrated credentials (same call the worker's stages make).
 
-    `run_fanout` passes api_key/model/endpoint explicitly on every call
-    (lambda/common/fanout.py:178-180), so caller kwargs merge OVER the
-    pre-bound closure creds — but a caller cred that DISAGREES with the
-    hydrated one raises (bot R1, PR #137): silent divergence would
-    discard the SSM-hydrated creds, so one source of truth is enforced.
-    The pre-bind originally double-bound those kwargs — TypeError per
-    leg in ~0ms, invisible to the stub smoke (stub legs accept
-    **kwargs) and to CI (no external calls); first exercised by the
-    first live capture 2026-09-28."""
+    `run_fanout` passes api_key/model/endpoint explicitly on every call,
+    so caller kwargs merge over the pre-bound closure creds — but a
+    caller cred that disagrees with the hydrated one raises: silent
+    divergence would discard the SSM-hydrated creds, so one source of
+    truth is enforced. (Double-binding these kwargs raises TypeError
+    per leg, invisible to stub legs that accept **kwargs.)"""
 
     def _call(**kwargs):
         for name, bound in (("api_key", api_key), ("model", model), ("endpoint", endpoint)):
@@ -695,7 +691,7 @@ def main(
     merged = dict(prior.get("cases", {}))
     for cid, rec in cases_out.items():
         if not rec["runs"] and cid in merged:
-            continue  # fully resumed: keep the pinned runs
+            continue
         merged[cid] = rec
     model_label = model if _creds is None else "stub"
     # Meta honesty across invocations: the scalar fields describe THIS
@@ -743,17 +739,15 @@ def main(
     )
     done = stats["runs_completed"]
     skipped = stats["runs_skipped"]
-    # Errored runs counted over the WHOLE pin (merged, resumed included):
+    # Errored runs counted over the whole pin (merged, resumed included):
     # "pinned_multi_agent.json complete" means zero errored runs anywhere
     # in it. __main__ exits 1 iff this is nonzero — a garbage pin must
-    # never look like a clean capture (2026-09-28: a 72-shell all-errored
-    # pin exited 1 only by the SystemExit(dict) accident, and a CLEAN
-    # capture exited 1 by the same accident).
+    # never look like a clean capture.
     errored = sum(
         1
         for rec in merged.values()
         for run in rec["runs"]
-        if run.get("error") is not None  # bot R2 #137: falsy-but-set errors count too
+        if run.get("error") is not None  # falsy-but-set errors count too
     )
     print(f"pinned {done} runs ({skipped} resumed) -> {output_path}")
     print(pinned["meta"]["wall_clock_note"])

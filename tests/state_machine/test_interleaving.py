@@ -1,5 +1,4 @@
-"""T038: rapid-push interleaving at the worker boundary (US2.AC2; HLD §3.3;
-FR-014–FR-016).
+"""Rapid-push interleaving at the worker boundary (ARCH §3.2).
 
 Drives the REAL `worker_handler.handler` with scripted collaborators to pin
 the three US2.AC2 clauses for two revisions pushed in rapid succession:

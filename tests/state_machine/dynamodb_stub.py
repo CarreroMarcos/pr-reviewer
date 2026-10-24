@@ -1,37 +1,38 @@
 """In-memory DynamoDB stub for state-machine protocol tests (HLD §4.4 item 2).
 
 Stores plain dicts keyed by `pk` and evaluates the EXACT ConditionExpression
-strings emitted by the `common.state` expression builders (Gate 2 ruled those
-exact strings ARE the contract). Update application is a tiny
-`SET attr = :val` applier (resolving `#st` via ExpressionAttributeNames)
-covering the builder update shapes — nothing more.
+strings emitted by the `common.state` expression builders — those exact
+strings are the contract. Update application is a tiny `SET attr = :val`
+applier (resolving `#st` via ExpressionAttributeNames) covering the builder
+update shapes — nothing more.
 
 Evaluator vocabulary (exactly the builder vocabulary — NOT a general
 expression parser):
 
 * ``attribute_not_exists(pk)`` — establish (a) first write
-* ``last_seen_sha = :seen_at_read`` — superseded-event observation (HLD §3.3
-  step 1, US3.AC1; builder `common.state.build_advance_last_seen_expressions`;
-  equality with the read value, so a concurrent accept fails the guard and
-  retries instead of dragging `last_seen_sha` backward)
+* ``last_seen_sha = :seen_at_read`` — superseded-event observation
+  (ARCH §3.2 step 1; builder
+  `common.state.build_advance_last_seen_expressions`; equality with the
+  read value, so a concurrent accept fails the guard and retries instead
+  of dragging `last_seen_sha` backward)
 * ``last_seen_sha = :sha`` — establish (b) idempotent equality
 * ``generation = :expected_gen`` — establish (c) live-head confirm
 * ``head_sha = :reviewed AND generation = :gen AND (claim_until < :now OR
-  attribute_not_exists(claim_owner))`` — claim (HLD §3.3 step 3 verbatim)
+  attribute_not_exists(claim_owner))`` — claim (ARCH §3.2 step 3 verbatim)
 * ``head_sha = :reviewed AND generation = :gen AND (claim_until < :now OR
   attribute_not_exists(claim_owner) OR claim_owner = :owner) AND
-  attribute_not_exists(comment_id)`` — creation lease (HLD §3.4; the
-  `claim_owner = :owner` disjunct is the flagged self-holder reading
-  documented in `common.reconcile`)
+  attribute_not_exists(comment_id)`` — creation lease (ARCH §3.3; the
+  `claim_owner = :owner` disjunct is the self-holder reading documented
+  in `common.reconcile`)
 * ``head_sha = :reviewed AND generation = :gen AND comment_id = :dead`` —
-  dead-id clear (HLD §2.3 item 8 PATCH-404 row; builder
+  dead-id clear (ARCH §2.3 PATCH-404 row; builder
   `common.state.build_clear_comment_expressions`)
 * ``head_sha = :reviewed AND generation = :gen AND claim_owner = :owner`` —
-  finalize (HLD §3.3 step 6; SPR-63 owner guard: only the lease holder's
+  finalize (ARCH §3.2 step 6; owner guard: only the lease holder's
   finalize releases the lease)
-* ``attribute_not_exists(pk) OR lease_until < :steal_before`` — HLD-004
-  D9 mutex acquire/takeover (T027; missing-`lease_until` compares false)
-* ``token = :token`` — HLD-004 D9 mutex refresh/release (T027)
+* ``attribute_not_exists(pk) OR lease_until < :steal_before`` — mutex
+  acquire/takeover (missing `lease_until` compares false)
+* ``token = :token`` — mutex refresh/release
 
 Any other condition (or a non-``SET`` update) raises ValueError loudly: a
 builder-string change must break tests, never pass silently.
@@ -65,9 +66,9 @@ _CREATION_LEASE_CONDITION = (
 )
 _CLEAR_COMMENT_CONDITION = "head_sha = :reviewed AND generation = :gen AND comment_id = :dead"
 _FINALIZE_CONDITION = "head_sha = :reviewed AND generation = :gen AND claim_owner = :owner"
-# HLD-004 D9 mutex vocabulary (T027): the mutex row lives in this same
-# state table, so the stub evaluates its two conditions exactly —
-# steal threshold on acquire, stored-token match on refresh/release.
+# Mutex vocabulary: the mutex row lives in this same state table, so
+# the stub evaluates its two conditions exactly — steal threshold on
+# acquire, stored-token match on refresh/release.
 _MUTEX_ACQUIRE_CONDITION = "attribute_not_exists(pk) OR lease_until < :steal_before"
 _MUTEX_TOKEN_CONDITION = "#tok = :token"  # noqa: S105 (expression shape, not a credential)
 
@@ -136,9 +137,9 @@ class InMemoryTable:
         ExpressionAttributeNames: dict[str, str] | None = None,
         ExpressionAttributeValues: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Conditional row removal (HLD-004 D9 mutex release): same
-        declared-but-unused rejection and `ConditionalCheckFailed`
-        semantics as `update_item`; a met condition deletes the row."""
+        """Conditional row removal (mutex release): same declared-but-unused
+        rejection and `ConditionalCheckFailed` semantics as `update_item`;
+        a met condition deletes the row."""
         pk = Key["pk"]
         expr_text = f"{ConditionExpression}"
         unused_names = set((ExpressionAttributeNames or {}).keys()) - set(
@@ -210,9 +211,9 @@ def _condition_holds(
             and current.get("claim_owner") == values[":owner"]
         )
     if condition == _MUTEX_ACQUIRE_CONDITION:
-        # HLD-004 D9 mutex acquire/takeover: missing row steals via arm 1;
-        # a present row needs arm 2 with a PRESENT lease_until (a
-        # comparison against a missing attribute is false in DynamoDB).
+        # Mutex acquire/takeover: missing row steals via arm 1; a present
+        # row needs arm 2 with a PRESENT lease_until (a comparison against
+        # a missing attribute is false in DynamoDB).
         return current is None or (
             current.get("lease_until") is not None
             and current["lease_until"] < values[":steal_before"]

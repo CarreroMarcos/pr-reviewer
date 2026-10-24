@@ -1,8 +1,8 @@
 """GitHub diff fetch + shape validation + budget + lockfile summaries.
 
-HLD §2.3 items 2–4; FR-013; failure modes 16/18/19; Constitution II/III/VI.
+ARCHITECTURE.md §2.3; failure modes 16/18/19; Constitution II/III/VI.
 
-Item 2 — endpoints are CONSTRUCTED from the validated envelope identifiers
+Endpoints are CONSTRUCTED from the validated envelope identifiers
 (`repo_full_name` + `pr_number`); response-embedded or payload-supplied URLs
 are never used for navigation (failure mode 18), so the fetch surface has no
 URL parameter at all. Every request pins
@@ -11,37 +11,37 @@ User-Agent. PR-meta responses are shape-validated (HTTP 200, `head.sha`
 40-hex) before the value is returned for the live-head fence; anything else
 raises typed `DiffError`.
 
-Item 3 — deterministic pre-model budget: `MAX_FILES = 500`,
+Deterministic pre-model budget: `MAX_FILES = 500`,
 `MAX_CHANGED_LINES = 25_000` (additions + deletions),
 `MAX_INPUT_BYTES = 800_000` (UTF-8 patch bytes).
 
-Item 4 — lockfiles are excluded from review content and folded into a
-deterministic summary (sorted by filename, no timestamps: same input bytes
-→ byte-identical summary).
+Lockfiles are excluded from review content and folded into a
+deterministic summary (sorted by filename, no timestamps: same input
+bytes → byte-identical summary).
 
-Interpretations (HLD silent — flagged, conservative readings):
+Conservative readings where the spec is silent:
   1. Over-budget input is TRUNCATED deterministically (sorted-filename
-     order, first-fit within every cap) with `truncated=True`, not refused:
-     refusing would drop the whole review for one large PR, while silent
-     pass-through would breach the pre-model bound (failure mode 16).
-  2. Enforcement order is file-count → changed-lines → input-bytes, checked
-     per file in sorted-filename order.
-  3. `LOCKFILE_NAMES` is defined here: the HLD gives one example string, no
-     canonical list, so the set below (js/python/rust/go/ruby/php ecosystems
-     + `requirements.txt`) is the contract until the HLD names one.
-  4. `urlopen` takes a single timeout, so `TIMEOUT_SECONDS = 10` covers the
-     HLD §2.3 GitHub read budget (10 s); the 2 s connect split is
-     unexpressible in stdlib and documented here rather than silently claimed.
+     order, first-fit within every cap) with `truncated=True`, not
+     refused: refusing would drop the whole review for one large PR,
+     while silent pass-through would breach the pre-model bound.
+  2. Enforcement order is file-count → changed-lines → input-bytes,
+     checked per file in sorted-filename order.
+  3. `LOCKFILE_NAMES` is defined here: no canonical list is specified,
+     so the set below (js/python/rust/go/ruby/php ecosystems +
+     `requirements.txt`) is the contract.
+  4. `urlopen` takes a single timeout, so `TIMEOUT_SECONDS = 10` covers
+     the §2.3 GitHub read budget (10 s); the 2 s connect split is
+     unexpressible in stdlib and documented here rather than claimed.
   5. `/files` pagination uses constructed `?per_page=&page=` URLs only:
-     following `Link`-header URLs would violate failure mode 18. Fetching
-     stops at the first short page, at `MAX_FILES` accumulated entries, or
-     at the page safety cap.
+     following `Link`-header URLs would use payload-supplied URLs for
+     navigation. Fetching stops at the first short page, at `MAX_FILES`
+     accumulated entries, or at the page safety cap.
 
 Stdlib + typing only; no I/O except through the injected `_transport`
 seam, so tests never hit the network. Secret values never appear in
 `DiffError` text (Constitution III).
 
-Error semantics for the worker's §2.3 item 8 classification: `http_error`
+Error semantics for the worker's §2.3 classification: `http_error`
 (non-200, `status` attached) and `bad_shape`/`bad_sha` are the fetch-side
 signals; `transport_error` (`status` None) is the live-transport signal —
 `_default_transport` maps `HTTPError` → `http_error` (status attached) and
@@ -72,8 +72,8 @@ TIMEOUT_SECONDS = 10
 FILES_PER_PAGE = 100
 MAX_FILE_PAGES = MAX_FILES // FILES_PER_PAGE + 2
 
-# Interpretation 3: HLD names no canonical lockfile list; this set is the
-# contract (basenames, matched case-sensitively — GitHub filenames are exact).
+# No canonical lockfile list is specified; this set is the contract
+# (basenames, matched case-sensitively — GitHub filenames are exact).
 LOCKFILE_NAMES = frozenset(
     {
         "package-lock.json",
@@ -109,7 +109,7 @@ class DiffError(ValueError):
     `bad_page`, `transport_error`), and `status` carries the HTTP status
     for `http_error` (else `None`). Never carries secret values.
 
-    Retry contract for the worker (HLD §2.3 item 8): `transport_error`
+    Retry contract for the worker (ARCHITECTURE.md §2.3): `transport_error`
     (timeout / URLError / OSError-class from `urlopen`) is RETRYABLE — the
     worker lets it propagate for SQS redelivery. `http_error` retryability
     depends on status (429/5xx retry; 401/403/404 complete) and is decided
@@ -150,8 +150,8 @@ class DiffResult:
     for the live-head fence; `files` holds kept non-lockfile content;
     totals describe the kept (model-facing) bytes/lines; `truncated` marks
     deterministically dropped remainder; `lockfile_summary` is deterministic;
-    `title`/`body` are the PR metadata from the same meta GET (003-T2 —
-    additive, default empty so existing constructors stay green)."""
+    `title`/`body` are the PR metadata from the same meta GET
+    (additive, default empty)."""
 
     head_sha: str
     files: tuple[DiffFile, ...]
@@ -214,12 +214,12 @@ def _request_headers(github_token: str) -> dict[str, str]:
 
 
 def _default_transport(url: str, headers: Mapping[str, str]) -> HttpResponse:
-    """Live `urlopen` transport (F4: every `urlopen` failure stays inside the
-    `DiffError` taxonomy — nothing escapes it).
+    """Live `urlopen` transport: every `urlopen` failure stays inside
+    the `DiffError` taxonomy — nothing escapes it.
 
     * `HTTPError` (a `URLError` subclass carrying the status) → `http_error`
-      with `status` attached, so the worker can apply the item-8
-      status table (429/5xx retry; 401/403/404 complete).
+      with `status` attached, so the worker can apply the §2.3 status
+      table (429/5xx retry; 401/403/404 complete).
     * `TimeoutError` / `URLError` / `OSError`-class (DNS, refused, reset,
       TLS, socket timeout — `TimeoutError` is matched first only so the
       mapping reads explicitly; it is an `OSError` subclass) →
@@ -228,7 +228,7 @@ def _default_transport(url: str, headers: Mapping[str, str]) -> HttpResponse:
     """
     request = Request(url, headers=dict(headers))  # noqa: S310 (https allow-listed base)
     try:
-        with urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
+        with urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 (https only)
             return HttpResponse(
                 status=response.status,
                 body=response.read(),
@@ -251,7 +251,7 @@ def _check_head_sha(payload: Any) -> str:
 
 
 def _check_meta_text(payload: dict, field_name: str) -> str:
-    """PR-meta text field (003-T2): null or absent → `""` (GitHub returns
+    """PR-meta text field: null or absent → `""` (GitHub returns
     `body: null` for description-less PRs — the common case); a present
     non-string value → `bad_shape`."""
     value = payload.get(field_name)
@@ -274,7 +274,7 @@ def fetch_pr_meta(
     Same GET, same error table as `fetch_pr_head_sha` — metadata errors are
     diff errors by construction (no new error class, no new error policy).
     Raises `DiffError` with the identical field/reason contract (`bad_sha`
-    precedence over `bad_shape` preserved: the head SHA validates first).
+    precedence over `bad_shape`: the head SHA validates first).
     """
     url = build_pr_url(repo_full_name, pr_number)
     transport = _transport if _transport is not None else _default_transport

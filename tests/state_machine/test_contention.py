@@ -1,44 +1,38 @@
-"""SPR-111 T026: mutex contention-path contract tests (HLD-004 D9).
+"""Mutex contention-path contract tests.
 
 When another worker holds the mutex, the arriving worker (contender)
 does NOT defer and does NOT touch message visibility — it runs
 single-pass inline emitting `concurrency_single_pass {reason:
 "mutex_held"}` and completes normally.
 
-CONTENDER VIABILITY CHECK (own predicate, distinct from elapsed-budget
-gate 4): clamp `remaining − BUDGET_MARGIN_S − ~90s` vs the VIABILITY
-FLOOR (provisionally the measured ~240s pre-Phase-0) → below floor:
-SKIP with `concurrency_single_pass {reason: "mutex_held_no_budget"}`,
-transient classification (`LlmError("timeout")` — the call that cannot
-be afforded; retryable → the existing re-raise/notice path and queue
-redelivery); at/above floor: one single-pass with the clamped value
-FORWARDED as `read_timeout_s` (computed once, observed on the socket).
+CONTENDER VIABILITY CHECK (own predicate, distinct from the elapsed-budget
+gate): clamp `remaining − BUDGET_MARGIN_S − ~90s` vs the VIABILITY FLOOR
+(240s) → below floor: SKIP with `concurrency_single_pass {reason:
+"mutex_held_no_budget"}`, transient classification
+(`LlmError("timeout")` — the call that cannot be afforded; retryable →
+the re-raise/notice path and queue redelivery); at/above floor: one
+single-pass with the clamped value FORWARDED as `read_timeout_s`
+(computed once, observed on the socket).
 
-Release ordering (Gate-14 pin, lands here): AFTER the last
-lease-covered LLM call, BEFORE claim/fence/publish/finalize. Phase-0
-shadow is NOT lease-covered (no shadow surface exists yet — T035/T036;
-release-inside-review trivially precedes any post-publish work).
+Release ordering: AFTER the last lease-covered LLM call, BEFORE
+claim/fence/publish/finalize. Phase-0 shadow is NOT lease-covered.
 Publication is NOT mutex-protected: the contender publishes holding no
 lease (loser → `PUBLISHED_FINALIZE_CONFLICT` is existing reconcile
 machinery, cited not re-tested).
 
-Holder/refresh (Gate-15(c)): at 50%-TTL elapsed the holder refreshes
-before issuing more LLM work (pre-fallback point); a lost refresh
-stops all LLM work and re-raises without ever re-asserting.
+Holder/refresh: at 50%-TTL elapsed the holder refreshes before issuing
+more LLM work (pre-fallback point); a lost refresh stops all LLM work
+and re-raises without ever re-asserting.
 
-MULTI_AGENT interplay (HLD D9): the mutex serializes WORKERS; the
+MULTI_AGENT interplay: the mutex serializes WORKERS; the
 fan-out/single-pass choice stays orthogonal — holder proceeds to the
 flag's path, contender always runs single-pass inline.
 
-Doubles discipline (Gate-11): the REAL `common.mutex` primitives run
-against the `test_mutex.MutexTable` double (exact expression dispatch);
-transports mirror the `test_worker`/`test_fanout_containment` port
-shapes; the `run_fanout` stub mirrors the sequencer signature with no
-defaults on required params.
-
-RED state (commit 1): `worker_handler` had no contention symbols —
-collection errors on import. T027 ships the symbols in this same PR;
-the red proof is re-enacted detached at `31a1795`.
+Doubles: the REAL `common.mutex` primitives run against the
+`test_mutex.MutexTable` double (exact expression dispatch); transports
+mirror the `test_worker`/`test_fanout_containment` port shapes; the
+`run_fanout` stub mirrors the sequencer signature with no defaults on
+required params.
 """
 
 import json
@@ -266,8 +260,9 @@ class ScriptedClock:
 
 
 class FanoutStub:
-    """`run_fanout` double: required params without defaults (Gate-11);
-    optional `on_call` hook observes (and may mutate) per invocation."""
+    """`run_fanout` double: required params without defaults, so a dropped
+    kwarg is a loud TypeError; optional `on_call` hook observes (and may
+    mutate) per invocation."""
 
     def __init__(self, behavior, on_call=None):
         self.behavior = behavior
@@ -466,10 +461,10 @@ def test_contender_viable_runs_single_pass_with_clamped_timeout(multi_agent, stu
 
 
 def test_contender_logs_contention_term_for_metric_filter(caplog, multi_agent, stubbed_fanout):
-    """T048b (Mars 2026-09-28): the contender path logs the bare term
-    `concurrency_single_pass` — the CloudWatch metric filter counts log
-    lines, and envelope events never reach logs (fixed-field vocabulary);
-    without this line the contention-rate alarm is permanently dormant."""
+    """The contender path logs the bare term `concurrency_single_pass` —
+    the CloudWatch metric filter counts log lines, and envelope events
+    never reach logs (fixed-field vocabulary); without this line the
+    contention-rate alarm is permanently dormant."""
     stubbed_fanout(REVIEW_BODY)
     events, table = [], MutexTable()
     hold(table)
@@ -478,8 +473,8 @@ def test_contender_logs_contention_term_for_metric_filter(caplog, multi_agent, s
     messages = [r.message for r in caplog.records if r.name == "worker_handler"]
     term_messages = [m for m in messages if "concurrency_single_pass" in m]
     assert term_messages, f"contender path did not log the filter's term: {messages}"
-    # Triage fields ride along (bot review #2): the mutex key identifies
-    # the contended PR; elapsed_ms anchors the contention in time.
+    # Triage fields ride along: the mutex key identifies the contended
+    # PR; elapsed_ms anchors the contention in time.
     assert all(f"mutex={MUTEX_PK}" in m for m in term_messages)
     assert all("elapsed_ms=" in m for m in term_messages)
 
@@ -555,8 +550,8 @@ def test_handler_skip_raises_without_touching_visibility(multi_agent, stubbed_fa
 
 
 def test_release_ordering_after_llm_before_pipeline(multi_agent, stubbed_fanout):
-    """Gate-14 pin: release lands AFTER the last lease-covered LLM call
-    and BEFORE claim/fence/publish/finalize — on one shared timeline."""
+    """Release lands AFTER the last lease-covered LLM call and BEFORE
+    claim/fence/publish/finalize — on one shared timeline."""
     stubbed_fanout(FanoutDegraded("insufficient_budget", "wave"))
     shared, provider = [], make_provider()
     github = FakeGitHub(shared)

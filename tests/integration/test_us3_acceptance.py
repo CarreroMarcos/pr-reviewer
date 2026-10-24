@@ -1,21 +1,20 @@
-"""T045: US3 live acceptance harness (HLD §7.3 quickstart g; US3.AC1; SC-004).
+"""US3 live acceptance harness (ARCHITECTURE.md §8 criterion g; SC-004).
 
 Live-only test module: redrives an artificially stale head SHA through the
 real admission path (signed synthetic delivery POSTed to the deployed
 ingress Function URL — the exact shape of an old SQS message redelivered)
 and asserts the revision-fence contract:
 
-  (g) the worker's live-head fence (HLD §2.3 item 4: fetch current head
-      immediately before publish, after claim; mismatch → discard) leaves
-      the canonical comment UNMUTATED — same comment id, same updated_at,
-      still exactly one marker-bearing comment.
+  (g) the worker's live-head fence (ARCHITECTURE.md §3.2 step 4: fetch
+      current head immediately before publish, after claim; mismatch →
+      discard) leaves the canonical comment unmutated — same comment id,
+      same updated_at, still exactly one marker-bearing comment.
 
 The stale SHA used is the fixture PR's real pre-baseline head, captured
 before the harness pushes its baseline commit, so the delivery is a true
-previously-reviewed revision, not a malformed guess. (Gate-9 correction:
-the superseded path advances ONLY last_seen_sha via the observation
-write — generation never moves on any discard path — so neither state
-field is asserted.)
+previously-reviewed revision, not a malformed guess. (The superseded
+path advances only last_seen_sha via the observation write — generation
+never moves on any discard path — so neither state field is asserted.)
 
 Observable split (deliberate):
   - AC assertion: canonical comment immutability (id + updated_at + count).
@@ -27,8 +26,8 @@ Observable split (deliberate):
     incoming == live head), so `last_seen_sha` legitimately changes on a
     discarded delivery — asserting it would over-pin beyond the AC.
 
-Opt-in gate: the module SKIPS unless ACCEPTANCE_LIVE=1, so the default
-`pytest -q` path stays green without AWS/gh access. The T045 verify is::
+Opt-in gate: the module skips unless ACCEPTANCE_LIVE=1, so the default
+`pytest -q` path stays green without AWS/gh access. The verify is::
 
     ACCEPTANCE_LIVE=1 ACCEPTANCE_PR=<fixture pr number> \\
     uv run --frozen pytest tests/integration/test_us3_acceptance.py \\
@@ -142,9 +141,6 @@ def _live_gate() -> None:
         )
 
 
-# --- helpers --------------------------------------------------------------
-
-
 def _gh_api(*args: str) -> Any:
     """Run `gh api <args...>` and return the parsed JSON payload."""
     proc = subprocess.run(  # noqa: S603 (fixed argv, no shell)
@@ -205,7 +201,7 @@ def _post_delivery(payload: dict[str, object]) -> tuple[int, str, str]:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (same request)
             return response.status, response.read().decode(), guid
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode(), guid
@@ -320,7 +316,7 @@ def _converged_active(sha: str) -> bool:
     own commit point (comment_id is ACTIVE-only per common/state.py). A weak
     count-only predicate races the in-flight review: the count passes while
     the PATCH for `sha` has not landed, so any later updated_at snapshot is
-    mid-cycle (observed live on T045 before this gate)."""
+    mid-cycle."""
     canonical = _canonical_comments()
     state = _state_item()
     return (
@@ -354,8 +350,8 @@ def _superseded_line_seen(stale_sha: str, since_epoch: float) -> bool:
 
     Scans a deep stream window fresh on every call — Lambda spreads
     concurrent containers across streams, so caching one stream name races
-    the writer container (observed live: the discard line landed in a
-    different stream than the baseline review's). Identity is matched on
+    the writer container (the discard line can land in a different stream
+    than the baseline review's). Identity is matched on
     PARSED fields (status == discarded_superseded, head_sha == stale_sha),
     not substrings, so semantically adjacent lines (e.g. a retry_queued
     line naming the same SHA) cannot false-positive. The scanned

@@ -16,8 +16,8 @@ until it is populated):
     - Another settled nit.
 
 Skip records (`SkippedLine`: 1-based `line_no`, raw `line`, `reason`)
-are DATA for the caller: fan-out turns them into events (emitting events
-is T015's duty — this module never imports the events layer). Reasons:
+are DATA for the caller: fan-out turns them into events — this module
+never imports the events layer. Reasons:
 `bad_section` (a `##` header that is not exactly `repo#pr`),
 `orphan_bullet` (a bullet with no current valid section, including after
 a bad header), `empty_bullet`, `bad_bullet` (marker not followed by

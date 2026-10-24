@@ -1,4 +1,4 @@
-"""T037: PATCH-404 decision table (HLD §2.3 item 8; failure mode 13).
+"""T037: PATCH-404 decision table (ARCHITECTURE.md §2.3; failure mode 13).
 
 Drives the REAL `worker_handler.handler` with a scripted Issues-Comments
 transport covering every PATCH-404 row of the item-8 table:
@@ -12,8 +12,7 @@ transport covering every PATCH-404 row of the item-8 table:
 * PATCH 404 + transient list failure (5xx) → raise for queue retry
 
 Each recovery test also asserts the list was ATTEMPTED (a GET follows the
-404ing PATCH) — the current worker completes without ever listing, so these
-fail until T040 wires update-in-place + reconcile. The non-retryable tests
+404ing PATCH). The non-retryable tests
 assert completion (no raise, no POST); the transient test asserts the raise
 plus the `retry_queued` log line.
 
@@ -116,9 +115,9 @@ class FakeTable:
         return {"Attributes": dict(self.items[PK])}
 
     def delete_item(self, **kwargs):
-        """HLD-004 D9 mutex-release passthrough (T027 port extension):
-        drop the keyed row (the mutex row is never seeded here, so this
-        is a no-op in practice)."""
+        """Mutex-release passthrough (ARCHITECTURE.md §5.1): drop the
+        keyed row (the mutex row is never seeded here, so this is a
+        no-op in practice)."""
         self.updates.append(kwargs.get("ConditionExpression"))
         self.items.pop((kwargs.get("Key") or {}).get("pk"), None)
         return {}

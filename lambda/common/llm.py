@@ -1,34 +1,36 @@
-"""Provider chat-completions client (HLD §2.3 item 5, §2.7; FR-026; Constitution III).
+"""Provider chat-completions client (ARCHITECTURE.md §2.3, §2.7;
+Constitution III).
 
 Sends one `temperature: 0.2` chat-completions POST over stdlib
 `http.client` — no model SDKs (Constitution II). Model, endpoint, and API
 key arrive as injected parameters: their VALUES originate from SSM
-hydration (`common.config`), but this module performs no SSM access itself —
-the worker (T034) injects the hydrated values, keeping the client pure.
+hydration (`common.config`), but this module performs no SSM access
+itself — the worker injects the hydrated values, keeping the client pure.
 
-Timeout policy (HLD §2.3): connect 2 s, read env-configurable
+Timeout policy (ARCHITECTURE.md §2.3): connect 2 s, read env-configurable
 (`GLM_READ_TIMEOUT_S`, default 240 s, clamped to [30, 600] — see
 `_read_timeout_s`) with an explicit per-call `read_timeout_s` override
-(HLD-004 §9 item 1: resolved once at entry, applied at the socket
-switch below). stdlib exposes a single socket timeout, so the
-connection is opened with `timeout=CONNECT_TIMEOUT_S` and, once
-connected, the socket is switched to the resolved read timeout for the
-response read. `CONNECT_TIMEOUT_S` and `DEFAULT_READ_TIMEOUT_S` are
-exported for tests to pin.
+(resolved once at entry, applied at the socket switch below). stdlib
+exposes a single socket timeout, so the connection is opened with
+`timeout=CONNECT_TIMEOUT_S` and, once connected, the socket is switched
+to the resolved read timeout for the response read.
+`CONNECT_TIMEOUT_S` and `DEFAULT_READ_TIMEOUT_S` are exported for tests
+to pin.
 
-Error semantics: HTTP errors, timeouts, connection failures, and malformed
-responses raise typed `LlmError` (machine-readable `error_class`) — never
-swallowed, never `None`-as-success — so the queue owns the retry
-(visibility redelivery, DLQ after `maxReceiveCount 3`).
+Error semantics: HTTP errors, timeouts, connection failures, and
+malformed responses raise typed `LlmError` (machine-readable
+`error_class`) — never swallowed, never `None`-as-success — so the queue
+owns the retry (visibility redelivery, DLQ after `maxReceiveCount 3`).
 
-Logging is minimal (HLD §5.4): one static-message record per call carrying
-only `status` / `duration_ms` / token usage (`prompt_tokens`,
-`completion_tokens`, `total_tokens`) plus `error_class` on failure. Prompt,
-diff, completion, endpoint credentials, and the API key never reach a log
-record or an exception message.
+Logging is minimal (ARCHITECTURE.md §6.2): one static-message record per
+call carrying only `status` / `duration_ms` / token usage
+(`prompt_tokens`, `completion_tokens`, `total_tokens`) plus
+`error_class` on failure. Prompt, diff, completion, endpoint
+credentials, and the API key never reach a log record or an exception
+message.
 
 The transport is injected (`_connection_factory(host, port, *, timeout)`)
-so tests stub it in-process — no live external calls (HLD §4.4 item 3).
+so tests stub it in-process — no live external calls.
 """
 
 from __future__ import annotations
@@ -45,27 +47,25 @@ from urllib.parse import urlsplit
 
 TEMPERATURE = 0.2
 CONNECT_TIMEOUT_S = 2
-# Default server-wait budget (s): the endpoint's real latency bulk
-# straddles the old 45 s single-pass budget (live successes at
-# 45.9 s/46.9 s/47.7 s each burned a 90-minute redelivery + DLQ trip),
-# so the default covers the observed p99 with headroom. Override per
-# deploy via `GLM_READ_TIMEOUT_S`; resolved at request time (not import
-# time) so tests can monkeypatch/env-override cleanly.
+# Default server-wait budget (s): observed endpoint latency straddles a
+# 45 s budget, so the default covers the observed p99 with headroom.
+# Override per deploy via `GLM_READ_TIMEOUT_S`; resolved at request
+# time (not import time) so tests can monkeypatch cleanly.
 DEFAULT_READ_TIMEOUT_S = 240
 READ_TIMEOUT_MIN_S = 30
 READ_TIMEOUT_MAX_S = 600
 READ_TIMEOUT_ENV_VAR = "GLM_READ_TIMEOUT_S"
 
-# Thinking portability gate (SPR-62, Gate-1 advisory; open-questions Q1 stays
-# open): the `"thinking": {"type": "disabled"}` payload key is GLM-specific
-# and is sent ONLY when the model looks like a GLM model (`startswith "glm"`)
-# AND the endpoint host is a known GLM host below. Any other provider/model
-# may reject an unknown key, so the key is omitted entirely there (never an
-# `"enabled"` variant). The worker threads its env-configured host set
-# (`GLM_ALLOWED_HOSTS` environment, terraform/compute.tf) through
-# `review_diff(allowed_hosts=...)`; the set below is the default when the
-# caller passes nothing. If infra adds a GLM host, update the environment
-# (and this default to match).
+# Thinking portability gate: the `"thinking": {"type": "disabled"}`
+# payload key is GLM-specific and is sent ONLY when the model looks like
+# a GLM model (`startswith "glm"`) AND the endpoint host is a known GLM
+# host below. Any other provider/model may reject an unknown key, so the
+# key is omitted entirely there (never an `"enabled"` variant). The
+# worker threads its env-configured host set (`GLM_ALLOWED_HOSTS`
+# environment, terraform/compute.tf) through
+# `review_diff(allowed_hosts=...)`; the set below is the default when
+# the caller passes nothing. If infra adds a GLM host, update the
+# environment (and this default to match).
 GLM_ALLOWED_HOSTS = frozenset({"api.z.ai"})
 
 logger = logging.getLogger(__name__)
@@ -84,8 +84,8 @@ class LlmError(Exception):
 
     `error_class` is machine-readable: `bad_endpoint`, `timeout`,
     `connection_error`, `http_{status}`, `invalid_response`, `invalid_key`,
-    `length` (truncated at the provider max tokens — HLD-004 §9 item 3),
-    `rate_limit` (Z.AI concurrency-cap code 1302 on HTTP 429 — §9 item 6).
+    `length` (truncated at the provider max tokens),
+    `rate_limit` (Z.AI concurrency-cap code 1302 on HTTP 429).
     The message never carries prompt, diff, completion, or key material.
     """
 
@@ -99,7 +99,7 @@ class ReviewResult:
     """Parsed completion: Markdown content plus provider-observed usage.
 
     `reasoning_content` is the provider's reasoning trace when the call
-    ran with thinking enabled (HLD-004 §9 item 5), else `None` — the raw
+    ran with thinking enabled, else `None` — the raw
     trace is truncated at capture by the caller (`REASONING_MAX_CHARS`),
     never summarized here.
     """
@@ -155,8 +155,8 @@ def _parse_result(payload: Any) -> ReviewResult:
         raise LlmError("invalid_response")
     first = choices[0]
     if isinstance(first, dict) and first.get("finish_reason") == "length":
-        # Truncated at the provider max tokens (HLD-004 §9 item 3): the
-        # partial content is unusable — error, never silent success.
+        # Truncated at the provider max tokens: the partial content is
+        # unusable — error, never silent success.
         raise LlmError("length")
     message = first.get("message") if isinstance(first, dict) else None
     content = message.get("content") if isinstance(message, dict) else None
@@ -181,7 +181,7 @@ def _parse_result(payload: Any) -> ReviewResult:
 
 
 def _is_rate_limit_1302(raw: bytes) -> bool:
-    """Z.AI concurrency-cap signal (HLD-004 §9 item 6): an HTTP 429 whose
+    """Z.AI concurrency-cap signal: an HTTP 429 whose
     JSON body carries error code 1302. The code travels as a string in
     Zhipu error envelopes (`{"error": {"code": "1302", ...}}`); the int
     form is accepted too. Anything unparseable or otherwise shaped is
@@ -222,17 +222,15 @@ def review_diff(
     `endpoint` is the full HTTPS chat-completions URL from SSM hydration.
     `diff_text` carries the assembled review payload (PR metadata + budgeted
     diff + prior comment), not bare diff text.
-    `allowed_hosts` is the env-configured GLM host set threaded through by
-    the worker; `None` (default) falls back to `GLM_ALLOWED_HOSTS` so
-    existing callers behave exactly as before.
+    `allowed_hosts` is the env-configured GLM host set threaded through
+    by the worker; `None` (default) falls back to `GLM_ALLOWED_HOSTS`.
     `thinking_enabled` sends `thinking: {"type": "enabled"}` plus
-    `reasoning_effort` on GLM endpoints (HLD-004 §9 item 4; multi-agent
-    specialists/verifier/synthesizer) — the default `False` keeps the
-    existing single-pass `disabled` payload byte-identical.
-    `read_timeout_s` is the explicit socket read budget (HLD-004 §9 item
-    1): `None` (default) resolves `_read_timeout_s()` exactly once at
-    entry; a passed value (the T026 contender clamp) is used verbatim
-    with no env resolution — no new module constant.
+    `reasoning_effort` on GLM endpoints (multi-agent
+    specialists/verifier/synthesizer) — the default `False` sends the
+    single-pass `disabled` payload.
+    `read_timeout_s` is the explicit socket read budget: `None`
+    (default) resolves `_read_timeout_s()` exactly once at entry; a
+    passed value is used verbatim with no env resolution.
     """
     if not api_key or not model:
         raise LlmError("bad_endpoint")
@@ -264,17 +262,16 @@ def review_diff(
     # omitted for every other provider so non-GLM endpoints never see it.
     payload: dict[str, Any] = {
         "model": model,
-        # Provider default runs GLM reasoning (~1.3K tokens, ~45s) before
-        # answering, which makes the quickstart ≤15s comment bar (HLD
-        # §2.2 (b)) unreachable and overruns the read budget — surfaced
-        # live by the T035 acceptance run. Thinking-off measured 5-8s.
+        # Provider default runs GLM reasoning (~1.3K tokens, ~45s)
+        # before answering, which overruns the read budget.
+        # Thinking-off measured 5-8s.
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": diff_text},
         ],
         "temperature": TEMPERATURE,
-        # HLD-004 §9 item 2: explicit ceiling so truncation surfaces as
-        # `LlmError("length")` (item 3) instead of silent success.
+        # Explicit ceiling so truncation surfaces as
+        # `LlmError("length")` instead of silent success.
         "max_tokens": 16384,
     }
     if model.startswith("glm") and host.lower() in (
@@ -313,9 +310,9 @@ def review_diff(
         raw = response.read()
         if response.status != 200:
             if response.status == 429 and _is_rate_limit_1302(raw):
-                # Z.AI concurrency cap (HLD-004 §9 item 6): fail fast to
-                # wave survivors — the worker boundary retries it as a
-                # transient via the existing unknown-fault default.
+                # Z.AI concurrency cap: fail fast to wave survivors —
+                # the worker boundary retries it as a transient via the
+                # unknown-fault default.
                 raise LlmError("rate_limit")
             raise LlmError(f"http_{response.status}")
         try:

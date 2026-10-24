@@ -1,13 +1,12 @@
 """Unit tests for the `_BotoTable` port wrapper and the publish port's
-PATCH/POST decision — the exactly-one canonical comment contract (HLD §2.8).
+PATCH/POST decision — the exactly-one canonical comment contract
+(ARCHITECTURE.md §2.8).
 
 Regression: boto3 deserializes DynamoDB numbers as `decimal.Decimal`, while
 the table-port contract (mirrored by the state-machine stub) is plain ints.
-The live T035 acceptance run surfaced both failures at once: `publish`
-treated a stored `comment_id` as absent (Decimal fails
-`isinstance(comment_id, int)`) and POSTed a second canonical comment, and
-the §5.4 outcome event's json.dumps rejected the Decimal generation
-(`worker_emit_failed` on every ride)."""
+A stored Decimal `comment_id` fails `isinstance(comment_id, int)`, so
+`publish` would treat it as absent and POST a second canonical comment;
+the §5.4 outcome event's json.dumps likewise rejects a Decimal generation."""
 
 from decimal import Decimal
 
@@ -147,7 +146,7 @@ def test_publish_posts_when_comment_id_absent() -> None:
 
 
 def test_publish_sanitizes_content_before_patch() -> None:
-    """HLD-004 §5 item 5: the PATCH body carries the sanitized text —
+    """ARCHITECTURE.md §5.2: the PATCH body carries the sanitized text —
     structure neutralized AND payload tokens redacted, raw bytes absent."""
     import json
 

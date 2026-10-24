@@ -1,15 +1,16 @@
-"""SSM-backed runtime config (HLD §2.3 item 1, §2.6; Constitution III).
+"""SSM-backed runtime config (ARCHITECTURE.md §2.3, §2.6; Constitution III).
 
 One batched `GetParameters` call at cold start (cold start always fetches);
 cached in warm-container state behind this injectable provider — never
 re-fetched mid-warm except on 401 (`invalidate()`/`bust()` → next `get()`
 re-fetches immediately) or the 30-minute TTL. The SSM accessor and the clock
 are constructor-injected so tests stay parallel-safe and free of
-module-global state (HLD §4.4 item 3); this module never constructs clients
-itself. Production passes `boto3.client("ssm").get_parameters` in.
+module-global state; this module never constructs clients itself.
+Production passes `boto3.client("ssm").get_parameters` in.
 
-Endpoint hydration validates HTTPS scheme + host allow-list (HLD §2.3
-item 5); the allow-list is injected (secure default: empty — every host is
+Endpoint hydration validates HTTPS scheme + host allow-list
+(ARCHITECTURE.md §2.6); the allow-list is injected (secure default:
+empty — every host is
 rejected until explicitly allowed). Missing/invalid parameters raise typed
 `ConfigError` (a `ValueError`) with machine-readable `field`/`reason`.
 
@@ -33,7 +34,7 @@ GLM_API_KEY_NAME = "/pr-reviewer/glm-api-key"
 GLM_MODEL_NAME = "/pr-reviewer/glm-model"
 GLM_ENDPOINT_NAME = "/pr-reviewer/glm-endpoint"
 
-# Worker fetch surface (HLD §2.6) — one batched GetParameters call. The
+# Worker fetch surface (ARCHITECTURE.md §2.6) — one batched call. The
 # webhook secret is NOT in this set: §2.6 gates it "Ingress-only IAM" (the
 # ingress fetches it via its singular GetParameter path), and iam.tf grants
 # the worker exactly these four ARNs — one unauthorized name in a batched
@@ -68,7 +69,8 @@ class ConfigError(ValueError):
 @dataclass(frozen=True, repr=False)
 class AppConfig:
     """Hydrated runtime config — all values decrypted via `WithDecryption`.
-    Worker surface per HLD §2.6: the webhook secret is ingress-only and is
+    Worker surface per ARCHITECTURE.md §2.6: the webhook secret is
+    ingress-only and is
     fetched by the ingress helper, never through this provider."""
 
     github_token: str
@@ -93,7 +95,7 @@ Clock = Callable[[], float]
 
 
 class ConfigProvider:
-    """Cached SSM config with TTL + 401 cache-bust (HLD §2.3 item 1)."""
+    """Cached SSM config with TTL + 401 cache-bust (ARCHITECTURE.md §2.3)."""
 
     def __init__(
         self,
@@ -117,8 +119,8 @@ class ConfigProvider:
     def get(self) -> AppConfig:
         """Return the cached config, re-fetching on cold start, TTL expiry,
         or after `invalidate()`/`bust()`. A backwards clock (negative
-        elapsed) simply yields no refetch — accepted; the HLD is silent
-        on clock behavior, so this documents rather than fixes it."""
+        elapsed) simply yields no refetch — accepted; no spec governs
+        clock behavior, so this documents rather than fixes it."""
         now = self._clock()
         if self._cached is None or (now - self._fetched_at) >= TTL_SECONDS:
             self._cached = self._fetch()
@@ -126,7 +128,7 @@ class ConfigProvider:
         return self._cached
 
     def invalidate(self) -> None:
-        """Drop the cache (401 path, HLD §2.3 item 8): the next `get()`
+        """Drop the cache (401 path, ARCHITECTURE.md §2.3): the next `get()`
         re-fetches immediately regardless of TTL."""
         self._cached = None
 
@@ -167,23 +169,22 @@ class ConfigProvider:
             raise ConfigError("glm_endpoint", "bad_host")
 
 
-# Multi-agent knobs (HLD-004 §8 checklist item 7 — the 12 env vars below
-# are exactly that list; `MARGIN_S` and `DEGRADED_BUDGET_MARGIN_S` are
-# withdrawn, `BUDGET_MARGIN_S` is the single margin).
+# Multi-agent knobs: the 12 env vars below; `BUDGET_MARGIN_S` is the
+# single margin.
 #
 # Plain environment variables with documented defaults, resolved at CALL
 # time on every `multi_agent_config()` read — never import time, never
 # cached in module or `ConfigProvider` state — so tests monkeypatch env
 # cleanly and `reset_config_cache` (which drops only the SSM provider)
-# can never freeze these. Env-var wiring into the worker belongs to
-# later tickets; this module defines names, defaults, and parsing only.
+# can never freeze these. This module defines names, defaults, and
+# parsing only.
 DEFAULT_MULTI_AGENT = 0
 DEFAULT_MULTI_AGENT_PHASE0 = 1
 DEFAULT_FANOUT_CONCURRENCY = 3
 DEFAULT_MUTEX_LEASE_TTL_S = 900
 DEFAULT_REASONING_MAX_CHARS = 4000
-# PROVISIONAL until the Phase-0 exit ruling: D6/D8 pick the ship config
-# from measured p95 — this infrastructure default must not pre-decide it.
+# Provisional: the ship config is picked from measured p95 — this
+# infrastructure default must not pre-decide it.
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_WAVE_WAIT_FOR_S = 300
 DEFAULT_VERIFIER_WAIT_FOR_S = 240
@@ -223,16 +224,16 @@ def _env_int(name: str, default: int) -> int:
 
 
 def replay_base_url() -> str:
-    """Viewer Function URL for the canonical comment's replay footer
-    (T075). Empty string = footer omitted (feature off). NOT a §8
-    multi-agent var — publish decoration only, read directly by the
-    worker publish path. Trailing slashes stripped so the footer can
-    append `/runs/...` unconditionally."""
+    """Viewer Function URL for the canonical comment's replay footer.
+    Empty string = footer omitted (feature off). Not a multi-agent var
+    — publish decoration only, read directly by the worker publish path.
+    Trailing slashes stripped so the footer can append `/runs/...`
+    unconditionally."""
     return os.environ.get("REPLAY_BASE_URL", "").strip().rstrip("/")
 
 
 def multi_agent_config() -> MultiAgentConfig:
-    """Read the 12 HLD-004 §8 item-7 knobs from the environment."""
+    """Read the 12 multi-agent knobs from the environment."""
     return MultiAgentConfig(
         multi_agent=_env_int("MULTI_AGENT", DEFAULT_MULTI_AGENT),
         multi_agent_phase0=_env_int("MULTI_AGENT_PHASE0", DEFAULT_MULTI_AGENT_PHASE0),

@@ -1,21 +1,19 @@
-"""T046 exit-report evidence generator (out-of-band human tool).
+"""Exit-report evidence generator (out-of-band human tool).
 
-Recomputes every number in
-`specs/004-multi-agent-review/exit-report-phase0.md` from the completed
-24x3 multi-agent pin: D8 five-gate full-mode scoring (through the
-enforced `compute_ab_deltas` entry), wrongful-kill arm attribution, and
-per-stage latency extraction from run events. Verifies the pin's sha256
-against the tracked manifest before scoring, so a mutated capture-box
-artifact fails loudly instead of feeding wrong verdicts to the report.
-Writes `tests/model_evals/results/t046-scoring.json` (local artifact,
-untracked per the evidence posture — the report embeds the full tables).
+Recomputes the multi-agent gate numbers (ARCHITECTURE.md §5.4) from the
+completed 24x3 multi-agent pin: five-gate full-mode scoring (through
+the enforced `compute_ab_deltas` entry), wrongful-kill arm attribution,
+and per-stage latency extraction from run events. Verifies the pin's
+sha256 against the tracked manifest before scoring, so a mutated
+capture-box artifact fails loudly instead of feeding wrong verdicts to
+the report. Writes `tests/model_evals/results/t046-scoring.json`.
 
-NEVER in any request-serving path. Stdlib only; reads the pin + baseline
-pins and calls `multi_agent_scoring` / `scoring` — the same functions the
-interim path and the tests use (percentiles go through the scorer's
+Never in any request-serving path. Stdlib only; reads the pin + baseline
+pins and calls `multi_agent_scoring` / `scoring` — the same functions
+the interim path and the tests use (percentiles go through the scorer's
 canonical nearest-rank `p95`, so report numbers cannot silently diverge
-from it). No network. Standalone CLI; the sys.path inserts are guarded so
-an accidental import never reorders a healthy path.
+from it). No network. Standalone CLI; the sys.path inserts are guarded
+so an accidental import never reorders a healthy path.
 """
 
 import hashlib
@@ -143,7 +141,8 @@ def main():
         "passed": fabricated_total == 0 and not forbidden_hits,
     }
 
-    # Wrongful-kill arm attribution (HLD D8 gate 3: location OR cosine >= 0.76).
+    # Wrongful-kill arm attribution (ARCHITECTURE.md §5.4 gate 3:
+    # location OR cosine >= 0.76).
     match_arms = []
     for w in kill["matches"]:
         cid, ri, kid = w["case_id"], w["run_index"], w["candidate_id"]

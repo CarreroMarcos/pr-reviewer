@@ -1,16 +1,13 @@
-"""SPR-88 T005: multi-agent env-knob contract tests (HLD-004 §8 checklist 7).
+"""T005: multi-agent env-knob contract tests (HLD-004 §8 checklist 7).
 
 The 12 multi-agent env vars with exact names and defaults; typed parsing
 (ints vs the `REASONING_EFFORT` string); request-time resolution (never
 cached in module state); and the naming pin — no `MARGIN_S` /
 `DEGRADED_BUDGET_MARGIN_S`.
 
-`REASONING_EFFORT` defaults to the literal `"low"`, PROVISIONAL until the
-Phase-0 exit ruling (D6/D8 pick the ship config from measured p95 — this
-infrastructure default must not pre-decide it).
-
-RED state: `common.config` exposes none of these names — collection
-errors on import.
+`REASONING_EFFORT` defaults to the literal `"low"` — provisional: D6/D8
+pick the ship config from measured p95, and this default must not
+pre-decide it.
 """
 
 import pytest
@@ -86,8 +83,8 @@ def test_default_constants_pin_checklist_item_7():
 
 
 def test_reasoning_effort_default_is_provisional():
-    # PROVISIONAL until the Phase-0 exit ruling: D6/D8 pick the ship
-    # config from measured p95 — this default must not pre-decide it.
+    # Provisional: D6/D8 pick the ship config from measured p95 —
+    # this default must not pre-decide it.
     assert DEFAULT_REASONING_EFFORT == "low"
     assert multi_agent_config().reasoning_effort == "low"
 

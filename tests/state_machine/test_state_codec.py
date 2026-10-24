@@ -1,12 +1,12 @@
-"""T009: review-state item codec round-trip + rejection cases (HLD §3.1).
+"""Review-state item codec round-trip + rejection cases (ARCH §3.1).
 
 Covers the §3.1 field contract verbatim: stored `status` ∈ {CLAIMED, ACTIVE}
 (ABSENT by absence, STALE derived — never stored), monotone `generation`
 from 0, 40-hex SHAs, epoch `claim_until`, raw `claim_owner`, ACTIVE-only
 int64 `comment_id`, ISO-8601 UTC `updated_at`, exact `pk` formats, delivery
-TTL math (7 days per data-model.md §2), plus the §3.3
-conditional-expression builders (establish (a)/(b)/(c), claim, finalize) and
-the STALE derivation helper (`claim_until` < now → stale).
+TTL math (7 days), plus the ARCH §3.2 conditional-expression builders
+(establish (a)/(b)/(c), claim, finalize) and the STALE derivation helper
+(`claim_until` < now → stale).
 
 Every rejection is typed: tests assert `StateError` plus its
 machine-readable `field`/`reason`, mirroring `common.envelope.EnvelopeError`.
@@ -102,14 +102,13 @@ def test_build_delivery_item_shape():
 
 
 def test_claim_lease_is_widened_to_review_budget():
-    """T047 (HLD D9 Per-PR claim lease): widened 180 → 780 to cover the
-    multi-agent review budget; the literal pin makes a silent revert to the
-    pre-T047 value impossible."""
+    """The claim lease is 780, widened from 180 to cover the multi-agent
+    review budget; the literal pin makes a silent revert impossible."""
     assert CLAIM_LEASE_SECONDS == 780
 
 
 def test_claim_lease_covers_multi_agent_review_budget():
-    """T047 (HLD D9): the claim lease must stay ≥ the multi-agent review
+    """The claim lease must stay ≥ the multi-agent review
     budget (elapsed-budget gate-1 total). A future D9 re-tune that outgrows
     the lease fails here loudly instead of silently reopening the steal
     window between lease expiry and claim."""
@@ -237,7 +236,7 @@ def test_base_sha_shape_reference():
 @pytest.mark.parametrize("field", ["head_sha", "last_seen_sha"])
 def test_reject_sha_with_trailing_newline(field):
     # `$` matches before a trailing newline; only `\Z` anchors the true end.
-    # A 40-hex SHA smuggling `\n` must not validate (batch-2 carry-forward).
+    # A 40-hex SHA smuggling `\n` must not validate.
     _rejected(_claimed(**{field: "a" * 40 + "\n"}), field, "bad_sha")
 
 
@@ -326,7 +325,7 @@ def test_reject_non_string_pk(pk):
 
 def test_reject_pk_with_trailing_newline():
     # Same `$`-vs-`\Z` hole as the SHA patterns: a pk smuggling `\n`
-    # must not validate (batch-2 carry-forward).
+    # must not validate.
     _rejected(_claimed(pk="review:octo-org/hello-world#42\n"), "pk", "bad_pk")
 
 
@@ -376,7 +375,7 @@ def test_is_stale_derivation():
     assert is_stale(NOW + 1, NOW) is False
 
 
-# --- §3.3 expression builders ----------------------------------------------
+# --- expression builders ----------------------------------------------
 
 
 def test_claim_condition_exact_string():
@@ -403,15 +402,15 @@ def test_finalize_is_revision_only():
     assert values[":owner"] == GUID
     assert values[":comment"] == COMMENT_ID
     assert "comment_id" in update
-    # Lease lifecycle ends at finalize (HLD §3.2)
+    # Lease lifecycle ends at finalize (ARCH §3.1)
     assert "REMOVE claim_owner, claim_until" in update
     assert EXPRESSION_ATTRIBUTE_NAMES == {"#st": "status"}
 
 
 def test_finalize_guard_rejects_foreign_lease_holder():
-    """SPR-63 owner guard: the finalize condition carries the caller's
+    """Owner guard: the finalize condition carries the caller's
     owner, so a delayed finalize by a superseded claimant fails the guard
-    instead of clearing the newer lease (state.py accepted-race closure)."""
+    instead of clearing the newer lease."""
     _, condition, values = build_finalize_expressions(
         head_sha=HEAD_A, generation=7, claim_owner=GUID, comment_id=COMMENT_ID, updated_at=UPDATED
     )
@@ -420,7 +419,7 @@ def test_finalize_guard_rejects_foreign_lease_holder():
 
 
 def test_persist_is_owner_guarded_without_releasing_the_lease():
-    """SPR-63: adoption persistence carries the finalize owner guard but
+    """Adoption persistence carries the finalize owner guard but
     its update never REMOVEs — the lease is released only by the protocol
     finalize, so a persist and its finalize compose instead of racing."""
     update, condition, values = build_persist_expressions(
@@ -462,6 +461,6 @@ def test_establish_confirm_increments_generation():
     assert values[":next_gen"] == 42
     assert values[":head"] == HEAD_B
     assert "generation = :next_gen" in update
-    # HLD 3.1: comment_id is ACTIVE-only, so establish (c) must clear it
+    # ARCH §3.1: comment_id is ACTIVE-only, so establish (c) must clear it
     # when a previously-ACTIVE record returns to CLAIMED.
     assert update.endswith("REMOVE comment_id")

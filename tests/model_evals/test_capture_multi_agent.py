@@ -1,10 +1,10 @@
-"""T039 smoke: multi-agent capture harness with injected stubs.
+"""Smoke tests: multi-agent capture harness with injected stubs.
 
-Runs the REAL `run_fanout` sequencer (gates, nonce authority, clamp,
+Runs the real `run_fanout` sequencer (gates, nonce authority, clamp,
 IDs, events) with scripted legs + stub embeddings on one corpus case —
 no network, no creds, no live models. Pins the capture↔scorer contract
-(run-record shape, embedding key families, wall-claim wording) that
-T045's live run must reproduce.
+(run-record shape, embedding key families, wall-claim wording) that the
+live capture run must reproduce.
 """
 
 import json
@@ -69,10 +69,11 @@ def ok_result(content, reasoning=None):
 
 
 class ScriptedLegs:
-    """Five-call script (HLD D8 pin): entries 0-2 are wave legs, entry 3
-    is the verifier leg (CANDIDATE_FINDINGS marker), entry 4 the
-    synthesizer. Staged execution makes routing deterministic; the final
-    count assertion pins the 5-call shape against sequencer drift."""
+    """Five-call script (ARCHITECTURE.md §5.1 topology): entries 0-2 are
+    wave legs, entry 3 is the verifier leg (CANDIDATE_FINDINGS marker),
+    entry 4 the synthesizer. Staged execution makes routing
+    deterministic; the final count assertion pins the 5-call shape
+    against sequencer drift."""
 
     VERIFIED_NOTE = "smoke-verified"
 
@@ -150,7 +151,7 @@ def test_smoke_run_case_full_pipeline():
         effort=EFFORT,
         run_index=0,
     )
-    assert len(legs.calls) == 5  # 3 specialists + verifier + synthesizer
+    assert len(legs.calls) == 5
     assert record["case_id"] == CASE_ID
     assert record["effort"] == EFFORT
     assert record["error"] is None
@@ -266,11 +267,9 @@ class _RaisingThenScripted:
 
 
 def test_smoke_main_counts_errored_runs(tmp_path):
-    """Exit-code discipline (capture blocker #2, 2026-09-28): main()
-    surfaces per-run errors in stats and __main__ exits 1 iff
-    runs_errored — a garbage pin must never look like a clean capture
-    (the old SystemExit(main()) printed the stats dict and exited 1 on
-    EVERY run, success or garbage alike)."""
+    """Exit-code discipline: main() surfaces per-run errors in stats
+    and __main__ exits 1 iff runs_errored — a garbage pin must never
+    look like a clean capture."""
 
     output = tmp_path / "pinned.json"
     checkpoint = tmp_path / "cp.json"
@@ -322,9 +321,9 @@ def test_finding_text_helpers():
 
 
 def test_fully_resumed_case_skips_manifest_embedding(tmp_path):
-    """Bot R2 Fix 1: a fully checkpoint-completed case performs ZERO
-    embed calls on resume and keeps its pinned manifest vectors
-    byte-identically (no Bedrock re-invoke, no fresh-vector swap)."""
+    """A fully checkpoint-completed case performs zero embed calls on
+    resume and keeps its pinned manifest vectors byte-identically (no
+    embedder re-invoke, no fresh-vector swap)."""
     output = tmp_path / "pinned_multi_agent.json"
     checkpoint = tmp_path / "resume.json"
     args = ["--cases", CASE_ID, "--output", str(output), "--checkpoint", str(checkpoint)]
@@ -356,7 +355,7 @@ def test_fully_resumed_case_skips_manifest_embedding(tmp_path):
 
 
 def test_meta_invocations_append_per_invocation(tmp_path):
-    """Bot R2 Fix 2: scalar meta fields describe the writing invocation;
+    """Scalar meta fields describe the writing invocation;
     the append-only `invocations` log preserves earlier ones, so a
     second invocation with a different effort cannot misattribute the
     first invocation's cases."""
@@ -400,8 +399,8 @@ def test_meta_invocations_append_per_invocation(tmp_path):
 
 
 def test_stale_checkpoint_warns_before_fresh_start(tmp_path, capsys):
-    """Bot R2 Risk Note: `--resume` with a checkpoint but no pin file
-    starts fresh (safe) but says so explicitly, naming both paths."""
+    """`--resume` with a checkpoint but no pin file starts fresh
+    (safe) but says so explicitly, naming both paths."""
     output = tmp_path / "pinned_multi_agent.json"
     checkpoint = tmp_path / "resume.json"
     checkpoint.write_text(json.dumps({"completed": [[CASE_ID, 0]]}) + "\n", encoding="utf-8")
@@ -418,7 +417,7 @@ def test_stale_checkpoint_warns_before_fresh_start(tmp_path, capsys):
 
 
 def test_force_clears_checkpoint(tmp_path, capsys):
-    """Gate 22 cycle (bot R4 :540): `--force` overwrites the pin, so a
+    """`--force` overwrites the pin, so a
     surviving checkpoint would make a later `--resume` skip pairs whose
     records no longer exist — empty-runs cases claiming "completed".
     --force must reset the checkpoint to a clean slate."""
@@ -451,7 +450,7 @@ def test_force_clears_checkpoint(tmp_path, capsys):
 
 
 def test_resume_partial_preserves_pinned_runs(tmp_path):
-    """Bot R1 Fix 1: a partial resume (run 0 checkpointed, run 1 new)
+    """A partial resume (run 0 checkpointed, run 1 new)
     preserves the pinned run-0 record byte-identically — the checkpoint
     never outlives its data."""
     output = tmp_path / "pinned_multi_agent.json"
@@ -475,7 +474,7 @@ def test_resume_partial_preserves_pinned_runs(tmp_path):
     merged = json.loads(output.read_text(encoding="utf-8"))
     runs = merged["cases"][CASE_ID]["runs"]
     assert [r["run_index"] for r in runs] == [0, 1]
-    assert runs[0]["run_id"] == pinned_run_id  # earlier record preserved, not re-run
+    assert runs[0]["run_id"] == pinned_run_id
     assert runs[1]["run_id"] != pinned_run_id
     assert json.loads(checkpoint.read_text(encoding="utf-8"))["completed"] == [
         [CASE_ID, 0],
@@ -484,15 +483,15 @@ def test_resume_partial_preserves_pinned_runs(tmp_path):
 
 
 def test_build_diff_result_rename_uses_new_name():
-    """Bot R1 Fix 3: a rename header without a +++ line falls back to
-    the header's second token — the NEW name."""
+    """A rename header without a +++ line falls back to the header's
+    second token — the new name."""
     text = "diff --git a/old.py b/new.py\nindex 1..2 100644\nBinary files differ\n"
     result = cma.build_diff_result(case_id="r", diff_text=text)
     assert [f.filename for f in result.files] == ["new.py"]
 
 
 def test_latency_excludes_embedding_time(monkeypatch):
-    """Bot R1 Fix 4: per-run `latency_ms` stops at pipeline return —
+    """Per-run `latency_ms` stops at pipeline return —
     a 250ms embedding sleep cannot enter it (scripted clock makes the
     500ms pipeline window exact)."""
     ticks = [100.0, 100.5]
@@ -521,9 +520,9 @@ def test_latency_excludes_embedding_time(monkeypatch):
 
 
 def test_ollama_embed_texts_retries_transient_then_succeeds(monkeypatch):
-    """T045 pre-flight: `ollama_embed_texts` survives transient local
-    failures (connection errors, 5xx) via app-level retry with doubling
-    backoff (2s..32s) — same discipline the Bedrock client had."""
+    """`ollama_embed_texts` survives transient local failures
+    (connection errors, 5xx) via app-level retry with doubling backoff
+    (2s..32s)."""
 
     script: list = [
         urllib.error.URLError("connection refused"),
@@ -604,14 +603,11 @@ def test_ollama_embed_texts_retries_5xx_then_succeeds(monkeypatch):
 
 
 def test_live_review_fn_accepts_fanout_kwargs(monkeypatch):
-    """Capture blocker found at the first live run (2026-09-28):
-    `run_fanout` passes api_key/model/endpoint explicitly
-    (lambda/common/fanout.py:178-180) while the wrapper pre-bound the
-    same creds — the double kwarg raised TypeError per leg in ~0ms,
-    every leg recorded agent_failed/unknown, and the run pinned 72
-    empty shells (exit 1). The stub smoke could not see it (stub legs
-    accept **kwargs) and CI could not (zero external calls).
-    Regression: caller kwargs merge OVER the pre-bound creds."""
+    """`run_fanout` passes api_key/model/endpoint explicitly while
+    the wrapper pre-binds the same creds — caller kwargs must merge
+    over the pre-bound creds, not double-bind (a double bind raises
+    TypeError per leg). Stub legs accept **kwargs and CI makes zero
+    external calls, so only this test pins the merge."""
 
     captured: dict = {}
 
@@ -643,9 +639,9 @@ def test_live_review_fn_accepts_fanout_kwargs(monkeypatch):
 
 
 def test_live_review_fn_rejects_cred_divergence():
-    """Bot R1 (#137): a caller cred that disagrees with the hydrated
-    closure creds must raise loudly — silent merge-override would
-    discard the SSM-hydrated creds (one source of truth enforced)."""
+    """A caller cred that disagrees with the hydrated closure creds
+    must raise loudly — silent merge-override would discard the
+    SSM-hydrated creds (one source of truth enforced)."""
 
     fn = cma._live_review_fn("k", "m", "https://e")
     try:
@@ -693,9 +689,9 @@ def test_ollama_embed_one_posts_model_and_parses_embeddings(monkeypatch):
 
 
 def test_ollama_embed_texts_retries_429_then_succeeds(monkeypatch):
-    """Gap-1 (Gate 31): the 429 rate-limit shape exercises the exact-code
-    classifier branch — a typo there (`==` vs `in`) would turn the next
-    throttle into fail-fast, shipping green."""
+    """The 429 rate-limit shape exercises the exact-code classifier
+    branch — a typo there (`==` vs `in`) would turn a throttle into
+    fail-fast, shipping green."""
 
     script: list = [
         urllib.error.HTTPError(cma.OLLAMA_URL + "/api/embed", 429, "rate limited", None, None),
@@ -716,13 +712,12 @@ def test_ollama_embed_texts_retries_429_then_succeeds(monkeypatch):
 
 
 def test_ollama_embed_one_rejects_wrong_dim_vector(monkeypatch):
-    """Bot R1 (#136): a wrong-dimension vector fails loud at the seam —
-    a misconfigured local model must never silently pin unusable
-    vectors that only explode at score time."""
+    """A wrong-dimension vector fails loud at the seam — a
+    misconfigured local model must never silently pin unusable vectors
+    that only explode at score time."""
 
-    # Gap-2 (Gate 31): pin the constant itself — the happy-path test
-    # builds its vector FROM this constant, so a wrong value would
-    # otherwise pass vacuously.
+    # Pin the constant itself — the happy-path test builds its vector
+    # from this constant, so a wrong value would otherwise pass vacuously.
     assert cma.EXPECTED_EMBED_DIM == 768
 
     class _Resp:
@@ -769,16 +764,16 @@ def test_ollama_embed_one_rejects_malformed_payload(monkeypatch):
 
 
 def test_preflight_delimiter_scan_clean_corpus_silent(capsys):
-    """T045 pre-flight: the real corpus carries no delimiter literals —
-    no hits, no warnings."""
+    """The real corpus carries no delimiter literals — no hits, no
+    warnings."""
     assert cma.preflight_delimiter_scan([CASE_ID]) == []
     assert capsys.readouterr().err == ""
 
 
 def test_preflight_delimiter_scan_warns_never_aborts(monkeypatch, capsys):
-    """T045 pre-flight: a diff and a manifest carrying the verbatim-tag
-    literals warn (one line per hit) and return the hits — the run
-    proceeds, the gate rules."""
+    """A diff and a manifest carrying the verbatim-tag literals warn
+    (one line per hit) and return the hits — the run proceeds, the
+    gate rules."""
     monkeypatch.setitem(
         fixtures.CORPUS,
         "evil",
@@ -795,7 +790,7 @@ def test_preflight_delimiter_scan_warns_never_aborts(monkeypatch, capsys):
 
 
 def test_round_trip_capture_record_through_scorer():
-    """Bot R1 Fix 6 (Risk Note): a REAL capture-shaped run record —
+    """A real capture-shaped run record —
     list-form candidates straight from `run_case` — flowing through the
     scorer end-to-end. Pins the producer/consumer shape contract both
     directions: the kill report resolves the smoke kill with no match
@@ -858,13 +853,14 @@ def test_round_trip_capture_record_through_scorer():
     )
     assert fidelity["invented"] == 0
     # One bullet covering two survivors is a correct merge — matching is
-    # many-to-one (HLD gate 4 keys on "no semantic match", not exclusivity).
+    # many-to-one (ARCHITECTURE.md §5.4 gate 4 keys on "no semantic
+    # match", not exclusivity).
     assert fidelity["dropped"] == 0
 
 
 def test_ollama_embed_retry_logs_attempts(monkeypatch, capsys):
-    """Bot R2 (PR #135): each retry attempt logs a one-line stderr note
-    (attempt, error, delay) so a dead endpoint doesn't look like a hang."""
+    """Each retry attempt logs a one-line stderr note (attempt, error,
+    delay) so a dead endpoint doesn't look like a hang."""
 
     script: list = [urllib.error.URLError("connection refused"), [0.3]]
 

@@ -1,4 +1,4 @@
-"""T035: US1 live acceptance harness (HLD §7.3; QS-a/b/e/f/k/k2).
+"""US1 live acceptance harness (ARCHITECTURE.md §8; QS-a/b/e/f/k/k2).
 
 Live-only test module: every test here POSTs signed deliveries to the
 deployed scratch ingress Function URL, drives PR 22 on CarreroMarcos/pr-reviewer
@@ -12,8 +12,8 @@ via `gh`, and asserts end-to-end behaviour:
       comment refreshed (updated_at moves past pre-reopen value, still one)
   (k2) signed X-GitHub-Event `label` / `issues` deliveries → 200 discard
 
-Opt-in gate: the module SKIPS unless ACCEPTANCE_LIVE=1, so the default
-`pytest -q` unit path stays green without AWS/gh access. The T035 verify is::
+Opt-in gate: the module skips unless ACCEPTANCE_LIVE=1, so the default
+`pytest -q` unit path stays green without AWS/gh access. The verify is::
 
     ACCEPTANCE_LIVE=1 uv run --frozen pytest \\
         tests/integration/test_us1_acceptance.py -q --tb=short -m integration
@@ -86,9 +86,6 @@ _STATE: dict[str, object] = {}
 _SECRET_CACHE: dict[str, str] = {}
 
 
-# --- helpers --------------------------------------------------------------
-
-
 def _gh_api(*args: str) -> object:
     """Run `gh api <args...>` and return the parsed JSON payload."""
     proc = subprocess.run(  # noqa: S603 (fixed argv, no shell)
@@ -158,7 +155,7 @@ def _post_delivery(
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (same request)
             return response.status, response.read().decode(), guid
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode(), guid
@@ -225,9 +222,6 @@ def _wait_for(
         elapsed = now - start
         assert elapsed < deadline, f"{what}: timed out after {elapsed:.1f}s"
         time.sleep(POLL_INTERVAL_SECONDS)
-
-
-# --- session setup --------------------------------------------------------
 
 
 @pytest.fixture(scope="module", autouse=True)

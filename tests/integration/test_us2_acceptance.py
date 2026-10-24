@@ -1,4 +1,4 @@
-"""T042: US2 live acceptance harness (HLD §7.3 quickstart c/d/h; US2.AC1–AC3).
+"""US2 live acceptance harness (ARCHITECTURE.md §8 criteria c/d/h).
 
 Live-only test module: drives REAL pushes to a fixture PR on the target repo
 and asserts canonical-comment convergence over the deployed stack:
@@ -11,11 +11,11 @@ and asserts canonical-comment convergence over the deployed stack:
   (h) deleting the canonical comment + one new push converges to exactly ONE
       new marker-bearing comment (fresh comment id, marker present)
 
-Driver is REAL pushes only (Contents API PUT per commit → real GitHub
+Driver is real pushes only (Contents API PUT per commit → real GitHub
 synchronize webhook → ingress → worker). Synthetic signed deliveries are
-deliberately NOT used: the worker's live head-fetch would classify a
-synthetic SHA stale (HLD §5, the (g) path) instead of exercising the
-second-push regeneration this ticket owns.
+deliberately not used: the worker's live head-fetch would classify a
+synthetic SHA stale (ARCHITECTURE.md §3.2, the (g) path) instead of
+exercising the second-push regeneration this harness owns.
 
 Observability: comment identity comes from the GitHub issues-comments API
 (filtered on the `common.marker` canonical marker); which head a review
@@ -23,8 +23,8 @@ reflects comes from the state table (`review:{repo}#{pr}` → `last_seen_sha`,
 `generation`) — the model echo of the SHA is not deterministic and is never
 asserted.
 
-Opt-in gate: the module SKIPS unless ACCEPTANCE_LIVE=1, so the default
-`pytest -q` path stays green without AWS/gh access. The T042 verify is::
+Opt-in gate: the module skips unless ACCEPTANCE_LIVE=1, so the default
+`pytest -q` path stays green without AWS/gh access. The verify is::
 
     ACCEPTANCE_LIVE=1 ACCEPTANCE_PR=<fixture pr number> \\
     uv run --frozen pytest tests/integration/test_us2_acceptance.py \\
@@ -114,9 +114,6 @@ def _live_gate() -> None:
             "harness pushes real commits and deletes the bot comment).",
             pytrace=False,
         )
-
-
-# --- helpers --------------------------------------------------------------
 
 
 def _gh_api(*args: str) -> Any:

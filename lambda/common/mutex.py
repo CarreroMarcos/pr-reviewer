@@ -1,16 +1,14 @@
-"""Worker review mutex (HLD-004 D9 Concurrency Resolution item 3).
+"""Worker review mutex (ARCHITECTURE.md §5.1).
 
 One row (`pk = "mutex:pr-reviewer-worker"`) serializes multi-agent
 reviews so two workers never fan out simultaneously: `owner` is the
 holder's delivery GUID, `lease_until` is epoch SECONDS, `token` is a
 `uuid4`-hex fencing token. `MUTEX_LEASE_TTL_S = 900` equals the worker
-Lambda's hard timeout (`terraform/compute.tf:104`, the AWS maximum), so
-no live invocation outlives its lease and expiry takeover recovers only
-genuinely dead holders.
+Lambda's hard timeout (the AWS maximum), so no live invocation outlives
+its lease and expiry takeover recovers only genuinely dead holders.
 
 Primitives (caller-threads-everything; no worker wiring here — the
-holder/contender consumer lands in T026/T027, exactly as `run_fanout`
-stayed unreferenced until its wiring ticket):
+holder/contender consumer is worker-side):
 
 * `acquire` — one conditional write iff `attribute_not_exists(pk) OR
   lease_until < now − 30` (the 30s clock-skew margin sits in the PAST:
@@ -22,8 +20,8 @@ stayed unreferenced until its wiring ticket):
   stored token. Match → renewed `Lease`; mismatch (expiry takeover or
   release stole the row) → `None`. The `None` verdict IS the
   failed-refresh contract's primitive half: the holder MUST stop issuing
-  LLM work, take the degraded path, and never re-assert — worker-side
-  (T026/T027); this module never retries silently.
+  LLM work, take the degraded path, and never re-assert — worker-side;
+  this module never retries silently.
 * `release` — row removal conditioned on the stored token (only the
   holder releases; a mismatch or missing row → `False`, the other's
   lease untouched).
@@ -32,19 +30,18 @@ REMOVE-semantics reading (load-bearing): a REMOVE-clause release would
 leave a key-only row that permanently fails the pinned acquire
 condition (`attribute_not_exists(pk)` is false on the surviving key,
 and a `lease_until` comparison against the missing attribute is false)
-— a silent mutex deadlock no takeover could recover, contradicting
-HLD's "throttled or lost release ... expiry takeover recovers it".
-"REMOVE" therefore reads as row removal (conditional DeleteItem): the
-row is gone, the next acquire proceeds via `attribute_not_exists(pk)`,
-and the re-acquire-after-release test pins it. The gate owns this
-reading.
+— a silent mutex deadlock no takeover could recover, even though expiry
+takeover must recover a throttled or lost release. "REMOVE" therefore
+reads as row removal (conditional DeleteItem): the row is gone, the
+next acquire proceeds via `attribute_not_exists(pk)`, and the
+re-acquire-after-release test pins it.
 
 Table port is the boto3 Table passthrough shape: `update_item` /
 `delete_item` with `Key` / `UpdateExpression` / `ConditionExpression` /
 `ExpressionAttributeNames` / `ExpressionAttributeValues`, raising
 `common.protocol.ConditionalCheckFailed` on unmet conditions
 (`common.protocol`'s executor documents the `update_item` half; the
-concrete boto3-backed wrapper is a T026/T027 deliverable).
+concrete boto3-backed wrapper is worker-side).
 Attribute references colliding with DynamoDB reserved words (`owner`,
 `token` — official list, case-insensitive) ride aliased (`#owner`,
 `#tok`) with a real `ExpressionAttributeNames` map on every call
@@ -66,8 +63,8 @@ from common.protocol import ConditionalCheckFailed
 MUTEX_PK = "mutex:pr-reviewer-worker"
 MUTEX_LEASE_TTL_S = 900
 
-# Steal-eligibility skew (HLD D9 item 3, literal): the acquire comparison
-# value is `now − SKEW`, so takeover requires expiry plus this margin.
+# Steal-eligibility skew: the acquire comparison value is
+# `now − SKEW`, so takeover requires expiry plus this margin.
 STEAL_SKEW_S = 30
 
 
@@ -188,8 +185,7 @@ def refresh(
     stored token. Match → renewed `Lease` (same owner/token, extended
     deadline). Mismatch → `None`: the lease was lost to expiry takeover
     or release, and the caller MUST stop issuing LLM work, take the
-    degraded path, and never re-assert (T026/T027 own that discipline —
-    this verdict never retries).
+    degraded path, and never re-assert (this verdict never retries).
     """
     if not isinstance(lease, Lease):
         raise MutexError("lease", "bad_lease")

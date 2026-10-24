@@ -1,4 +1,4 @@
-"""SPR-103 T018: synthesizer-stage contract tests (HLD-004 D3, §5 item 3).
+"""T018: synthesizer-stage contract tests (ARCHITECTURE.md §5.1, D3).
 
 Deterministic merge + render over verifier survivors: duplicates merge
 iff same `file_path` AND |Δline_start| ≤ 2 AND same `category` AND
@@ -15,9 +15,6 @@ imports are brittle under pytest collection, so these tests mirror its
 documented regexes exactly (header, bullet, severity token, backticked
 `path:LINE`, single-line bullets, sentinel) with line citations instead
 of importing it.
-
-RED state: `common.fanout` has wave + verifier but NO synthesizer
-symbol — collection errors on import.
 """
 
 import re
@@ -43,8 +40,7 @@ from common.llm import LlmError, ReviewResult
 # docstring for why mirrored, not imported). _LOCATION_RE here is
 # DELIBERATELY stricter than the scorer's: no range-anchor branch — the
 # mirror enforces the synth prompt's single-line-anchor ban at contract
-# level, so scorer-parseable stays a superset. Do not sync them
-# (Gate 55 advisory 1).
+# level, so scorer-parseable stays a superset. Do not sync them.
 _HEAD_RE = re.compile(r"^##\s+Findings\s*$", re.MULTILINE)
 _BULLET_RE = re.compile(r"^\s*[-*]\s+(.*)$")
 _SEVERITY_RE = re.compile(r"\[\s*(HIGH|MEDIUM|LOW)\s*\]", re.IGNORECASE)
@@ -495,7 +491,7 @@ def test_synth_leg_passes_empty_diff_text():
     """The synth leg has no diff access (§5 flow) — it passes empty user
     content, not the diff. The double's diff_text param is REQUIRED so a
     future partial omission fails loudly here instead of TypeError-ing
-    into _SynthFailure("unknown") in production (Gate-11 Finding 1)."""
+    into _SynthFailure("unknown") in production."""
     call = ScriptedSynth(("ok", "c"))
     invoke(call)
     assert len(call.calls) == 1

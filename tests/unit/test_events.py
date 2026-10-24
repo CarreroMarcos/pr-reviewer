@@ -1,11 +1,10 @@
-"""SPR-84 T001: stage-event envelope + fixed field-set contract (HLD-004 §6, D4).
+"""T001: stage-event envelope + fixed field-set contract
+(ARCHITECTURE.md §5.3, D4).
 
-Every §6 event type must be constructible with exactly its required key
+Every event type must be constructible with exactly its required key
 fields over the shared envelope `{v: 1, run_id (uuid4 hex), ts (epoch-ms),
 type}`. Field sets are fixed: any extra/unspecified key is a contract
 violation. Consumers order by `ts`; JSONL rendering is one line per event.
-
-RED state: `common.events` does not exist yet — collection errors.
 """
 
 import json
@@ -335,6 +334,7 @@ def test_diff_stats_shape_rejected(bad_stats):
 
 def test_extra_kwargs_structurally_rejected():
     """Fixed field sets: there is no parameter for diffs/secrets/payloads."""
+    # The `diff=` kwarg below is the probe: it must be rejected, not accepted.
     with pytest.raises(TypeError):
         agent_started(specialty="correctness", diff="diff --git a/b")  # type: ignore[call-arg]
 

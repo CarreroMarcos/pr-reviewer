@@ -1,4 +1,4 @@
-"""003-T2: prior-comment fetch inside `_make_review` (HLD §2.7 payload).
+"""Prior-comment fetch inside `_make_review` (ARCHITECTURE.md §2.7).
 
 Drives the production `_make_review` review port directly (same posture as
 `test_allowed_hosts.py`): the diff transport carries PR-meta title/body, a

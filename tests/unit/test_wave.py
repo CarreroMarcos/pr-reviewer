@@ -1,4 +1,4 @@
-"""SPR-99 T014: wave-stage contract tests (HLD-004 D1, D6, §5 Partial-Success).
+"""T014: wave-stage contract tests (ARCHITECTURE.md §5.1, D1, D6).
 
 The wave fans three specialist coroutines over an explicit
 `ThreadPoolExecutor` (D1 runtime-fix pattern verbatim): executor
@@ -10,9 +10,6 @@ fail-fast with no in-executor retry, 0–1 survivors → `FanoutDegraded`,
 is existing tested behavior:
 `test_llm_401_refreshes_once_then_publishes` /
 `test_llm_401_twice_completes`).
-
-RED state: `common.fanout` has no wave-stage symbols — collection
-errors on import.
 """
 
 import concurrent.futures
@@ -308,7 +305,7 @@ def test_no_summarizer_call_single_attempt_per_specialty():
 
 
 def test_reasoning_effort_whitespace_stripped():
-    """ADV-9: env-sourced effort rides the payload stripped (strip-only)."""
+    """Env-sourced effort rides the payload stripped (strip-only)."""
     review = ScriptedReview(ok_script())
     invoke(review, cfg=make_cfg(reasoning_effort="  low\t"))
     assert all(call["reasoning_effort"] == "low" for call in review.calls)
@@ -443,7 +440,7 @@ def test_all_401_degraded_event_fields():
 def test_mixed_survivor_with_all_losses_401():
     """One survivor + uniform-401 losses: the survivor rule governs.
 
-    HLD D1's all-401 antecedent requires EVERY specialist to fail, so the
+    D1's all-401 antecedent requires EVERY specialist to fail, so the
     reason is insufficient_wave_survivors, never a false all-failed reason.
     """
     script = ok_script()
@@ -474,7 +471,7 @@ def test_window_expiry_loses_specialist_without_retry():
 
 def test_cfg_is_frozen():
     with pytest.raises(FrozenInstanceError):
-        make_cfg().wave_wait_for_s = 1  # type: ignore[misc]
+        make_cfg().wave_wait_for_s = 1  # type: ignore[misc] (frozen-instance probe)
 
 
 def test_wave_uses_snapshot_not_env(monkeypatch):

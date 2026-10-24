@@ -1,16 +1,14 @@
-"""Run archive builders (HLD-004 §6 Archive & Index Contracts).
+"""Run archive builders (ARCHITECTURE.md §5.3).
 
 Pure builders + validators for the per-run archive: `meta.json` (fixed
 shape, pipeline-keyed status mapping), `events.jsonl` (ts-ordered,
 re-validated lines), S3 key construction (viewer route-regex
 compatible), pipeline resolution, the index-row decision, and the index
-item (exactly the T031-projected attribute set).
+item (exactly the GSI-projected attribute set).
 
-Stored-row `pk` (`archive:{run_id}`) is PROVISIONAL — HLD pins the
-projected attributes via the GSI contract but not the row key; T031/T032
-own the table design and may relocate it. `started_ts` rides as epoch-ms
-INT ("timestamps epoch ms", §6); T031's parenthetical "(S)" is flagged
-for that ticket to resolve.
+Stored-row `pk` (`archive:{run_id}`) is provisional: the GSI contract
+pins the projected attributes but not the row key. `started_ts` rides
+as epoch-ms INT in `meta.json`; only the index row renders it as ISO.
 
 Side effects (S3 puts, the DDB write) belong to the caller
 (`worker_handler` threads injected clients); this module never imports
@@ -38,8 +36,8 @@ STATUSES_BY_PIPELINE = {
 
 ARCHIVE_FILENAMES = ("events.jsonl", "meta.json")
 
-# Stage-owned event types: the sequencer's legs (HLD §5 flow tree). Their
-# presence means fan-out ran — anything else (or nothing) is single-pass.
+# Stage-owned event types: the sequencer's legs (ARCHITECTURE.md §5.3).
+# Their presence means fan-out ran — anything else is single-pass.
 _MULTI_AGENT_TYPES = frozenset(
     {
         "agent_started",
@@ -97,7 +95,7 @@ def _check_ts(value: Any, field: str) -> int:
 
 
 def check_status(pipeline: Any, status: Any) -> tuple[str, str]:
-    """Enforce the §6 status mapping (status = REVIEW outcome). Returns
+    """Enforce the §5.3 status mapping (status = REVIEW outcome). Returns
     the validated pair; anything off-mapping raises `ArchiveError`."""
     if pipeline not in STATUSES_BY_PIPELINE:
         raise ArchiveError("pipeline", "bad_pipeline")
@@ -118,19 +116,18 @@ def build_meta(
     token_usage: int = 0,
     token_usage_by_stage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Assemble a validated `meta.json` object (HLD §6 fixed shape).
+    """Assemble a validated `meta.json` object (ARCHITECTURE.md §5.3).
 
-    `token_usage` / `token_usage_by_stage` are the T066 per-review
-    rollup (see `token_rollup`): optional and defaulted so older
-    callers stay green; validated and stored when given."""
+    `token_usage` / `token_usage_by_stage` are the per-review rollup
+    (see `token_rollup`): optional and defaulted so older callers stay
+    green; validated and stored when given."""
     check_status(pipeline, status)
     if not isinstance(token_usage, int) or isinstance(token_usage, bool) or token_usage < 0:
         raise ArchiveError("token_usage", "bad_token_usage")
     by_stage = _check_token_usage_by_stage(token_usage_by_stage)
     if token_usage != sum(by_stage.values()):
-        # Consistency invariant (bot r1): a meta claiming a total that
-        # disagrees with its own per-stage split is self-inconsistent
-        # however it got there.
+        # A total that disagrees with its own per-stage split is
+        # self-inconsistent however it got there.
         raise ArchiveError("token_usage", "bad_token_usage")
     meta = {
         "v": EVENT_VERSION,
@@ -146,9 +143,8 @@ def build_meta(
         "token_usage_by_stage": by_stage,
     }
     if meta["finished_ts"] < meta["started_ts"]:
-        # Monotonicity is a shape invariant: an archive that claims to
-        # finish before it started is malformed however it got there
-        # (bot r1:88).
+        # Monotonicity is a shape invariant: finishing before starting
+        # is malformed however it got there.
         raise ArchiveError("finished_ts", "bad_ts_order")
     return meta
 
@@ -167,9 +163,8 @@ def render_events_jsonl(events: list[dict[str, Any]]) -> str:
         ts = event.get("ts") if isinstance(event, dict) else None
         if not isinstance(ts, int) or isinstance(ts, bool):
             # Fail typed BEFORE sorting: a missing/string `ts` would
-            # otherwise silently reorder (default 0) or blow up as a
-            # confusing TypeError inside the sort key (bot r1:126). Same
-            # class+code the events validator uses for a bad ts.
+            # otherwise silently reorder or raise a confusing TypeError
+            # inside the sort key. Same class+code as the events validator.
             raise EventsError("ts", "bad_ts")
     ordered = sorted(events, key=lambda event: event["ts"])
     return "\n".join(to_jsonl(event) for event in ordered)
@@ -186,7 +181,7 @@ def s3_key(pr_number: int, sha: str, run_id: str, filename: str) -> str:
 def resolve_pipeline(events: list[dict[str, Any]]) -> str:
     """Pipeline discriminator from the run's own events: fan-out stage
     events (or the degrade marker) mean `multi_agent`; anything else is
-    `single_pass`. (`phase0_shadow` has no producer yet — T035/T036.)"""
+    `single_pass`. (`phase0_shadow` has no producer yet.)"""
     for event in events:
         if isinstance(event, dict) and event.get("type") in _MULTI_AGENT_TYPES:
             return "multi_agent"
@@ -194,8 +189,8 @@ def resolve_pipeline(events: list[dict[str, Any]]) -> str:
 
 
 def should_write_index_row(events: list[dict[str, Any]]) -> bool:
-    """`review_skipped` is an EVENT, never a row (HLD §6): a skipped run
-    archives its events to S3 but writes no index row."""
+    """`review_skipped` is an EVENT, never a row (ARCHITECTURE.md §5.3):
+    a skipped run archives its events to S3 but writes no index row."""
     return not any(
         isinstance(event, dict) and event.get("type") == "review_skipped" for event in events
     )
@@ -206,7 +201,7 @@ def findings_count(events: list[dict[str, Any]]) -> int:
     merged total (0 when the stage never ran). Takes the max across
     `review_synthesized` events rather than a sum — `findings_merged_n`
     is the run's final merged total, so multiple synthesized events
-    (not producible today) must not double-count (bot r1:159)."""
+    must not double-count."""
     count = 0
     for event in events:
         if isinstance(event, dict) and event.get("type") == "review_synthesized":
@@ -256,7 +251,7 @@ def _clean_tokens(value: Any) -> int:
 
 
 def token_rollup(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Reduce stage `usage` into the per-review rollup (T066, HLD §6).
+    """Reduce stage `usage` into the per-review rollup (ARCHITECTURE.md §5.3).
 
     `agent_completed` events sum into "wave" (ALL of them — one per
     specialist), `verification_done` into "verifier",
@@ -278,16 +273,12 @@ def token_rollup(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _index_started_ts(value: int) -> str:
-    """GSI `started_ts` is a String sort key (HLD §7 / T031): ISO-8601 UTC
-    keeps lexicographic order == chronological order (epoch-ms digits do
-    not sort correctly as strings). The input stays epoch-ms INT (T028's
-    meta.json contract — that artifact is unchanged); only the index row
-    is ISO. Resolves the tension T029's docstring deferred to T031 —
-    deliberate conversion at this boundary, not a silent coercion.
-    Two same-millisecond runs tie on the sort key: the projected `run_id`
-    attribute is the deterministic query tiebreaker. This function is the
-    single validation point for the index row's started_ts (the caller
-    passes the raw epoch-ms value)."""
+    """GSI `started_ts` is a String sort key (ARCHITECTURE.md §5.3):
+    ISO-8601 UTC keeps lexicographic order == chronological order
+    (epoch-ms digits do not sort correctly as strings). The input stays
+    epoch-ms INT (the meta.json contract); only the index row is ISO.
+    Two same-millisecond runs tie on the sort key: the projected
+    `run_id` attribute is the deterministic query tiebreaker."""
     checked = _check_ts(value, "started_ts")
     return (
         datetime.fromtimestamp(checked / 1000, tz=UTC)
@@ -308,11 +299,10 @@ def build_index_item(
     archive_written_at: int,
     findings_n: int,
 ) -> dict[str, Any]:
-    """Assemble the best-effort DDB index item: the T031-projected
-    attribute set plus top-level `run_id` (Mars ruling 2026-09-28 — the
-    GSI projects it for the latest-run contract, #148; a projected
-    attribute no writer stores is dead config, Gate-40 F1). `pk`
-    provisional — see module docstring."""
+    """Assemble the best-effort DDB index item: the GSI-projected
+    attribute set plus top-level `run_id` (the GSI projects it for the
+    latest-run contract; a projected attribute no writer stores is dead
+    config). `pk` provisional — see module docstring."""
     check_status(pipeline, status)
     if not isinstance(archive_s3_key, str) or not archive_s3_key:
         raise ArchiveError("archive_s3_key", "bad_key")

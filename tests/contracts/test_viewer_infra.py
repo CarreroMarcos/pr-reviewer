@@ -1,16 +1,16 @@
-"""Contract pins for the viewer delivery surface (T051a/T051b).
+"""Contract pins for the viewer delivery surface.
 
 The replay site's viewer Lambda is the one internet-reachable surface in
-the stack, so its Function URL posture is pinned exactly per the HLD §7
-Oct-2025 hardening: NONE authorization (public static shell + token-
-gated API by design) with BOTH resource-policy statements AWS requires
+the stack, so its Function URL posture is pinned exactly: NONE
+authorization (public static shell + token-gated API by design) with
+BOTH resource-policy statements AWS requires
 for a NONE-auth URL — the URL-invocation grant conditioned on
 `lambda:FunctionUrlAuthType`, and the companion `lambda:InvokeFunction`
 grant conditioned on `lambda:InvokedViaFunctionUrl = true` (without it,
 callers routed through the plain invoke action are denied at the URL).
 
-Creator half of the T051a/T051b pair: this file REDs against a missing
-terraform/viewer.tf and GREENs only when T051b lands the exact surface.
+This file fails against a missing terraform/viewer.tf and passes only
+when the exact surface is present.
 """
 
 import re
@@ -28,7 +28,7 @@ def _viewer_tf() -> str:
 def _resource_block(source: str, kind: str, name: str) -> str:
     # Terminator is a column-0 closing brace (MULTILINE ^}) — the fmt-
     # guaranteed block boundary. The no-bleed assert catches a lazy match
-    # spanning into the next resource (bot review #1 on PR #144).
+    # spanning into the next resource.
     m = re.search(
         rf'resource "{re.escape(kind)}" "{re.escape(name)}" \{{(.*?)^}}',
         source,
@@ -41,7 +41,7 @@ def _resource_block(source: str, kind: str, name: str) -> str:
 
 
 def test_viewer_lambda_exists():
-    """T051a: the viewer Lambda resource exists under its pinned name."""
+    """The viewer Lambda resource exists under its pinned name."""
     block = _resource_block(_viewer_tf(), "aws_lambda_function", "viewer")
     assert re.search(r'function_name\s*=\s*"pr-reviewer-viewer"', block), (
         "viewer Lambda not named pr-reviewer-viewer"
@@ -49,16 +49,16 @@ def test_viewer_lambda_exists():
 
 
 def test_viewer_function_url_none_auth():
-    """T051a: the Function URL exists with authorization_type NONE — the
-    public static shell + token-gated API design (HLD §7)."""
+    """The Function URL exists with authorization_type NONE — the
+    public static shell + token-gated API design."""
     block = _resource_block(_viewer_tf(), "aws_lambda_function_url", "viewer")
     assert re.search(r'authorization_type\s*=\s*"NONE"', block), "Function URL auth is not NONE"
 
 
 def test_viewer_function_url_permission():
-    """T051a: the URL-invocation grant — action lambda:InvokeFunctionUrl,
+    """The URL-invocation grant — action lambda:InvokeFunctionUrl,
     Principal *, auth-conditioned on FunctionUrlAuthType NONE (the
-    Oct-2025 hardening: a NONE URL without this condition is a hole).
+    a NONE URL without this condition is a hole).
     The provider models the condition as the typed argument
     `function_url_auth_type`, which compiles to the resource-policy
     condition StringEquals lambda:FunctionUrlAuthType = NONE."""
@@ -69,7 +69,7 @@ def test_viewer_function_url_permission():
 
 
 def test_viewer_invoked_via_function_url_permission():
-    """T051a: the companion grant — action lambda:InvokeFunction with the
+    """The companion grant — action lambda:InvokeFunction with the
     InvokedViaFunctionUrl = true condition (AWS requires BOTH statements
     for a NONE-auth Function URL); the provider-native argument form
     compiles to StringEquals lambda:InvokedViaFunctionUrl = true."""
@@ -82,10 +82,9 @@ def test_viewer_invoked_via_function_url_permission():
 
 
 def test_viewer_deploy_blocked_until_t054_handler():
-    """T051b guard (bot review #1, PR #144): the placeholder must be
-    mechanically un-deployable — the Lambda's plan-time precondition
-    hard-fails any plan/apply while the packaged handler is the stub,
-    so the T056 deploy tag cannot precede T054 by convention alone."""
+    """The placeholder must be mechanically un-deployable — the
+    Lambda's plan-time precondition hard-fails any plan/apply while
+    the packaged handler is the stub."""
     block = _resource_block(_viewer_tf(), "aws_lambda_function", "viewer")
     assert "precondition" in block, "no stub-deploy precondition on the viewer Lambda"
     assert re.search(r"strcontains\(\s*file\(", block), (

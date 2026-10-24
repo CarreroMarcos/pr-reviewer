@@ -1,4 +1,5 @@
-"""SPR-92 T009: span-preserving markdown sanitization tests (HLD-004 §5 item 2).
+"""T009: span-preserving markdown sanitization tests
+(ARCHITECTURE.md §5.2).
 
 Fenced blocks + inline backtick spans stash to indexed `\x00CODE_SPAN_N\x00`
 placeholders and come back byte-identical; prose neutralizes exactly four
@@ -123,7 +124,7 @@ def test_non_string_input_rejected(value):
     assert excinfo.value.field == "text"
 
 
-# HLD-004 §5 item 5: payload-token redaction (runs after span
+# ARCHITECTURE.md §5.2: payload-token redaction (runs after span
 # re-substitution over the fully-restored text).
 
 
@@ -191,8 +192,8 @@ def test_structure_phases_still_apply_before_redaction():
 
 
 def test_sanitize_idempotent_on_shipped_mix():
-    # Gate-54 coverage gap 1: reconcile re-publishes shipped text, so
-    # sanitize∘sanitize must be identity over the structure outputs.
+    # Reconcile re-publishes shipped text, so sanitize∘sanitize must
+    # be identity over the structure outputs.
     once = sanitize(
         "see ![img](http://x.test/i.png), <http://x.test/a>, "
         f"`tok {CANARY_SUBSTRING}` and a@b.test\n\n```\n9f3a7c2e1b4d6a8e\n```"
@@ -201,8 +202,8 @@ def test_sanitize_idempotent_on_shipped_mix():
 
 
 def test_email_inside_inline_code_span_redacted():
-    # Gate-54 F5: the fence row pins crossing fenced blocks; this pins
-    # inline spans (same phase-4 pass over fully-restored text).
+    # The fence row pins crossing fenced blocks; this pins inline
+    # spans (same pass over fully-restored text).
     out = sanitize("`mail bob@corp.example` end")
     assert "bob@corp.example" not in out
     assert "[redacted:email]" in out

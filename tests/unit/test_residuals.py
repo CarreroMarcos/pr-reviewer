@@ -1,4 +1,4 @@
-"""SPR-94 T010a: accepted-residuals parser contract tests (HLD-004 D7).
+"""T010a: accepted-residuals parser contract tests (D7).
 
 TOLERANT parser (the opposite of findings.py's fail-closed validation):
 `repo#pr`-keyed sections map to their accepted-residual lines; missing

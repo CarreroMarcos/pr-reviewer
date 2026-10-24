@@ -1,8 +1,7 @@
-"""T052: failure-state notice contract **[D2]** (FR-028, FR-019, FR-020,
-FR-026; contracts/canonical-comment.md).
+"""Failure-state notice contract **[D2]** (ARCH §4, form 2).
 
 Exercises `common.failure_notice` — assembly of the fixed template plus
-fenced publication of the notice through the HLD §3.3 path, with the D2
+fenced publication of the notice through the ARCH §3.2 path, with the D2
 trigger mapping as a pure decision function.
 
 Mapping (contract row → test):
@@ -45,20 +44,17 @@ Ports (duck-typed — fakes mirror these exactly):
   `common.protocol.ConditionalCheckFailed` on guard mismatch. `FakeTable`
   evaluates EXACTLY the condition strings the fenced path emits
   (establish/claim/finalize/creation-lease) and raises ValueError on
-  anything else — Gate-2 discipline: a builder-string change breaks
-  tests, never passes silently.
+  anything else — a builder-string change breaks tests, never passes
+  silently.
 * GitHub side: `list_page(page)` (parsed JSON), `create_comment(body)`,
   `update_comment(id, body)` (PATCH), `delete_comment(id)`.
 
-Disposition boundary: `publish_failure_notice` RETURNS the HLD §4.3 /
-research-R8 `failure_notice_published` value (`true`/`false`/
-`skipped-stale`); emitting it into `logs.py` FIXED_FIELDS and wiring the
-worker call site (+ SQS `ApproximateReceiveCount` extraction) is T054
-scope, not this module's.
+Disposition boundary: `publish_failure_notice` RETURNS the
+`failure_notice_published` value (`true`/`false`/`skipped-stale`);
+emitting it into `logs.py` FIXED_FIELDS and wiring the worker call site
+(+ SQS `ApproximateReceiveCount` extraction) is outside this module.
 
 All deterministic: fixed clock (`NOW`), scripted collaborators, no sleeps.
-RED phase: `common.failure_notice` does not exist yet — ImportError-driven
-failure is the expected red.
 """
 
 import pytest
@@ -325,11 +321,11 @@ def test_invalid_phase_and_attempts_rejected():
     from common.failure_notice import NoticeError
 
     with pytest.raises(NoticeError) as phase_exc:
-        build_failure_notice(REPO, PR_NUMBER, SHA_B, phase="retrying")  # type: ignore[arg-type]
+        build_failure_notice(REPO, PR_NUMBER, SHA_B, phase="retrying")  # type: ignore[arg-type] (invalid input)
     assert phase_exc.value.field == "phase"
     for bad_attempts in (0, -1, True, "3", 2.0, 100):
         with pytest.raises(NoticeError) as attempts_exc:
-            build_failure_notice(REPO, PR_NUMBER, SHA_B, attempts=bad_attempts)  # type: ignore[arg-type]
+            build_failure_notice(REPO, PR_NUMBER, SHA_B, attempts=bad_attempts)  # type: ignore[arg-type] (invalid input)
         assert attempts_exc.value.field == "attempts"
 
 
@@ -344,7 +340,7 @@ def test_marker_present_once_first():
 def test_prohibition_list():
     """No internal error details, provider names, statuses, credential-like
     strings, @mentions, external media, or approval/merge verdicts —
-    the notices carry zero operable or misleading content (FR-026/028).
+    the notices carry zero operable or misleading content.
     Plain-language "retry"/"30 minutes" wording IS allowed (the first-
     failure notice is honest about the automatic retry); internal error
     vocabulary (timeout codes, statuses) is still banned."""
@@ -437,7 +433,7 @@ def test_absent_comment_posts_via_creation_lease():
 def test_stale_revision_skipped_stale():
     """Fence mismatch (live moved past the reviewed revision) → the notice
     for a stale revision is NOT published: no GitHub write of any kind
-    after the fence, disposition `skipped-stale` (FR-028 currency check)."""
+    after the fence, disposition `skipped-stale` (currency check)."""
     table, github = (
         FakeTable(),
         ScriptedGitHub(comments=[{"id": STORED_ID, "body": "old review " + MARKER}]),
@@ -504,7 +500,7 @@ def test_transport_failure_returns_false_never_raises():
     assert result.comment_id is None
 
 
-# --- trigger mapping: which §2.3 item 8 rows publish ---
+# --- trigger mapping: which error-table rows publish ---
 
 
 @pytest.mark.parametrize(
@@ -605,11 +601,11 @@ def test_no_notice_rows_skip():
     assert should_publish_notice(NoticeTrigger.NON_FAILURE, receive_count=5) is False
 
 
-# --- 003-T1: review-port signature conformance (header-free proof) -----------
+# --- review-port signature conformance (header-free proof) ---
 
 
 def test_notice_path_runs_under_new_review_signature_without_header():
-    """The D2 notice path runs through `run_review` under the 003-T1 review
+    """The D2 notice path runs through `run_review` under the review
     signature (the closure accepts the established pair, ignored) and the
     notice body carries NO review header (fixed system template)."""
     table, github = (

@@ -1,10 +1,10 @@
-"""T036: comment reconciliation on a fake table (HLD §3.4; FR-003; US2.AC3).
+"""Comment reconciliation on a fake table (ARCH §3.3).
 
 Exercises `common.reconcile.reconcile` — fully-paginated, shape-validated
 comment listing + exact-marker match + deterministic adoption/deletion +
 creation lease (`attribute_not_exists(comment_id)` + claim condition).
 
-Mapping (HLD §3.4 clause → test):
+Mapping (ARCH §3.3 clause → test):
 
 * exactly one marker match → adopt →
   `test_single_marker_match_is_adopted_and_persisted`
@@ -30,7 +30,7 @@ Ports (duck-typed — fakes mirror these exactly):
   `FakeTable` below evaluates EXACTLY the two condition strings the module
   emits (finalize-shaped adopt persist + creation lease) and raises
   ValueError on anything else — a condition-string change must break tests,
-  never pass silently (same Gate-2 discipline as `dynamodb_stub.py`).
+  never pass silently (same discipline as `dynamodb_stub.py`).
 * `list_page(page) -> parsed JSON value` (page numbers from 1): one GitHub
   list-comments page; the module owns pagination.
 * `create_comment(body) -> int` (POST), `update_comment(id, body)` (PATCH,
@@ -38,8 +38,7 @@ Ports (duck-typed — fakes mirror these exactly):
   `delete_comment(id)` (DELETE).
 
 All tests are deterministic: fixed clock (`NOW`), scripted list rounds, no
-sleeps. RED phase: `common.reconcile` does not exist yet, so this module
-fails at import (expected — T039 implements it).
+sleeps.
 """
 
 from common.marker import build_marker
@@ -284,7 +283,7 @@ def test_creation_lease_race_loser_adopts_winner():
     """B lists (empty) but loses the lease to live-holder A → B's lease
     write fails its condition → B re-runs, finds A's comment, adopts it.
     B never POSTs: exactly one comment is created. B's persist is refused
-    by the finalize owner guard (SPR-63: B holds no lease), so the record
+    by the finalize owner guard (B holds no lease), so the record
     keeps A's lease — adoption returns the id, persistence stays with the
     lease holder."""
     table = FakeTable()

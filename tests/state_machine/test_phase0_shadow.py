@@ -1,4 +1,4 @@
-"""SPR-119 T035: Phase-0 shadow contract tests (HLD-004 §8 Phase 0).
+"""Phase-0 shadow contract tests.
 
 Flag precedence: `MULTI_AGENT=1` ignores `MULTI_AGENT_PHASE0` entirely
 (no shadow); shadow iff `MULTI_AGENT=0 AND MULTI_AGENT_PHASE0=1`;
@@ -6,9 +6,9 @@ both 0 = legacy (events exactly `review_started` / `checkpoint` /
 `review_published` — nothing else).
 
 Ordering: the single-pass publishes FIRST with unchanged latency; ONE
-correctness specialist runs inline AFTER publish via the T015 wave
-primitive (pool at FANOUT_CONCURRENCY, `specialties=("correctness",)`)
-iff remaining ≥ `WAVE_WAIT_FOR_S + BUDGET_MARGIN_S`, else a
+correctness specialist runs inline AFTER publish via the wave primitive
+(pool at FANOUT_CONCURRENCY, `specialties=("correctness",)`) iff
+remaining ≥ `WAVE_WAIT_FOR_S + BUDGET_MARGIN_S`, else a
 `review_skipped {reason: "phase0_no_budget"}` EVENT (no index row).
 Shadow never blocks publish (POST precedes every shadow leg call);
 never shares the 401-refresh budget (SSM re-fetch count stays 1 even
@@ -24,9 +24,6 @@ events are the shadow telemetry and the helper swallows the exception.
 A shadow run therefore returns True with `agent_completed` present; a
 failed leg returns True with `agent_failed` present. Neither ever fails
 the (already published) review.
-
-RED state: `worker_handler` has no shadow-wiring symbols — collection
-errors on import.
 """
 
 import json
@@ -279,7 +276,7 @@ def make_provider():
 
 def shadow_leg(log, *, behavior=None):
     """Production-faithful `review_diff` double: required kwargs, no
-    defaults (Gate-11); records every leg call on the shared timeline."""
+    defaults; records every leg call on the shared timeline."""
 
     def _call(
         *,
@@ -519,16 +516,16 @@ def test_shadow_archive_pipeline_and_row(monkeypatch):
     assert row is not None and row["pipeline"] == "phase0_shadow"
     puts_at = [i for i, e in enumerate(shared) if e[0] == "s3"]
     leg_at = [i for i, e in enumerate(shared) if e == ("shadow-leg",)]
-    # Archive AFTER shadow (T035): a reorder would silently drop the
-    # shadow agent_* telemetry from the archive — pin leg-before-puts
-    # on the shared timeline (Gate 20, Finding 1).
+    # Archive AFTER shadow: a reorder would silently drop the shadow
+    # agent_* telemetry from the archive — pin leg-before-puts on the
+    # shared timeline.
     assert leg_at and max(leg_at) < min(puts_at)
     leg_logged = any(True for _ in events_of_type(events, "agent_completed"))
     assert leg_logged and len(puts_at) == 2
 
 
 def test_conflict_publishes_and_participates_in_shadow(monkeypatch):
-    """Bot R2 Fix 2: `PUBLISHED_FINALIZE_CONFLICT` means the review
+    """`PUBLISHED_FINALIZE_CONFLICT` means the review
     published (GitHub comment exists) — the fence loss is delivery
     bookkeeping. Shadow still runs, archive row lands with
     status="published" and the shadow pipeline literal."""
@@ -623,13 +620,12 @@ def test_shadow_skip_no_budget(monkeypatch, caplog):
 
 
 def test_shadow_missing_stash_no_diff(monkeypatch, caplog):
-    """Bot R1 Fix 3 (adapted — see below): shadow-eligible flags but no
+    """Shadow-eligible flags but no
     stashed diff (the closure did not stash — older caller shape) → the
     skip is LOUD, never silent.
 
-    Deviation from the bot's literal prescription (`review_skipped`
-    with reason `phase0_no_diff`): HLD §6 closes the skipped-reason set
-    to `{"empty_diff", "phase0_no_budget"}` (`events.py:37`) and neither
+    The skipped-reason set is closed to
+    `{"empty_diff", "phase0_no_budget"}` (`events.py:37`) and neither
     is truthful here, so the branch warns (`shadow_no_diff`) instead of
     emitting a false-categorized event. The run archives as the plain
     single-pass publish it was (2 puts + index row)."""
@@ -702,7 +698,7 @@ def test_shadow_leg_failure_never_blocks(monkeypatch, caplog):
 
 
 def test_witness_scoped_to_shadow_leg_emissions(monkeypatch, caplog):
-    """Bot R2 Fix 1: a pre-existing correctness `agent_completed` (prior
+    """A pre-existing correctness `agent_completed` (prior
     degraded fan-out) must not witness for the shadow leg — a
     produced-nothing shadow logs `shadow_failed`, never
     `shadow_degraded`."""
@@ -741,7 +737,7 @@ def test_witness_scoped_to_shadow_leg_emissions(monkeypatch, caplog):
 
 
 def test_helper_generic_exception_never_raises(caplog):
-    """Bot R1 Fix 1: past the budget gate the helper is a never-raises
+    """Past the budget gate the helper is a never-raises
     boundary — even a non-`FanoutDegraded` fault (here a `None`
     diff_result blowing up the renderer) warns `shadow_failed` and
     still returns True; the published review is untouched."""
@@ -881,7 +877,7 @@ def test_helper_exact_boundary_runs(monkeypatch):
 
 
 def test_helper_signature_isolated():
-    """Bot R2 Fix 2 (401-test pin): isolation-by-construction — the
+    """Isolation-by-construction — the
     helper's signature carries snapshot scalars (`api_key`/`model`/
     `endpoint`) and never a holder-shaped parameter, so there is no
     code path that could reach the 401-refresh budget. Blacklist

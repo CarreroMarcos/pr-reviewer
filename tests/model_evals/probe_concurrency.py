@@ -1,26 +1,24 @@
-"""T041 out-of-band N=4 concurrency probe (HLD D9 concurrency ceiling + §8 exit criteria).
+"""Out-of-band N=4 concurrency probe (HLD D9 concurrency ceiling + §8 exit criteria).
 
-Fires 4 CONCURRENT GLM calls (ThreadPoolExecutor, max_workers=4 —
+Fires 4 concurrent GLM calls (ThreadPoolExecutor, max_workers=4 —
 simultaneous in-flight, not sequential) and records per-call status
 (all-200 vs 429/1302) with latencies into a timestamped evidence file
-under `tests/model_evals/results/`. T044 re-runs this probe and records
-the formal verdict (trip → Phase-1 ships contender-queuing, T047).
+under `tests/model_evals/results/`.
 
-NEVER in any request-serving path: out-of-band human tool + stub tests
+Never in any request-serving path: out-of-band human tool + stub tests
 only; CI makes zero external calls. Stdlib + boto3 only.
 
-HLD grounding (D9, hardened 2026-09-26): N=1/2/3 measured all-200,
-N=5 tripped one 429 (code 1302) after ~240s of waiting; N=4 was never
-explicitly measured and sits AT the tier edge (3 fan-out calls plus a
-contender single-pass in the contention window). Legs mirror production
-(thinking-enabled `low` effort) so the probe stresses what the
-contention window actually contains.
+Grounding (HLD D9): N=1/2/3 measured all-200, N=5 tripped one 429
+(code 1302) after ~240s of waiting; N=4 sits at the tier edge (3 fan-out
+calls plus a contender single-pass in the contention window). Legs
+mirror production (thinking-enabled `low` effort) so the probe stresses
+what the contention window actually contains.
 
 Status taxonomy (production `LlmError` classes): `ok` (HTTP 200),
 `throttled` (`rate_limit` = HTTP 429 / code 1302), `error` (anything
-else — timeouts, transport, malformed; inconclusive, NOT a tier trip).
+else — timeouts, transport, malformed; inconclusive, not a tier trip).
 `tripped` in the summary means 429/1302 observed specifically; any
-non-ok status still fails the all-200 exit criterion (T044 judges).
+non-ok status still fails the all-200 exit criterion.
 """
 
 from __future__ import annotations
@@ -41,10 +39,9 @@ RESULTS_DIR = EVAL_DIR / "results"
 sys.path.insert(0, str(LAMBDA_DIR))
 sys.path.insert(0, str(EVAL_DIR))
 
-# NOTE: `common.llm` is imported lazily inside the live path
+# `common.llm` is imported lazily inside the live path
 # (`_live_probe_fn`) — stub tests and offline tooling must never require
-# the provider modules at import time (mirrors the capture harness's
-# lazy boto3 pattern).
+# the provider modules at import time.
 
 REGION = "us-west-2"
 N_CALLS = 4

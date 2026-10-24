@@ -1,4 +1,4 @@
-"""SPR-113 T028: archive contract tests (HLD-004 §6 Archive & Index Contracts).
+"""Archive contract tests (ARCH §5.3 archives/index).
 
 `meta.json` = `{v: 1, run_id (uuid4 hex 32), pr, sha, pipeline,
 status, started_ts, finished_ts (epoch ms), archive_version: 1,
@@ -8,11 +8,10 @@ degraded_single_pass | failed; `single_pass` → published | failed;
 `phase0_shadow` → published | failed; status = REVIEW outcome);
 `review_skipped` is an EVENT, never a row; run events ordered by `ts`;
 S3 keys match the viewer route regex
-`^runs/\\d+/[0-9a-f]{40}/[0-9a-f]{32}/(events\\.jsonl|meta\\.json)$`
-(hex run_id compatibility, gate 5).
+`^runs/\\d+/[0-9a-f]{40}/[0-9a-f]{32}/(events\\.jsonl|meta\\.json)$`.
 
-Worker rows (T029 wiring): S3 puts of `events.jsonl` + `meta.json`
-happen AFTER finalize (never inside the review callback — pinned by
+Worker rows: S3 puts of `events.jsonl` + `meta.json` happen AFTER
+finalize (never inside the review callback — pinned by
 put-after-finalize ordering on one shared timeline); the best-effort
 DDB index row is written AFTER finalize by `worker_handler` (a failing
 index write never fails the review); the degraded fallback run archives
@@ -22,8 +21,6 @@ index write never fails the review); the degraded fallback run archives
 Table semantics reuse the exact-condition `dynamodb_stub.InMemoryTable`
 (sibling `tests/state_machine/` dir, added to the path below); S3 is an
 in-file recording fake (no network — `put_object` port shape only).
-
-RED state: `common.archive` does not exist — collection errors on import.
 """
 
 import json
@@ -142,7 +139,7 @@ def test_meta_shape_and_literals():
 
 
 def test_meta_rejects_dashed_36_char_run_id():
-    """Gate-5 regression pin: a dashed uuid4 (36 chars) is NOT a valid
+    """A dashed uuid4 (36 chars) is NOT a valid
     run_id — the old route regex required a shape no generated id could
     match."""
     with pytest.raises(ArchiveError):
@@ -167,7 +164,7 @@ def test_meta_rejects_bad_scalars():
             build_meta(**meta_kwargs(**{field: value}))
 
 
-# --- token/cost rollup (T066, HLD §6) ----------------------------------------------------------
+# --- token/cost rollup ---
 
 
 def full_stage_events():
@@ -292,7 +289,7 @@ def test_meta_rejects_bad_token_usage():
 
 
 def test_meta_rejects_token_usage_mismatch():
-    """Consistency invariant (bot r1): the total must equal the sum of
+    """Consistency invariant: the total must equal the sum of
     its own per-stage split — a self-inconsistent meta fails the shape."""
     with pytest.raises(ArchiveError):
         build_meta(
@@ -580,8 +577,8 @@ def drive_record(
     """Drive one record through `_process_record` with archive wiring on.
 
     Pins `MULTI_AGENT_PHASE0=0`: this helper drives the legacy single-pass
-    scenario, and the deployed default is 1 since T043 (shadow-path
-    contract tests set the flag explicitly).
+    scenario, while the deployed default is 1 (shadow-path contract
+    tests set the flag explicitly).
     """
     monkeypatch.setenv("MULTI_AGENT_PHASE0", "0")
     if multi_agent:
@@ -769,14 +766,13 @@ def test_index_item_shape():
         findings_n=3,
     )
     assert item["pk"] == f"archive:{RUN_ID}"
-    # Top-level run_id (Mars ruling 2026-09-28, #148 + Gate-40 F1): the
-    # GSI projects it for the latest-run contract — a projected
-    # attribute the writer never stored would be dead config and the
-    # viewer response would permanently miss run_id.
+    # Top-level run_id: the GSI projects it for the latest-run contract
+    # — a projected attribute the writer never stored would be dead
+    # config and the viewer response would permanently miss run_id.
     assert item["run_id"] == RUN_ID
     assert item["pr_number"] == PR_NUMBER
-    # GSI sort key is String (HLD §7/T031): the index row carries ISO-8601
-    # UTC; meta.json keeps epoch-ms INT (T028).
+    # GSI sort key is String: the index row carries ISO-8601 UTC;
+    # meta.json keeps epoch-ms INT.
     assert item["started_ts"] == (
         datetime.fromtimestamp(NOW, tz=UTC)
         .isoformat(timespec="milliseconds")

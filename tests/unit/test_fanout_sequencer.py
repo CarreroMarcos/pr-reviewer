@@ -1,4 +1,4 @@
-"""SPR-148 T021a: run_fanout sequencer contract tests (HLD-004 :418, §5 item 1, D8).
+"""T021a: run_fanout sequencer contract tests (ARCHITECTURE.md §5.1, D8).
 
 `run_fanout(diff_result, residuals, cfg, context) -> str` sequences
 wave → post-wave candidate_id assignment → verifier → synthesizer and
@@ -6,41 +6,35 @@ returns the synthesizer comment body; any leg failure fails fast into
 `FanoutDegraded(reason, failed_stage)` with no re-sampling and no
 in-invocation retry.
 
-Contract pins (see tasks.md T021a verbatim):
+Contract pins (tasks.md T021a):
 - Cumulative budget gate FIRST (remaining ≥ wave + verifier + synth +
-  margin), re-sampled per stage boundary (Gate-8(b)); exhaustion raises
+  margin), re-sampled per stage boundary; exhaustion raises
   `FanoutDegraded("insufficient_budget", <upcoming stage>)` — reason
-  strings are DETERMINED (HLD D9 pins the arithmetic, not the strings).
-- `run_fanout` is the nonce AUTHORITY: specialist prompts nonce-free
+  strings are determined by the code (D9 pins the arithmetic, not the strings).
+- `run_fanout` is the nonce authority: specialist prompts nonce-free
   end-to-end; the verifier prompt carries its own two fresh nonces, the
   synthesizer prompt its own one; no nonce crosses prompt strings.
 - candidate_id `{specialty}:{index}` assigned post-wave (index = position
-  in that specialist's findings array, HLD :538-539); specialists never
-  see IDs; candidates location-sorted before the verifier (deterministic
-  chain order); parse-before-clamp (Gate-4/8(c)).
-- Specialist coordinates are clamped-and-flagged post-wave (HLD :111-114;
-  backfilled onto the stage's own `agent_completed` event, which the
-  reconciliation rider gave the `coordinates_clamped_n` field); unknown
-  files pass through untouched, never dropped (Gate-4 guard).
-- Verifier output is ACCEPTED WITH DOCUMENTATION (Gate-10 advisory
-  recommendation — HLD :111 pins clamping for *specialist* coordinates
-  only; the synthesizer trust boundary is prompt-contract + eval-measured,
-  never runtime-rejected).
+  in that specialist's findings array); specialists never see IDs;
+  candidates location-sorted before the verifier (deterministic chain
+  order); parse-before-clamp.
+- Specialist coordinates are clamped-and-flagged post-wave
+  (ARCHITECTURE.md §5.3; backfilled onto the stage's own
+  `agent_completed` event as `coordinates_clamped_n`); unknown files
+  pass through untouched, never dropped.
+- Verifier output is accepted without runtime clamping: clamping applies
+  to *specialist* coordinates only; synthesizer fidelity is
+  prompt-contract + eval-measured (§5.4), never runtime-rejected.
 - Emitted events are the stages' own (`agent_*` / `verification_*` /
   `review_synthesized`); the sequencer emits none of its own and everything
   appends on the loop thread (the T023 closure owns `review_started` /
   `degraded_to_single_pass`).
 - D8: exactly 5 model calls per happy-path run (3 + 1 + 1).
-- Fence posture: fixed 4-backtick fence (Gate-12 resolution); a diff line
-  carrying 4+ backticks could still close it — accepted residual,
-  documented, hardening optional.
-- Production-faithful doubles (Gate-11 rule): the scripted `review_diff`
-  double mirrors callee requiredness — `diff_text` is REQUIRED (no
-  default), so a dropped-diff_text bug TypeErrors loudly instead of
-  masking (the Gate-11 production-killer lesson).
-
-RED state: `common.fanout` has no `run_fanout` symbol — collection
-errors on import.
+- Fence posture: fixed 4-backtick fence; a diff line carrying 4+
+  backticks could still close it — accepted residual.
+- Production-faithful doubles: the scripted `review_diff` double mirrors
+  callee requiredness — `diff_text` is REQUIRED (no default), so a
+  dropped-diff_text bug TypeErrors loudly instead of masking it.
 """
 
 import json
@@ -149,7 +143,7 @@ class ScriptedFanoutCall:
 
     Required kwargs (`api_key`, `model`, `endpoint`, `system_prompt`,
     `diff_text`) mirror the callee with NO defaults — a dropped argument
-    is a loud TypeError (Gate-11 rule). Routes by template sentinel, so
+    is a loud TypeError. Routes by template sentinel, so
     concurrent wave legs stay deterministic. The default verifier echoes
     whatever candidates the prompt carries (parsed from its own
     CANDIDATE_FINDINGS block), keeping every test independent of
@@ -477,7 +471,7 @@ def test_gate1_boundary_proceeds():
 
 
 def test_gate2_resampled_per_boundary():
-    """Gate-8(b): remaining is re-read before the verifier — a clock that
+    """Remaining is re-read before the verifier — a clock that
     advances past gate 2 degrades even though gate 1 passed."""
     cfg = make_cfg()
     _, gate2, _ = gate_totals(cfg)
@@ -681,7 +675,7 @@ def test_out_of_range_coordinates_clamped_and_flagged():
 
 
 def test_unknown_file_passes_through_never_dropped():
-    """Gate-4 guard: files absent from `file_lengths` ride untouched and
+    """Files absent from `file_lengths` ride untouched and
     uncounted all the way to the verifier — never silently dropped."""
     wave = {
         "correctness": [finding(category="correctness", line=9999, path="ghost.py")],
@@ -697,8 +691,8 @@ def test_unknown_file_passes_through_never_dropped():
 
 
 def test_verifier_output_accepted_unclamped_with_documentation():
-    """Clamp-decision pin (Gate-10 recommendation): HLD :111 pins
-    clamping for *specialist* coordinates only. Verifier output rides
+    """Clamp-decision pin: clamping applies to *specialist* coordinates
+    only (ARCHITECTURE.md §5.3). Verifier output rides
     through to the synthesizer byte-identical — fidelity there is
     prompt-contract + eval-measured (D8 gate 4), never runtime-rejected."""
 
@@ -745,7 +739,7 @@ def test_nonce_authority_across_stages():
     for prompt in specialist_prompts:
         # Specialists never see assembly nonces end-to-end: the only
         # nonce-shaped text is the attacker's literal echo from the
-        # verbatim diff (HLD §5: the echo is payload, never a boundary).
+        # verbatim diff (ARCH §5.2: the echo is payload, never a boundary).
         assert bound_nonces(prompt) == set()
         assert set(NONCE_RE.findall(prompt)) <= {ATTACK_NONCE}
 
@@ -807,7 +801,7 @@ def test_diff_verbatim_and_residuals_composed():
 
 
 def test_fence_residual_documented():
-    """Gate-12 carry: the fence is fixed-length (4 backticks). A diff line
+    """The fence is fixed-length (4 backticks). A diff line
     carrying 4+ backticks could still close it early — accepted residual
     (dynamic-length hardening optional, never silently assumed). This row
     pins the fixed fence both sides of the payload."""

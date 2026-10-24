@@ -1,20 +1,20 @@
-"""Worker Lambda entry point (HLD §2.3, §3.3, §3.4; FR-009–FR-016).
+"""Worker Lambda entry point (ARCHITECTURE.md §2.3, §3.2, §3.3).
 
 Review execution engine: SQS event (`batch_size = 1`) → per-record pipeline
-in HLD §2.3 order — validate envelope (T006) → hydrate credentials (T014;
-single 401 re-fetch plus one budgeted immediate retry on LLM timeout are
-the ONLY in-request retries) → establish → diff (T031)
-→ LLM (T032) → assemble + gate (T033) → claim → live-head fence → publish
+in ARCHITECTURE.md §2.3 order — validate envelope → hydrate credentials
+(single 401 re-fetch plus one budgeted immediate retry on LLM timeout are
+the ONLY in-request retries) → establish → diff
+→ LLM → assemble + gate → claim → live-head fence → publish
 (POST via creation lease when no `comment_id`, else PATCH) → finalize.
 Superseded/stale/claim-held/finalize-conflict → discard (log, complete, no
 publish, no retry).
 
-Error mapping at the worker boundary (HLD §2.3 item 8 is the authority;
-`is_retryable` is the executable form of that table for T034 scope):
+Error mapping at the worker boundary (ARCHITECTURE.md §2.3 is the
+authority; `is_retryable` is the executable form of that table):
 
 * RETRYABLE → the error propagates for SQS redelivery (queue owns retries;
-  DLQ after `maxReceiveCount 3`): transient diff transport (F4
-  `transport_error`), GitHub/LLM 429 + 5xx, timeouts/connection failures,
+  DLQ after `maxReceiveCount 3`): transient diff transport
+  (`transport_error`), GitHub/LLM 429 + 5xx, timeouts/connection failures,
   malformed provider responses (`invalid_response`, `bad_shape`/`bad_sha`
   — a garbled provider reply is treated as transient; the queue bounds it).
 * NON-RETRYABLE → the record completes (log, alert downstream, never spin):
@@ -31,26 +31,27 @@ A re-publish of a row that still carries `comment_id` is therefore a PATCH
 of the same comment, never a second POST. There is deliberately NO ACTIVE
 same-owner short-circuit: sequential same-owner+SHA replay after a completed
 run publishes again via PATCH (reopened PR ⇒ fresh review, possibly at the
-same head SHA). A PATCH 404 (stored comment deleted or migrated) takes the
-HLD §2.3 item-8 decision table through `common.reconcile`: marker found
+same head SHA). A PATCH 404 (stored comment deleted or migrated) takes
+the ARCHITECTURE.md §2.3 decision table through `common.reconcile`:
+marker found
 elsewhere → adopt + reconcile; none found → lease → POST → persist →
 re-check; list 403/404 or unparseable list → non-retryable complete;
 transient list failure → raise for queue retry.
 
-SQS at-least-once after success (wasted LLM + extra PATCH) is accepted for
-US1: no new idempotency key is invented.
+SQS at-least-once after success (wasted LLM + extra PATCH) is accepted:
+no new idempotency key is invented.
 
 `glm_endpoint` is full-URL passthrough exactly as hydrated (HTTPS + host
-allow-list enforced in T014 config) — never rewritten or re-derived.
+allow-list enforced in config) — never rewritten or re-derived.
 
-Injection points (HLD §4.4 item 3 — parallel-safe, no module-global state
-in tests): every collaborator arrives keyword-only (`_table`, `_ssm` /
+Injection points (parallel-safe, no module-global state in tests):
+every collaborator arrives keyword-only (`_table`, `_ssm` /
 `_config_provider`, `_now`, `_diff_transport`, `_llm_factory`,
 `_github_transport`, `_sink`, `_system_prompt`, `_allowed_hosts`).
 Production passes nothing and boto3 clients are built lazily. The
 warm-container config cache (`_CONFIG_PROVIDER`) is used ONLY on the
 uninjected production path; tests always inject. The SQS client cache
-(`_SQS_CLIENT`, G6-F2) shares that posture: production reuses one client
+(`_SQS_CLIENT`) shares that posture: production reuses one client
 per warm container, tests inject `_sqs` (or omit it — the queue default
 then applies).
 
@@ -219,11 +220,10 @@ class _BotoTable:
         if item is None:
             return None
         # boto3 deserializes DynamoDB numbers as decimal.Decimal, but the
-        # table-port contract (mirrored by the state-machine stub) is plain
-        # ints: the publish port's `isinstance(comment_id, int)` gate and
-        # the §5.4 event's json.dumps both fail on Decimal — surfaced live
-        # by the T035 acceptance run (every ride POSTed a fresh comment
-        # instead of PATCHing the stored one).
+        # table-port contract (mirrored by the state-machine stub) is
+        # plain ints: the publish port's `isinstance(comment_id, int)`
+        # gate and the event's json.dumps both fail on Decimal (a Decimal
+        # ride POSTs a fresh comment instead of PATCHing the stored one).
         return {key: _normalize_number(key, value) for key, value in item.items()}
 
     def update_item(self, **kwargs: Any) -> dict[str, Any]:
@@ -232,8 +232,7 @@ class _BotoTable:
         # Empty names must be OMITTED, never passed: the boto3 resource
         # layer rejects `{}` server-side ("must not be empty") and `None`
         # client-side (its condition-expression transformer calls
-        # `.update()` on the value unconditionally — surfaced live by the
-        # T035 acceptance run).
+        # `.update()` on the value unconditionally).
         if not kwargs.get("ExpressionAttributeNames"):
             kwargs.pop("ExpressionAttributeNames", None)
 
@@ -247,7 +246,7 @@ class _BotoTable:
             raise
 
     def delete_item(self, **kwargs: Any) -> dict[str, Any]:
-        """Mutex-release passthrough (HLD-004 D9, T027): the same
+        """Mutex-release passthrough: the same
         omit-if-empty discipline (names and values) and the same
         `ConditionalCheckFailed` translation as `update_item`, so the
         caller's exact alias maps (`_ACQUIRE_NAMES` / `_TOKEN_NAMES`
@@ -270,7 +269,7 @@ class _BotoTable:
 
 
 class _Credentials:
-    """Single-refetch credential holder (HLD §2.3 item 1).
+    """Single-refetch credential holder (ARCHITECTURE.md §2.3).
 
     All GitHub/LLM call sites for one record share a single instance, so
     the 401 cache-bust fires AT MOST ONCE per request — alongside the one
@@ -299,7 +298,7 @@ class _Credentials:
 
 
 def _diff_is_retryable(exc: DiffError) -> bool:
-    """Diff side of the item-8 table: 401/403/404 and caller-shape faults
+    """Diff side of the §2.3 table: 401/403/404 and caller-shape faults
     complete; everything provider-transient raises for the queue."""
     if exc.reason == "http_error":
         return exc.status not in (401, 403, 404)
@@ -310,7 +309,7 @@ def _diff_is_retryable(exc: DiffError) -> bool:
 
 
 def _llm_is_retryable(exc: LlmError) -> bool:
-    """LLM side of the item-8 table: timeout / 429 / 5xx / invalid output
+    """LLM side of the §2.3 table: timeout / 429 / 5xx / invalid output
     raise for queue retry; config/auth faults complete."""
     error_class = exc.error_class
     if error_class in ("bad_endpoint", "http_401"):
@@ -335,7 +334,7 @@ def _github_is_retryable(exc: GitHubError) -> bool:
 
 
 def is_retryable(exc: BaseException) -> bool:
-    """Worker-boundary retry verdict (HLD §2.3 item 8, T034 scope).
+    """Worker-boundary retry verdict (ARCHITECTURE.md §2.3).
 
     True → propagate for SQS redelivery (bounded by `maxReceiveCount 3`).
     False → complete (log, alert downstream, never spin). Unknown faults
@@ -356,17 +355,17 @@ def is_retryable(exc: BaseException) -> bool:
         # decision table says complete (log, alert downstream, never spin).
         return False
     if isinstance(exc, FanoutDegraded):
-        # T062 (Gate-14 Finding 1): terminal-row budget failure — the
-        # closure already emitted its terminal event; the record boundary
-        # logs `retry_queued` and raises for the bounded queue retry
-        # (`maxReceiveCount 3`). A named case, never an anonymous
-        # fall-through.
+        # Terminal-row budget failure: the closure already emitted its
+        # terminal event; the record boundary logs `retry_queued` and
+        # raises for the bounded queue retry (`maxReceiveCount 3`). A
+        # named case, never an anonymous fall-through.
         return True
     return True
 
 
 def _error_class(exc: BaseException) -> str:
-    """Machine-readable error class for the fixed log field (HLD §5.4)."""
+    """Machine-readable error class for the fixed log field
+    (ARCHITECTURE.md §6.2)."""
     if isinstance(exc, AssembleError):
         reasons = ".".join(exc.verdict.reasons)
         return f"assemble_{reasons}" if reasons else "assemble_refused"
@@ -559,21 +558,21 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
 
 
 def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
-    """T075: deterministic replay-link footer on the published canonical
+    """Deterministic replay-link footer on the published canonical
     body — code-side, never model-side (the synthesizer prompt and output
     contract are untouched). Omitted entirely when `REPLAY_BASE_URL` is
     unset; exactly-once under re-publish: a body already carrying the
-    footer link is returned unchanged (constitution IV discipline extends to
-    the footer — a PATCH of a re-composed body can never stack footers).
-    The URL targets the unauth shell + bearer-gated artifacts (HLD §7);
-    the base never appears as a committed literal (PR #167 canonical
-    LOW posture) — it rides the worker env from the viewer Function URL
-    resource (terraform contract pin, test_terraform_multi_agent.py)."""
+    footer link is returned unchanged (constitution IV discipline extends
+    to the footer — a PATCH of a re-composed body can never stack
+    footers). The URL targets the unauth shell + bearer-gated artifacts
+    (ARCHITECTURE.md §5.3); the base never appears as a committed literal
+    — it rides the worker env from the viewer Function URL resource
+    (terraform contract pin)."""
     base = replay_base_url()
-    # Idempotency anchors to the EXACT footer link for THIS run (r2): a
-    # model-quoted phrase (r1 LOW) or a decoy link for a different run
-    # (r2 LOW) cannot suppress the append — only a body already carrying
-    # this run's footer can, which is precisely the re-publish case.
+    # Idempotency anchors to the EXACT footer link for THIS run: a
+    # model-quoted phrase or a decoy link for a different run cannot
+    # suppress the append — only a body already carrying this run's
+    # footer can, which is precisely the re-publish case.
     footer_link = f"[{REPLAY_FOOTER_MARK}]({base}/runs/{pr_number}/{sha}/)"
     if not base or footer_link in content:
         return content
@@ -623,10 +622,10 @@ def _default_github_transport(
     """Live Issues-Comments transport: non-2xx surfaces as status (the
     caller raises `GitHubError`); only transport failures raise here.
     Returns response headers as the third element so the worker can honor
-    `Retry-After` (HLD §2.3 item 8 throttling row)."""
-    request = Request(url, data=body, headers=dict(headers), method=method)  # noqa: S310
+    `Retry-After` (ARCHITECTURE.md §2.3 throttling row)."""
+    request = Request(url, data=body, headers=dict(headers), method=method)  # noqa: S310 (https)
     try:
-        with urlopen(request, timeout=GITHUB_TIMEOUT_SECONDS) as response:  # noqa: S310
+        with urlopen(request, timeout=GITHUB_TIMEOUT_SECONDS) as response:  # noqa: S310 (https)
             return response.status, response.read(), dict(response.headers)
     except HTTPError as exc:
         return exc.code, exc.read(), dict(exc.headers)
@@ -674,13 +673,13 @@ def _github_write(
     return _parse_comment_id(raw)
 
 
-# Multi-agent fan-out wiring (HLD-004 §5, T023). Fixed specialty order —
-# the wave, candidate IDs, and prompt composition all depend on it.
+# Multi-agent fan-out wiring (ARCHITECTURE.md §5.1). Fixed specialty
+# order — the wave, candidate IDs, and prompt composition depend on it.
 _FANOUT_SPECIALTIES = ("correctness", "security", "tests")
 
-# `FanoutDegraded.failed_stage` values the closure degrades (Gate-13
-# contract 1): the sequencer's budget gates plus its stage legs. Anything
-# else re-raises loud — never mislabeled into an event (ADV-4).
+# `FanoutDegraded.failed_stage` values the closure degrades: the
+# sequencer's budget gates plus its stage legs. Anything else re-raises
+# loud — never mislabeled into an event.
 _FANOUT_KNOWN_STAGES = frozenset({"wave", "verifier", "synthesizer"})
 
 _FANOUT_PROMPT_FILES = {
@@ -693,14 +692,13 @@ _FANOUT_PROMPT_FILES = {
 
 _RESIDUALS_FILENAME = "accepted-residuals.md"
 
-# Contender viability check (HLD-004 D9 contention path, T026): the
-# contender may only spend what fits after the margin and the fixed
-# pipeline reserve. Both numbers are PROVISIONAL pre-Phase-0 — the floor
-# is the measured ~240s server-side queue latency (below it a socket
-# budget cannot succeed), the reserve is HLD D9's ~90s
-# claim/fence/publish/finalize/archive overhead. Phase 0 tunes both;
-# deliberately module constants, NOT env knobs (the 12 HLD §8 checklist
-# env vars are closed — these join only by spec amendment).
+# Contender viability check: the contender may only spend what fits
+# after the margin and the fixed pipeline reserve. Both numbers are
+# provisional — the floor is the measured ~240s server-side queue
+# latency (below it a socket budget cannot succeed), the reserve is the
+# ~90s claim/fence/publish/finalize/archive overhead. Deliberately
+# module constants, NOT env knobs (the 12 multi-agent env vars are a
+# closed set — these join only by spec amendment).
 CONTENDER_READ_FLOOR_S = 240
 CONTENDER_FIXED_OVERHEAD_S = 90
 
@@ -752,14 +750,14 @@ def _load_fanout_prompts() -> dict[str, str]:
 
 
 def _load_residuals_for(repo_full_name: str, pr_number: int) -> list[str]:
-    """Accepted-residual lines for this PR (HLD D7; T010b parser).
+    """Accepted-residual lines for this PR.
 
-    The committed `docs/accepted-residuals.md` ships in the Lambda bundle;
-    Same two-layout resolution as the prompts. The first layout whose
-    file EXISTS wins — its parse is AUTHORITATIVE even when empty (a
-    successful parse with zero rows means zero residuals); fall through
-    only on file-not-found. Nothing anywhere yields `[]` (T010b: missing
-    → `[]`, malformed lines skipped inside the parser, never fatal).
+    The committed `docs/accepted-residuals.md` ships in the Lambda
+    bundle; same two-layout resolution as the prompts. The first layout
+    whose file EXISTS wins — its parse is AUTHORITATIVE even when empty
+    (a successful parse with zero rows means zero residuals); fall
+    through only on file-not-found. Missing file → `[]`; malformed
+    lines are skipped inside the parser, never fatal.
     """
     here = Path(__file__).resolve().parent
     for candidate in (
@@ -801,8 +799,8 @@ def _run_phase0_shadow(
     residuals: list[str] | None = None,
     review_fn: Callable[..., Any] | None = None,
 ) -> bool:
-    """Phase-0 shadow specialist (HLD §8 Phase 0, T036): ONE correctness
-    specialist via the T015 wave primitive (pool at FANOUT_CONCURRENCY,
+    """Phase-0 shadow specialist: ONE correctness specialist via the
+    wave primitive (pool at FANOUT_CONCURRENCY,
     `specialties=("correctness",)`), inline after publish.
 
     Budget gate FIRST: `remaining >= WAVE_WAIT_FOR_S + BUDGET_MARGIN_S`
@@ -886,17 +884,17 @@ _DOCS_SUFFIXES = (".md", ".txt", ".rst", ".mdx")
 
 
 def _docs_only(diff_result: Any) -> bool:
-    """T076: True when EVERY changed file is prose-shaped — extension in
+    """True when EVERY changed file is prose-shaped — extension in
     `_DOCS_SUFFIXES`. The fanout battery targets code defects
     (correctness/security arms), so a prose-only diff routes single-pass:
     the ~4-5× LLM spend of wave+verifier+synthesizer buys nothing there.
     ONE code file anywhere keeps the full battery. Path prefix is
-    deliberately NOT consulted (PR #173 r1 MEDIUM): a docs/ path alone
-    must never route executable code away from the battery — suffix-only
-    classification, empty file set ⇒ False (never skip on nothing).
-    Truncated diffs ⇒ False (T079): `files` is the post-budget kept
-    list, so a truncated diff's kept set can be all-prose while dropped
-    files carried code — classification is unreliable, fail safe."""
+    deliberately NOT consulted: a docs/ path alone must never route
+    executable code away from the battery — suffix-only classification,
+    empty file set ⇒ False (never skip on nothing). Truncated diffs ⇒
+    False: `files` is the post-budget kept list, so a truncated diff's
+    kept set can be all-prose while dropped files carried code —
+    classification is unreliable, fail safe."""
     files = getattr(diff_result, "files", ())
     if not files:
         return False
@@ -934,27 +932,25 @@ def _make_review(
     `allowed_hosts` is the env-configured GLM host set (from the provider's
     `allowed_hosts` accessor); `None` keeps `review_diff`'s module default.
     `github_transport` feeds the best-effort prior-comment read; `None`
-    (older callers) omits the prior section. `remaining_time_ms` is the
-    Lambda `context.get_remaining_time_in_millis` callable threaded from
-    the entry point; `None` (older callers, unit doubles) disables the
-    timeout retry — today's queue-redelivery behavior, unchanged.
+    omits the prior section. `remaining_time_ms` is the Lambda
+    `context.get_remaining_time_in_millis` callable threaded from the
+    entry point; `None` disables the timeout retry (queue redelivery
+    then owns it).
 
-    Multi-agent (HLD-004 §5, T023): when `MULTI_AGENT=1`, the closure
-    attempts `run_fanout` first and degrades to the existing single-pass
-    inline path on `FanoutDegraded`. `events` is the caller-owned
-    multi-agent event list (a fresh list per invocation when `None` —
-    dropped on the floor unless the caller keeps it); `run_id` is the
-    run's uuid4-hex id (generated per invocation when `None`);
+    Multi-agent (ARCHITECTURE.md §5.1): when `MULTI_AGENT=1`, the closure
+    attempts `run_fanout` first and degrades to the single-pass inline
+    path on `FanoutDegraded`. `events` is the caller-owned multi-agent
+    event list (a fresh list per invocation when `None` — dropped on
+    the floor unless the caller keeps it); `run_id` is the run's
+    uuid4-hex id (generated per invocation when `None`);
     `fanout_prompts` carries the five production templates (tests inject
     sentinels; production loads `prompts/*.md` from disk).
-    `table` is the state table for the D9 mutex row (HLD-004 T027):
-    acquire after establish, release after the last lease-covered LLM
-    call; `None` (older callers, unit doubles) skips the mutex entirely
-    — today's single-pass behavior, unchanged.
-    `shadow_stash` (HLD-004 §8 Phase 0, T036) is a caller-owned dict
-    that receives the fetched `diff_result` under `"diff_result"` so the
-    post-publish shadow can run without re-fetching; `None` (older
-    callers) skips the stash."""
+    `table` is the state table for the mutex row: acquire after
+    establish, release after the last lease-covered LLM call; `None`
+    skips the mutex entirely (single-pass behavior).
+    `shadow_stash` is a caller-owned dict that receives the fetched
+    `diff_result` under `"diff_result"` so the post-publish shadow can
+    run without re-fetching; `None` skips the stash."""
 
     repo = envelope.repo_full_name
     pr_number = envelope.pr_number
@@ -991,9 +987,8 @@ def _make_review(
         def _timeout_retry_budgeted() -> bool:
             """One immediate retry needs the full read budget again plus
             publish/finalize headroom. An unknown budget (no
-            remaining-time source — older callers, unit doubles) or an
-            unreadable clock fails closed: no retry, exactly today's
-            queue-redelivery behavior."""
+            remaining-time source) or an unreadable clock fails closed:
+            no retry — queue redelivery owns it."""
             if remaining_time_ms is None:
                 return False
             try:
@@ -1021,8 +1016,8 @@ def _make_review(
                 },
             )
             # Exactly one immediate re-invoke (no sleep): its errors —
-            # including a second timeout — propagate exactly as today
-            # (retry_queued redelivery at the boundary).
+            # including a second timeout — propagate (retry_queued
+            # redelivery at the boundary).
             return _invoke(creds.current())
 
         cfg = creds.current()
@@ -1034,7 +1029,7 @@ def _make_review(
                 cfg = creds.current()
                 # Re-anchor the attempt clock: the timeout retry's
                 # `duration_ms` must measure the attempt that timed out,
-                # not the 401 round trip before it (Gate #88 advisory A1).
+                # not the 401 round trip before it.
                 attempt_start = now()
                 try:
                     return _invoke(cfg)
@@ -1051,7 +1046,7 @@ def _make_review(
             return _retry_after_timeout(exc, attempt_ms)
 
     def _fetch_prior_comment() -> str | None:
-        """Best-effort prior canonical comment body (003-T2), or None.
+        """Best-effort prior canonical comment body, or None.
 
         One page-1 list read with the CURRENT token via a plain transport
         GET — NEVER `creds.refresh_once()` (the record's single 401 budget
@@ -1096,7 +1091,7 @@ def _make_review(
         """Best-effort post-LLM PR-meta re-fetch (description-race guard).
 
         One live GET for (title, body). ANY failure returns None — the
-        guard degrades to today's behavior; a broken re-fetch must never
+        guard degrades to no suppression; a broken re-fetch must never
         block or alter a review. NEVER `creds.refresh_once()` (the
         record's single 401 budget belongs to the essential
         diff/LLM/write path, same rule as `_fetch_prior_comment`).
@@ -1120,11 +1115,11 @@ def _make_review(
 
         The PR description can be edited during the minutes-long LLM call;
         a finding that judges the description against the diff is then
-        stale (PR #20 Review #2 MEDIUM #1 was exactly this race). After
-        the model returns, re-fetch (title, body) and compare with the
-        payload's meta: on change, drop only the description-judging
-        finding bullets — the envelope and all code findings survive.
-        Unchanged meta or a failed re-fetch returns the text untouched.
+        stale. After the model returns, re-fetch (title, body) and
+        compare with the payload's meta: on change, drop only the
+        description-judging finding bullets — the envelope and all code
+        findings survive. Unchanged meta or a failed re-fetch returns
+        the text untouched.
         """
         refetched = _refetch_meta()
         if refetched is None:
@@ -1160,11 +1155,10 @@ def _make_review(
         now = clock if clock is not None else time.time
         evts.append(checkpoint(stage="established", run_id=rid))
         ma_cfg = multi_agent_config()
-        # D9 mutex (T027): acquire after validate/hydrate/establish,
-        # before any Z.AI call. The row lives in the state table; a
-        # failed acquire makes this record the contender (single-pass
-        # inline or budget SKIP below). No table → no mutex (older
-        # callers behave exactly as today).
+        # Mutex: acquire after validate/hydrate/establish, before any
+        # Z.AI call. The row lives in the state table; a failed acquire
+        # makes this record the contender (single-pass inline or budget
+        # SKIP below). No table → no mutex.
         lease: Any = None
         t_acquired: float | None = None
         contender = False
@@ -1204,13 +1198,12 @@ def _make_review(
             )
         else:
             if ma_cfg.multi_agent == 1:
-                # T076: deliberate docs-only single-pass routing — the
+                # Deliberate docs-only single-pass routing — the
                 # contender-path event (never degraded_to_single_pass:
-                # fan-out was not attempted, Gate-15/ADV-4 discipline);
-                # reason rides the enum extended with docs_only.
-                # Metric-filter signal (T048b precedent; Gate-58 advisory
-                # to SPR-167): the envelope event never reaches logs, so a
-                # line led by the bare term is logged for the
+                # fan-out was not attempted); reason rides the enum
+                # extended with docs_only.
+                # Metric-filter signal: the envelope event never reaches
+                # logs, so a line led by the bare term is logged for the
                 # runs_docs_only filter — the drift alarm's traffic term
                 # excludes deliberate docs routes (prose-heavy repos must
                 # not false-page).
@@ -1220,12 +1213,12 @@ def _make_review(
         # Release AFTER the last lease-covered LLM call, BEFORE
         # claim/fence/publish/finalize (all run after review() returns).
         # A lost race (False) is ignored — the owner-guard converges.
-        # An exception above skips release BY DESIGN (HLD D9): a failed
-        # or missing release is the crash class — expiry takeover
-        # recovers it, degradation is bounded at one TTL, and the
-        # contender path keeps publishing single-pass reviews
-        # throughout (a redelivered copy starts a fresh invocation
-        # budget, so it is viable, not SKIP-bound).
+        # An exception above skips release BY DESIGN: a failed or
+        # missing release is the crash class — expiry takeover recovers
+        # it, degradation is bounded at one TTL, and the contender path
+        # keeps publishing single-pass reviews throughout (a redelivered
+        # copy starts a fresh invocation budget, so it is viable, not
+        # SKIP-bound).
         if lease is not None:
             mutex_mod.release(table, lease=lease)
         return content
@@ -1240,28 +1233,28 @@ def _make_review(
         now: Clock,
         t_acquired: float | None,
     ) -> str:
-        """Contender path (HLD D9): the mutex is held, so this record does
-        NOT defer and does NOT touch visibility — it runs single-pass
-        inline and completes normally. The viability check is its OWN
+        """Contender path: the mutex is held, so this record does NOT
+        defer and does NOT touch visibility — it runs single-pass inline
+        and completes normally. The viability check is its OWN
         predicate: below the floor the call is SKIPPED (`transient`
-        `LlmError("timeout")` for the existing re-raise/notice path and
-        queue redelivery; the class is a deliberate conflation — the
-        event vocabulary is spec-pinned with no SKIP type, and
-        `timeout` rides the retryable default with no invented
-        mapping, ADV-4, while `reason` carries the true disposition
-        for consumers); at/above, one single-pass with the clamped
-        value forwarded as `read_timeout_s`. The contender holds no lease
-        — nothing to release, and publication runs unprotected (owner
-        guard converges). Emits only its own `concurrency_single_pass`
-        event on BOTH outcomes (never `degraded_to_single_pass` —
-        fan-out was never attempted); the event records the contention
-        disposition, not a completed pass.
+        `LlmError("timeout")` for the re-raise/notice path and queue
+        redelivery; the class is a deliberate conflation — the event
+        vocabulary is spec-pinned with no SKIP type, and `timeout` rides
+        the retryable default with no invented mapping, while `reason`
+        carries the true disposition for consumers); at/above, one
+        single-pass with the clamped value forwarded as
+        `read_timeout_s`. The contender holds no lease — nothing to
+        release, and publication runs unprotected (owner guard
+        converges). Emits only its own `concurrency_single_pass` event
+        on BOTH outcomes (never `degraded_to_single_pass` — fan-out was
+        never attempted); the event records the contention disposition,
+        not a completed pass.
         """
         clamped = _contender_read_timeout_s(_safe_remaining_ms(), ma_cfg)
         elapsed_ms = max(0, int((now() - t_acquired) * 1000)) if t_acquired is not None else 0
-        # Metric-filter signal (T048b, Mars 2026-09-28): the envelope event
-        # never reaches logs, so a line led by the bare term is logged for
-        # the worker_contention filter to count (both contention outcomes);
+        # Metric-filter signal: the envelope event never reaches logs,
+        # so a line led by the bare term is logged for the
+        # worker_contention filter to count (both contention outcomes);
         # lock key + elapsed ride along for alarm triage.
         logger.info(
             "concurrency_single_pass mutex=%s elapsed_ms=%s",
@@ -1284,11 +1277,10 @@ def _make_review(
         generation: int,
         read_timeout_s: int | None = None,
     ) -> str:
-        """The existing single-pass inline path (prior comment → payload →
-        LLM → assemble + validate gate → publish-ready content), byte for
-        byte as before. `read_timeout_s` is the contender's clamped
-        forward (T026); `None` keeps today's `_read_timeout_s()`
-        resolution for every existing caller."""
+        """The single-pass inline path (prior comment → payload → LLM
+        → assemble + validate gate → publish-ready content).
+        `read_timeout_s` is the contender's clamped forward; `None`
+        uses the `_read_timeout_s()` resolution."""
         prior_comment = _fetch_prior_comment()
         payload = render_review_payload(
             title=diff_result.title,
@@ -1319,23 +1311,24 @@ def _make_review(
         lease: Any,
         t_acquired: float | None,
     ) -> str:
-        """Fan-out attempt with single-pass fallback (HLD §5 wiring pin).
+        """Fan-out attempt with single-pass fallback
+        (ARCHITECTURE.md §5.1).
 
         `run_fanout` runs the full pipeline and returns the synthesizer
-        comment body (wrapped below by the EXISTING assemble + validate
-        gate, unchanged). Its `FanoutDegraded` is caught HERE ONLY: the
-        terminal `degraded_to_single_pass` event is emitted (the sequencer
-        emits none of its own), the failure reason/stage propagate
-        unchanged onto the event, then the D9 pre-fallback budget gate
-        decides — pass: the existing single-pass inline path runs and its
-        content returns; fail: `degraded_no_budget` is emitted and the
-        `FanoutDegraded` re-raises (terminal for this attempt — the queue
-        owns the retry with a fresh budget on redelivery). Past 50% TTL a
-        lease refresh precedes any fallback LLM work; a lost refresh
-        re-raises with no fallback and no re-assert.
+        comment body (wrapped below by the assemble + validate gate).
+        Its `FanoutDegraded` is caught HERE ONLY: the terminal
+        `degraded_to_single_pass` event is emitted (the sequencer emits
+        none of its own), the failure reason/stage propagate unchanged
+        onto the event, then the pre-fallback budget gate decides —
+        pass: the single-pass inline path runs and its content returns;
+        fail: `degraded_no_budget` is emitted and the `FanoutDegraded`
+        re-raises (terminal for this attempt — the queue owns the retry
+        with a fresh budget on redelivery). Past 50% TTL a lease refresh
+        precedes any fallback LLM work; a lost refresh re-raises with no
+        fallback and no re-assert.
 
         An unknown `failed_stage` re-raises immediately: it is never
-        mislabeled into an event and no fallback is attempted (ADV-4).
+        mislabeled into an event and no fallback is attempted.
         """
         t0 = now()
         cfg_snapshot = creds.current()
@@ -1363,14 +1356,14 @@ def _make_review(
                 synth_template=prompts["synthesizer"],
                 # Post-image lengths are hunk-derived from the diff
                 # envelope (`post_image_lengths`): the bound is the last
-                # post-image line visible in the reviewed diff, not the full
-                # file length — findings beyond it are unanchored by
-                # construction and clamping+flagging them is the designed
-                # honesty (coordinates_clamped_n already surfaces on
-                # agent_completed per spec-HLD :535-537). Files with no
-                # computable span are omitted — the clamp passes absent
-                # files through untouched by design, so omission is safe.
-                # The mapping itself is always real — never None.
+                # post-image line visible in the reviewed diff, not the
+                # full file length — findings beyond it are unanchored
+                # by construction and clamping+flagging them is the
+                # designed honesty (coordinates_clamped_n surfaces on
+                # agent_completed). Files with no computable span are
+                # omitted — the clamp passes absent files through
+                # untouched by design, so omission is safe. The mapping
+                # itself is always real — never None.
                 file_lengths=post_image_lengths(diff_result),
                 allowed_hosts=allowed_hosts,
             )
@@ -1382,8 +1375,8 @@ def _make_review(
                     reason=exc.reason, failed_stage=exc.failed_stage, run_id=rid
                 )
             )
-            # Gate-15(c): 50%-TTL refresh scheduling. Past half the lease
-            # the original row may not cover the fallback call, so refresh
+            # 50%-TTL refresh scheduling: past half the lease the
+            # original row may not cover the fallback call, so refresh
             # before issuing more LLM work. A lost refresh STOPS all LLM
             # work: re-raise without fallback and never re-assert (the
             # raise path holds no valid lease and calls acquire nowhere).
@@ -1531,14 +1524,11 @@ def _github_comment_ports(
     github_transport: Callable[..., tuple[int, bytes]],
 ) -> tuple[Any, Any, Any, Any]:
     """Comment CRUD ports shared by the review publish path (`_make_publish`)
-    and the D2 notice path (`_attempt_notice`), as
+    and the failure-notice path (`_attempt_notice`), as
     `(list_page, create_comment, update_comment, delete_comment)`.
 
     Single implementation of the single-401 budget, the 404 translations,
-    and the list-shape fallback: the former `_make_publish` closures and
-    `_notice_comment_ports` were line-identical duplicates, unified here
-    once Gates + US5 live acceptance proved the notice path in review.
-    Behavior is unchanged on both paths.
+    and the list-shape fallback — one implementation serves both paths.
     """
 
     def list_page(page: int) -> Any:
@@ -1599,8 +1589,9 @@ def _make_publish(
     github_transport: Callable[..., tuple[int, bytes]],
 ) -> Callable[[str], int]:
     """Protocol `publish` port (constitution IV — exactly one canonical
-    comment; HLD §2.3 item 8 + §3.4): consults the STORED `comment_id` —
-    present → PATCH that comment; a PATCH 404 (deleted/migrated) falls
+    comment; ARCHITECTURE.md §2.3 + §3.3): consults the STORED
+    `comment_id` — present → PATCH that comment; a PATCH 404
+    (deleted/migrated) falls
     through to `common.reconcile`; absent → reconcile directly (list-first:
     a surviving marker comment from a crashed predecessor is adopted, not
     duplicated). `comment_id` lands on the record only via finalize, so a
@@ -1675,7 +1666,7 @@ def _make_publish(
             raise GitHubError(404, "http_404") from None
 
     def publish(content: str) -> int:
-        # HLD-004 §5 item 5: the full sanitizer (structure phases +
+        # ARCHITECTURE.md §5.2: the full sanitizer (structure phases +
         # payload-token redaction) runs at publish, so the PATCH/POST
         # body is the shipped text — never the raw model content.
         # Ordering note: canary DETECTION lives upstream — every model
@@ -1685,15 +1676,14 @@ def _make_publish(
         # [redacted:*] placeholders carry no @ and no ≥16-hex run, so
         # re-publish paths (reconcile) are no-ops.
         if CANARY_SUBSTRING in content:
-            # Gate-54 Finding 1: the canary reaching publish means the
-            # upstream build_comment → validate_comment gate was
-            # bypassed — warn so defense-in-depth firing is observable.
+            # The canary reaching publish means the upstream
+            # build_comment → validate_comment gate was bypassed — warn
+            # so defense-in-depth firing is observable.
             logger.warning("canary_leaked_at_publish: upstream gate bypassed; redacting")
         content = sanitize(content)
-        # T075: the footer rides AFTER the sanitizer — it is code-side
+        # The footer rides AFTER the sanitizer — it is code-side
         # decoration (the sha is public PR metadata, not model output);
-        # inside the sanitizer the 40-hex sha reads as a payload token
-        # (PR #169 r2 find).
+        # inside the sanitizer the 40-hex sha reads as a payload token.
         content = _with_replay_footer(content, pr_number=pr_number, sha=envelope.head_sha)
         item = table.get_item(pk) or {}
         comment_id = item.get("comment_id")
@@ -1705,9 +1695,9 @@ def _make_publish(
             except GitHubError as exc:
                 if exc.status != 404:
                     raise
-                # Stored comment deleted/migrated: clear the proven-dead id
-                # (so the creation lease is acquirable), then the item-8
-                # decision table via reconcile.
+                # Stored comment deleted/migrated: clear the proven-dead
+                # id (so the creation lease is acquirable), then the
+                # §2.3 decision table via reconcile.
                 return _recover(content, comment_id)
         return _recover(content, None)
 
@@ -1722,16 +1712,16 @@ _OUTCOME_STATUS = {
     OutcomeKind.DISCARDED_CLAIM_HELD: "discarded_claim_held",
 }
 
-# Outcomes that discarded superseded/stale work via fencing (HLD §4.3
-# `stale_discarded` metric). Claim-held is excluded: another owner holds a
-# live lease, but the event itself was not proven stale.
+# Outcomes that discarded superseded/stale work via fencing
+# (ARCHITECTURE.md §7 `stale_discarded` metric). Claim-held is excluded:
+# another owner holds a live lease, but the event itself was not proven
+# stale.
 _STALE_DISCARDED_KINDS = frozenset({OutcomeKind.DISCARDED_SUPERSEDED, OutcomeKind.DISCARDED_STALE})
 
-# SQS redrive budget mirror (HLD §2.2, terraform/messaging.tf
-# `maxReceiveCount = 3`): the first attempt publishes the retrying
-# notice, the final attempt the final notice. Kept in lockstep with
-# terraform by tests/contracts/test_terraform_contract.py — change both
-# together.
+# SQS redrive budget mirror (ARCHITECTURE.md §2.2: `maxReceiveCount
+# = 3`): the first attempt publishes the retrying notice, the final
+# attempt the final notice. Kept in lockstep with terraform by contract
+# tests — change both together.
 _MAX_RECEIVE_COUNT = 3
 
 
@@ -1756,8 +1746,9 @@ def _record_delivery_context(record: Any) -> tuple[str | None, int]:
 def _extend_visibility(
     sqs: Any, queue_url: str, receipt_handle: str | None, seconds: int | None
 ) -> None:
-    """Best-effort `ChangeMessageVisibility` per `Retry-After` (HLD §2.3
-    item 8 throttling row, §2.2). Skips silently without URL, handle, or
+    """Best-effort `ChangeMessageVisibility` per `Retry-After`
+    (ARCHITECTURE.md §2.3 throttling row, §2.2). Skips silently without
+    URL, handle, or
     hint; a failed call warns and the original error still raises — the
     visibility edge never masks the record disposition."""
     if sqs is None or not queue_url or not receipt_handle or seconds is None:
@@ -1773,7 +1764,7 @@ def _extend_visibility(
 
 
 def _notice_trigger(exc: BaseException) -> NoticeTrigger | None:
-    """Map a terminal error to its D2 trigger-table row; `None` means no
+    """Map a terminal error to its trigger-table row; `None` means no
     contract row authorizes a notice (the worker completes/raises without
     one). Unlisted permanent faults (other LLM 4xx, config faults, caller
     shape faults, reconcile faults) skip: only listed Yes-rows publish."""
@@ -1814,10 +1805,10 @@ def _notice_trigger(exc: BaseException) -> NoticeTrigger | None:
             return NoticeTrigger.LIST_FORBIDDEN
         return NoticeTrigger.TRANSIENT
     if isinstance(exc, FanoutDegraded):
-        # T062 (Gate-14 Finding 1): terminal-row budget failure is a
-        # retryable queue-retried fault — RETRYING notice on the first
-        # delivery, FINAL at the last receive; idempotency per redelivery
-        # rides the existing phase mechanism, not a new path.
+        # Terminal-row budget failure is a retryable queue-retried
+        # fault — RETRYING notice on the first delivery, FINAL at the
+        # last receive; idempotency per redelivery rides the phase
+        # mechanism, not a new path.
         return NoticeTrigger.TRANSIENT
     return None
 
@@ -1833,7 +1824,7 @@ def _attempt_notice(
     diff_transport: Any,
     github_transport: Callable[..., tuple[int, bytes]],
 ) -> str:
-    """D2 trigger → best-effort notice publish → disposition value.
+    """Trigger → best-effort notice publish → disposition value.
 
     Returns `"false"` unless the trigger row authorizes AND the notice
     landed (`"true"`) or the revision proved stale (`"skipped-stale"`).
@@ -1855,8 +1846,8 @@ def _attempt_notice(
     # Final-template attempts count: the queue's own budget for
     # transient exhaustion, CLAMPED — a redriven message can arrive with
     # a receive count above the budget, and the notice must not claim
-    # attempts that never happened in this configuration (Gate #89
-    # Finding 6); exactly one for permanent rows.
+    # attempts that never happened in this configuration; exactly one
+    # for permanent rows.
     attempts = (
         min(receive_count, _MAX_RECEIVE_COUNT)
         if trigger in (NoticeTrigger.TRANSIENT, NoticeTrigger.LLM_UNUSABLE)
@@ -1904,8 +1895,9 @@ def _emit(
     prompt_sha256: str | None = None,
     pipeline: str | None = None,
 ) -> None:
-    """Best-effort structured log (HLD §5.4): emission never masks the
-    record disposition — a logging fault is a plain warning, not a retry."""
+    """Best-effort structured log (ARCHITECTURE.md §6.2): emission
+    never masks the record disposition — a logging fault is a plain
+    warning, not a retry."""
     try:
         emit(
             sink,
@@ -1954,11 +1946,10 @@ def _process_record(
     Returns the completion status. Raises the original error ONLY for
     retryable faults (queue redelivery); every other path completes.
     `sqs`/`queue_url` drive the Retry-After visibility edge and are
-    optional (absent in older tests) — without them the queue default
-    applies and classification is unchanged. `remaining_time_ms` (Lambda
+    optional — without them the queue default applies and classification
+    is unchanged. `remaining_time_ms` (Lambda
     `context.get_remaining_time_in_millis`, threaded from `handler`)
-    gates the single in-executor LLM timeout retry; `None` (older
-    callers) disables it.
+    gates the single in-executor LLM timeout retry; `None` disables it.
     """
     raw_body = record.get("body") if isinstance(record, dict) else None
     try:
@@ -1969,7 +1960,8 @@ def _process_record(
         envelope = validate_envelope(payload)
     except EnvelopeError as exc:
         # No trustworthy IDs exist, so the fixed-field event cannot be
-        # built — plain coded warning, no payload content (HLD §5.4).
+        # built — plain coded warning, no payload content
+        # (ARCHITECTURE.md §6.2).
         logger.warning(
             "worker_record",
             extra={"status": "invalid_envelope", "error_class": f"{exc.field}_{exc.reason}"},
@@ -1978,17 +1970,17 @@ def _process_record(
 
     started = clock()
     usage = {"tokens": 0}
-    # Prompt-hash telemetry (SPR-62): sha256 of the DELIVERED prompt text
-    # exactly as passed to the model — hash only, never prompt content.
+    # Prompt-hash telemetry: sha256 of the DELIVERED prompt text exactly
+    # as passed to the model — hash only, never prompt content.
     # PROMPT_VERSION keeps describing the code (validate.py).
     delivered_prompt_sha256 = prompt_sha256(system_prompt)
     creds = None
-    # One run, one event stream (HLD-004 §6, T023): the closure and the
-    # stage wrappers below share this per-record list. The caller may keep
-    # it (tests, and the T029 archive writer later); otherwise it drops.
+    # One run, one event stream (ARCHITECTURE.md §5.3): the closure and
+    # the stage wrappers below share this per-record list. The caller may
+    # keep it (tests, and the archive writer); otherwise it drops.
     record_events = events if events is not None else []
     record_run_id = uuid.uuid4().hex
-    # Phase-0 shadow input slot (T036): review() stashes the fetched
+    # Phase-0 shadow input slot: review() stashes the fetched
     # diff_result here so the post-publish shadow runs without re-fetch.
     shadow_stash: dict[str, Any] = {}
     try:
@@ -2068,7 +2060,7 @@ def _process_record(
             # Retry-After when the error carries the hint, best-effort.
             hint = exc.retry_after if isinstance(exc, GitHubError) else None
             _extend_visibility(sqs, queue_url, receipt_handle, hint)
-        # D2 trigger second: final-attempt transients and permanent rows
+        # Trigger second: final-attempt transients and permanent rows
         # publish the failure notice (best-effort); No-rows skip. The
         # returned disposition rides the log line either way.
         notice = _attempt_notice(
@@ -2138,26 +2130,26 @@ def _process_record(
         # PUBLISHED_FINALIZE_CONFLICT: the review published; the fence loss
         # is delivery bookkeeping (failure_notice), not the review outcome —
         # archive status and shadow participation are correct.
-        # Phase-0 shadow (HLD §8, T036): single-pass already published
-        # above with unchanged latency; the shadow specialist runs inline
-        # AFTER publish (never before — it must not block, delay, or
-        # share the 401 budget with the essential path), and the archive
-        # below runs AFTER the shadow completes. `MULTI_AGENT=1` ignores
-        # `MULTI_AGENT_PHASE0` entirely; shadow iff 0/1. The D9 lease was
-        # released inside review() — the shadow is NOT lease-covered.
-        # Discard outcomes archive nothing: no review ran.
+        # Phase-0 shadow: single-pass already published above; the
+        # shadow specialist runs inline AFTER publish (never before — it
+        # must not block, delay, or share the 401 budget with the
+        # essential path), and the archive below runs AFTER the shadow
+        # completes. `MULTI_AGENT=1` ignores `MULTI_AGENT_PHASE0`
+        # entirely; shadow iff 0/1. The mutex lease was released inside
+        # review() — the shadow is NOT lease-covered. Discard outcomes
+        # archive nothing: no review ran.
         shadow_ran = False
         ma_shadow = multi_agent_config()
         if ma_shadow.multi_agent != 1 and ma_shadow.multi_agent_phase0 == 1:
             diff_result = shadow_stash.get("diff_result")
             if diff_result is None:
                 # Defensive telemetry only (unreachable through review(),
-                # which always stashes on the publish path): a closed
-                # HLD §6 reason set forbids a dedicated `review_skipped`
-                # reason here (`{"empty_diff", "phase0_no_budget"}`), so
-                # this warns instead of emitting a false-categorized
-                # event. The run archives as the plain single-pass
-                # publish it was.
+                # which always stashes on the publish path): the closed
+                # reason set forbids a dedicated `review_skipped` reason
+                # here (`{"empty_diff", "phase0_no_budget"}`), so this
+                # warns instead of emitting a false-categorized event.
+                # The run archives as the plain single-pass publish it
+                # was.
                 logger.warning(
                     "shadow_skipped",
                     extra={"status": "shadow_no_diff", "error_class": "missing_diff_result"},
@@ -2190,13 +2182,13 @@ def _process_record(
             isinstance(event, dict) and event.get("type") == "degraded_to_single_pass"
             for event in record_events
         )
-        # Degraded x shadow exclusion (Gate 20, Finding 2): degrade needs
-        # MULTI_AGENT=1 while shadow needs MULTI_AGENT=0+PHASE0=1 — same
-        # env, no mid-flight mutation, so the pair is flag-unreachable.
-        # It is also mapping-invalid (("phase0_shadow",
-        # "degraded_single_pass") -> build_meta bad_status = whole-archive
-        # loss). The override below is safe BECAUSE the pair cannot
-        # co-occur — do not "fix" it into archive loss.
+        # Degraded x shadow exclusion: degrade needs MULTI_AGENT=1
+        # while shadow needs MULTI_AGENT=0+PHASE0=1 — same env, no
+        # mid-flight mutation, so the pair is flag-unreachable. It is
+        # also mapping-invalid (("phase0_shadow",
+        # "degraded_single_pass") -> build_meta bad_status =
+        # whole-archive loss). The override below is safe BECAUSE the
+        # pair cannot co-occur — do not "fix" it into archive loss.
         _archive_run(
             s3=s3,
             bucket=archive_bucket,
@@ -2227,14 +2219,14 @@ def _archive_run(
     started_ts_ms: int,
     clock: Clock,
 ) -> None:
-    """Best-effort run archive (HLD-004 §6, T029): S3 puts of
+    """Best-effort run archive (ARCHITECTURE.md §5.3): S3 puts of
     `events.jsonl` + `meta.json`, then the DDB index row — AFTER finalize,
     never inside the review callback. NEVER raises: an archive failure
     must not fail (or redeliver) an already-published review, so every
     fault is a structured warning. No bucket (or no client) means the
     feature is off — return silently (missing) or warn (misconfigured).
     """
-    # T066 per-review rollup: computed ONCE, before the early returns, so
+    # Per-review rollup: computed ONCE, before the early returns, so
     # every archive attempt (including archive-off configs) reads one
     # number; degraded paths reduce to zeros (no token-bearing events).
     # Pure reducer — never raises, so the never-raises contract holds.
@@ -2310,11 +2302,11 @@ def _archive_run(
                         ":findings": item["findings_n"],
                     },
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 (best-effort archive write)
                 # SQS is at-least-once: a redelivered run re-archives and
-                # hits the write-once index condition. First archive wins;
-                # a duplicate gets its OWN signal, never the generic
-                # archive_failed that reads as a real fault (bot r1:1740).
+                # hits the write-once index condition. First archive
+                # wins; a duplicate gets its OWN signal, never the
+                # generic archive_failed that reads as a real fault.
                 from common.protocol import ConditionalCheckFailed
 
                 response = getattr(exc, "response", None)
@@ -2344,7 +2336,7 @@ def _env_allowed_hosts() -> tuple[str, ...]:
 
 
 def _load_system_prompt() -> str:
-    """Production prompt source: the versioned contract file (T018).
+    """Production prompt source: the versioned contract file.
 
     Two layouts are resolved, zip first: the Lambda archive ships
     `prompts/` beside the handler (`<dir>/prompts`), while a repo checkout
@@ -2407,7 +2399,7 @@ def handler(
     fails and the queue redelivers), every other record completes. `_sqs`
     drives the Retry-After visibility edge; production builds a client
     lazily, tests inject a double (or omit it — the queue default then
-    applies). `_s3` + the `ARCHIVE_BUCKET` env drive the T029 run archive
+    applies). `_s3` + the `ARCHIVE_BUCKET` env drive the run archive
     (absent bucket = feature off; absent client with a bucket = warn)."""
     clock = _now if _now is not None else time.time
     sink: Sink = _sink if _sink is not None else sys.stdout.write
@@ -2454,11 +2446,11 @@ def handler(
 
     sqs = _sqs
     if sqs is None:
-        # Best-effort edge: without a client (no region/credentials in unit
-        # tests that predate the edge) the queue default applies and
-        # classification is unchanged. Production caches one client per warm
-        # container (mirror `_CONFIG_PROVIDER`); a failed build leaves the
-        # cache empty so the next invocation retries.
+        # Best-effort edge: without a client (no region/credentials in
+        # unit tests) the queue default applies and classification is
+        # unchanged. Production caches one client per warm container
+        # (mirror `_CONFIG_PROVIDER`); a failed build leaves the cache
+        # empty so the next invocation retries.
         global _SQS_CLIENT
         if _SQS_CLIENT is None:
             try:

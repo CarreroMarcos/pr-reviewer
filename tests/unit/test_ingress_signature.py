@@ -1,4 +1,4 @@
-"""Raw-bytes HMAC contract (HLD §2.1 step 2): ingress verifies the signature
+"""Raw-bytes HMAC contract (ARCHITECTURE.md §2.1): ingress verifies the signature
 over the exact raw request bytes — never over re-serialized JSON."""
 
 import hashlib

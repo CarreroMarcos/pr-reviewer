@@ -1,38 +1,38 @@
-"""T034: worker orchestration pipeline on an in-memory DynamoDB stub.
+"""Worker orchestration pipeline on an in-memory DynamoDB stub.
 
-Covers HLD §2.3 (pipeline ordering + item-8 boundary), §3.3 (fenced
-publication through `common.protocol`), §3.4 (publish shape), FR-009–FR-016.
+Covers ARCH §2.3 (pipeline ordering + PATCH-404 boundary), §3.2 (fenced
+publication through `common.protocol`), and §3.3 (publish shape).
 Reuses the `dynamodb_stub.InMemoryTable` port doubles and the
 review/fence/publish-fake patterns from `test_protocol.py`; the diff, LLM,
 and GitHub collaborators arrive as injected fakes — no live external calls.
 
-Mapping (pipeline stage / ruling → test):
+Mapping (pipeline stage → test):
 
 * envelope → `test_malformed_body_completes`, `test_schema_invalid_envelope_completes`
-* hydrate (T014) → `test_config_error_completes`
+* hydrate → `test_config_error_completes`
 * establish → diff → LLM → assemble+gate → claim → fence → publish →
   finalize → `test_first_delivery_posts_and_finalizes`
-* POST-when-absent / PATCH-when-present (Mars ruling 1) → now via
-  reconcile (T040): absent → GET list → creation lease → POST → re-check;
+* POST-when-absent / PATCH-when-present, via reconcile: absent → GET
+  list → creation lease → POST → re-check;
   `test_first_delivery_posts_and_finalizes`,
   `test_new_revision_posts_pending_reconcile`,
   `test_same_revision_replay_patches_same_comment_never_reposts`
-* no ACTIVE same-owner short-circuit (Mars ruling 2) →
+* no ACTIVE same-owner short-circuit →
   `test_same_revision_replay_patches_same_comment_never_reposts`
 * single 401 re-fetch, the ONLY in-request retry →
   `test_llm_401_refreshes_once_then_publishes`,
   `test_llm_401_twice_completes`, `test_diff_401_refreshes_once`
-* prompt packaging (T035) → `test_load_system_prompt_resolves_zip_layout`,
+* prompt packaging → `test_load_system_prompt_resolves_zip_layout`,
   `test_load_system_prompt_falls_back_to_repo_layout`
 * discard outcomes → `test_concurrent_different_owner_discards_claim_held`,
   `test_superseded_sha_discards_without_publish`,
   `test_fence_mismatch_discards_stale`,
   `test_finalize_conflict_completes_without_retry`,
   `test_finalize_loser_claim_aborts_without_clearing_newer_lease`
-* worker SQS client cache (SPR-63 G6-F2) →
+* worker SQS client cache →
   `test_sqs_client_cached_across_warm_invocations`,
   `test_reset_sqs_cache_forces_rebuild`
-* worker system-prompt cache (audit R1) →
+* worker system-prompt cache →
   `test_system_prompt_cached_across_warm_invocations`,
   `test_reset_prompt_cache_forces_reload`,
   `test_injected_system_prompt_bypasses_cache`
@@ -43,7 +43,7 @@ Mapping (pipeline stage / ruling → test):
   `test_github_patch_404_with_unreadable_list_completes` — the PATCH-404
   decision table itself is pinned by
   `tests/unit/test_patch404_table.py`)
-* log hygiene (HLD §5.4) → `test_log_event_carries_fixed_fields_only`
+* log hygiene (ARCH §6.2) → `test_log_event_carries_fixed_fields_only`
 
 All tests are deterministic: fixed clock (`NOW`), scripted transports, no
 sleeps. A test asserting "completes" also asserts nothing was published
@@ -232,7 +232,7 @@ class FakeGitHub:
     routes POST → 201 and PATCH → 200 echoing the URL id; `script` overrides
     per call in order; `on_write` fires before each reply (finalize-race).
 
-    T040: the publish port also lists (GET → 200 empty list by default, so
+    The publish port also lists (GET → 200 empty list by default, so
     first-post flows take the creation-lease branch) and deletes (DELETE →
     204). Scripted sequences cover the PATCH-404 decision table; the
     table itself is pinned by `tests/unit/test_patch404_table.py`."""
@@ -339,7 +339,7 @@ def test_first_delivery_posts_and_finalizes():
     assert item["comment_id"] == POST_ID
     (line,) = h.log_lines()
     assert line["status"] == "published"
-    assert line["pipeline"] == "single_pass"  # T077: routing discriminator on the log line
+    assert line["pipeline"] == "single_pass"  # routing discriminator on the log line
     assert line["generation"] == 0
     assert line["token_usage"] == 15
     assert line["stale_discarded"] is False  # nothing stale discarded on this path
@@ -348,7 +348,7 @@ def test_first_delivery_posts_and_finalizes():
 def test_new_revision_posts_pending_reconcile():
     """New SHA clears comment_id at establish (c) → reconcile finds no
     marker comment → lease → POST; convergence of pre-existing marker
-    comments is T039 reconcile scope, pinned in test_reconcile.py."""
+    comments is reconcile scope, pinned in test_reconcile.py."""
     h = Harness(meta=[(200, SHA_B), (200, SHA_B)])
     _seed(h.table, head=SHA_A, gen=5, comment=111)
     result = h.run(envelope(sha=SHA_B))
@@ -359,10 +359,10 @@ def test_new_revision_posts_pending_reconcile():
 
 
 def test_replay_footer_on_published_comment(monkeypatch):
-    """T075 wiring (single-pass): the POSTed canonical body carries the
-    replay footer with pr_number + head_sha interpolated (PR #169 r1
-    MEDIUM — the publish-boundary wiring is pinned end-to-end, not just
-    the helper in isolation)."""
+    """Single-pass wiring: the POSTed canonical body carries the
+    replay footer with pr_number + head_sha interpolated — the
+    publish-boundary wiring is pinned end-to-end, not just the helper
+    in isolation."""
     monkeypatch.setenv("REPLAY_BASE_URL", "https://viewer.example.test")
     h = Harness(meta=[(200, SHA_B)])
     assert h.run(envelope(sha=SHA_B)) == {"ok": True, "results": ["published"]}
@@ -381,7 +381,7 @@ def test_replay_footer_absent_when_env_unset(monkeypatch):
 
 
 def test_replay_footer_exactly_once_across_republish(monkeypatch):
-    """PR #169 r2 MEDIUM: same-revision re-publish re-composes +
+    """Same-revision re-publish re-composes +
     re-sanitizes + re-decorates — the final PATCHed body carries exactly
     one footer (the exactly-once contract proven through the real PATCH
     path, not just the helper)."""
@@ -397,8 +397,8 @@ def test_replay_footer_exactly_once_across_republish(monkeypatch):
 
 
 def test_same_revision_replay_patches_same_comment_never_reposts():
-    """Mars ruling 2: no ACTIVE same-owner short-circuit — sequential
-    same-owner+SHA replay publishes again; ruling 1: that re-publish is a
+    """No ACTIVE same-owner short-circuit — sequential
+    same-owner+SHA replay publishes again; that re-publish is a
     PATCH of the stored comment, never a second POST."""
     h = Harness(meta=[(200, SHA_B)])
     first = h.run(envelope(sha=SHA_B))
@@ -485,7 +485,7 @@ def test_finalize_conflict_completes_without_retry():
 
 
 def test_finalize_loser_claim_aborts_without_clearing_newer_lease():
-    """SPR-63 owner guard: a same-revision lease takeover (expiry +
+    """Owner guard: a same-revision lease takeover (expiry +
     re-claim by another owner) lands between publish and finalize → the
     loser's finalize fails its guard → log-and-reconcile path; the newer
     lease is NOT cleared and the loser's comment id never lands."""
@@ -514,7 +514,7 @@ def test_finalize_loser_claim_aborts_without_clearing_newer_lease():
     assert "comment_id" not in item  # loser's id never landed
 
 
-# --- worker SQS client cache (SPR-63 G6-F2) ----------------------------------
+# --- worker SQS client cache ---
 
 
 def _wireless_run(h):
@@ -576,7 +576,7 @@ def test_reset_sqs_cache_forces_rebuild(monkeypatch):
         worker_handler.reset_sqs_cache()
 
 
-# --- worker system-prompt cache (audit R1) ----------------------------------
+# --- worker system-prompt cache ---
 
 
 def _uncached_run(h):
@@ -820,9 +820,9 @@ def _validating_llm_factory(harness):
 
 
 def test_newline_key_replays_to_terminal_invalid_key_with_notice():
-    """Live-incident replay (SPR-58): a trailing-newline GLM key used to
-    crash invisibly (bare ValueError from header validation, retried to
-    the DLQ with no notice). Now: typed `invalid_key` → non-retryable →
+    """A trailing-newline GLM key must not crash invisibly (bare
+    ValueError from header validation, retried to the DLQ with no
+    notice). Instead: typed `invalid_key` → non-retryable →
     terminal `discarded_error` with `error_class="invalid_key"` and the
     immediate `failure_notice_published="true"` — no raise, no retry/DLQ
     loop (the review itself never publishes; only the fixed template)."""
@@ -839,7 +839,7 @@ def test_newline_key_replays_to_terminal_invalid_key_with_notice():
 
 
 def test_diff_transport_error_raises_for_queue_retry():
-    """F4 `transport_error` (DNS/refused/reset class) → raise for
+    """`transport_error` (DNS/refused/reset class) → raise for
     redelivery. The RETRYING notice is authorized (first transient
     failure) but its fenced publish cannot clear the live-head fence —
     the same broken transport raises at the fence — so the best-effort
@@ -890,7 +890,7 @@ def test_github_post_500_raises_for_queue_retry():
 
 
 def test_github_patch_404_with_unreadable_list_completes():
-    """PATCH 404 recovery runs the item-8 decision table (T040): the stored
+    """PATCH 404 recovery runs the decision table: the stored
     id is proven dead, so it is cleared first; then the list GET is 403
     (lost access — the list-unreadable row), so the run completes
     non-retryably with nothing persisted. Marker-found and lease-POST rows
@@ -905,11 +905,11 @@ def test_github_patch_404_with_unreadable_list_completes():
     assert "comment_id" not in h.table.items[PK]  # dead id cleared; next run converges
 
 
-# --- boundary table pin (HLD §2.3 item 8, T034 scope) ---
+# --- boundary table pin (ARCH §2.3 PATCH-404 / error table) ---
 
 
 def test_is_retryable_table():
-    """Executable form of the item-8 mapping: retryable faults propagate,
+    """Executable form of the error-table mapping: retryable faults propagate,
     permanent faults complete, unknown faults retry into the queue budget."""
     assert is_retryable(DiffError("request", "transport_error")) is True
     assert is_retryable(DiffError("pr", "http_error", status=429)) is True
@@ -925,8 +925,8 @@ def test_is_retryable_table():
     assert is_retryable(LlmError("http_429")) is True
     assert is_retryable(LlmError("http_503")) is True
     assert is_retryable(LlmError("invalid_response")) is True
-    # HLD-004 §9 boundary pin: the new classes ride the unknown-fault
-    # default (retryable transients, no D2 notice row).
+    # The new classes ride the unknown-fault default (retryable
+    # transients, no D2 notice row).
     assert is_retryable(LlmError("length")) is True
     assert is_retryable(LlmError("rate_limit")) is True
     assert is_retryable(LlmError("bad_endpoint")) is False
@@ -947,14 +947,14 @@ def test_is_retryable_table():
     assert is_retryable(ValueError("unknown")) is True
 
 
-# --- observability (HLD §5.4): fixed fields only, never secrets ---
+# --- observability: fixed fields only, never secrets ---
 
 
 def test_log_event_carries_fixed_fields_only():
     """Emitted lines carry exactly FIXED_FIELDS — no tokens, prompts, or
     diffs — and name the prompt version plus the delivered-prompt hash
-    (SPR-62: sha256 of the exact prompt text passed to the model, hash
-    only, never content)."""
+    (sha256 of the exact prompt text passed to the model, hash only,
+    never content)."""
     h = Harness(meta=[(200, SHA_B)])
     h.run(envelope(sha=SHA_B))
     (line,) = h.log_lines()
@@ -972,7 +972,7 @@ def test_log_event_carries_fixed_fields_only():
 
 def test_load_system_prompt_resolves_zip_layout(tmp_path, monkeypatch):
     """The Lambda archive ships prompts/ beside the handler; the loader
-    must read the contract file there (T035 packaging)."""
+    must read the contract file there."""
     monkeypatch.delenv("SYSTEM_PROMPT", raising=False)
     task = tmp_path / "task"
     (task / "prompts").mkdir(parents=True)

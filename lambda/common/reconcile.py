@@ -1,12 +1,12 @@
-"""Comment reconciliation (HLD §3.4; FR-003; US2.AC3).
+"""Comment reconciliation (ARCHITECTURE.md §3.3).
 
 Converges the PR to exactly one canonical marker-bearing comment carrying
 the caller's fresh `content`, returning its comment id. One bounded call:
 
 1. List comments **fully paginated** before matching; every page and every
    entry is shape-validated. An unparseable list raises
-   `ReconcileError("list_unreadable")` — the list-unreadable row of HLD
-   §2.3 item 8, non-retryable (the worker completes, never spins).
+   `ReconcileError("list_unreadable")` — the list-unreadable row of
+   ARCHITECTURE.md §2.3, non-retryable (the worker completes, never spins).
 2. Find all comments bearing the **exact** worker-injected marker string
    (`common.marker.build_marker` — substring match on the exact string, so
    another PR's marker never matches). Exactly one → adopt; multiple →
@@ -18,27 +18,29 @@ the caller's fresh `content`, returning its comment id. One bounded call:
    `ReconcileError("reconcile_contention")`, non-retryable.
 4. None found → **creation lease**: a conditional write on the review
    record requiring `attribute_not_exists(comment_id)` plus the claim
-   condition of HLD §3.3 step 3 — two concurrent first-posters cannot both
+   condition of ARCHITECTURE.md §3.2 step 3 — two concurrent
+   first-posters cannot both
    POST; the loser re-runs reconciliation and adopts the winner's comment.
    Lease won → POST → persist → re-check (re-list; stray marker comments
    deleted). Lease lost → next round (re-list, adopt the winner).
 
-Flagged interpretation (for the review gate): the verbatim §3.3 step-3
-claim condition (`claim_until < :now OR attribute_not_exists(claim_owner)`)
-can never hold for the publisher itself — the fenced protocol claims (live
-self lease) strictly before publish. A verbatim lease would therefore be
-unacquirable in every worker flow and reconciliation could never POST. The
-lease condition admits one further disjunct, `claim_owner = :owner` ("I
-already hold the lease from my claim"), preserving the HLD mutual-exclusion
-property — a DISTINCT owner under a live lease still fails every branch —
-while making the mechanism operable. The condition string is:
+Interpretation: the verbatim §3.2 step-3 claim condition
+(`claim_until < :now OR attribute_not_exists(claim_owner)`) can never
+hold for the publisher itself — the fenced protocol claims (live self
+lease) strictly before publish. A verbatim lease would therefore be
+unacquirable in every worker flow and reconciliation could never POST.
+The lease condition admits one further disjunct, `claim_owner = :owner`
+("I already hold the lease from my claim"), preserving the
+mutual-exclusion property — a DISTINCT owner under a live lease still
+fails every branch — while making the mechanism operable. The condition
+string is:
 
     head_sha = :reviewed AND generation = :gen
     AND (claim_until < :now OR attribute_not_exists(claim_owner)
          OR claim_owner = :owner)
     AND attribute_not_exists(comment_id)
 
-Adoption persistence uses the §3.3 step-6 finalize CONDITION with a
+Adoption persistence uses the §3.2 step-6 finalize CONDITION with a
 lease-preserving update (`common.state.build_persist_expressions`):
 revision- and owner-guarded, lease untouched (released only by the
 protocol-level finalize). A lost persist race (newer revision landed
@@ -47,12 +49,14 @@ protocol-level finalize then takes the conflict path rather than
 overwriting.
 
 Absent record (DynamoDB state lost — the marker survives in GitHub per
-§2.8): no lease is attempted and nothing is persisted; a found winner is
+ARCHITECTURE.md §2.8): no lease is attempted and nothing is persisted;
+a found winner is
 still PATCHed, otherwise the content is POSTed directly. The next fenced
 run re-establishes state and converges.
 
 Transport errors from the injected ports propagate untouched — the caller
-classifies them (HLD §2.3 item 8: list 403/404 complete, 429/5xx retry).
+classifies them (ARCHITECTURE.md §2.3: list 403/404 complete,
+429/5xx retry).
 Only shape failures become `ReconcileError`. The caller maps a provider
 404 on PATCH to `CommentNotFound` and a provider 404 on DELETE to silence
 (already converged); any other provider failure propagates.
@@ -103,11 +107,12 @@ def _iso8601(epoch_seconds: int) -> str:
 def validate_page(payload: Any) -> list[dict[str, Any]]:
     """Shape-validate one listed page: a list of `{id: int ≥ 1, body: str}`.
 
-    Public since 003-T2: shared by reconcile's listing path and the worker's
-    prior-comment read. Anything else — non-list top level, missing/wrong-typed
-    fields, boolean or non-positive ids — is an unparseable list (HLD §3.4:
-    treated as the list-unreadable row, non-retryable). Entries are never
-    skipped silently: one bad entry poisons the listing.
+    Shared by reconcile's listing path and the worker's prior-comment
+    read. Anything else — non-list top level, missing/wrong-typed
+    fields, boolean or non-positive ids — is an unparseable list
+    (ARCHITECTURE.md §3.3: treated as the list-unreadable row,
+    non-retryable). Entries are never skipped silently: one bad entry
+    poisons the listing.
     """
     if not isinstance(payload, list):
         raise ReconcileError("list_unreadable")
@@ -123,7 +128,7 @@ def validate_page(payload: Any) -> list[dict[str, Any]]:
 
 
 def _list_all(list_page: Callable[[int], Any]) -> list[dict[str, Any]]:
-    """Fully-paginated, shape-validated listing (HLD §3.4).
+    """Fully-paginated, shape-validated listing (ARCHITECTURE.md §3.3).
 
     A full page implies more pages; a short page ends the listing. Bounded
     at `MAX_PAGES` — PRs beyond 1000 comments are pathological, and an
@@ -141,7 +146,8 @@ def _list_all(list_page: Callable[[int], Any]) -> list[dict[str, Any]]:
 def _persist(table: Any, pk: str, owner: str, comment_id: int, now: Callable[[], int]) -> bool:
     """Persist the adopted/created id via the owner-guarded persist
     expressions (finalize condition, lease-preserving update). False when
-    no record exists (state lost — §2.8 marker survival), a newer revision
+    no record exists (state lost — ARCHITECTURE.md §2.8 marker
+    survival), a newer revision
     owns the record, or the lease moved to another owner (the
     protocol-level finalize then takes the conflict path); never raises
     for races."""
@@ -182,9 +188,9 @@ def _try_creation_lease(table: Any, pk: str, owner: str, now: Callable[[], int])
         claim_until=now_int + CLAIM_LEASE_SECONDS,
         now=now_int,
     )
-    # The verbatim §3.3 step-3 condition cannot hold for the publisher
-    # itself (its claim granted a live self lease just before publish), so
-    # the OR-group gains the self-holder disjunct — flagged in the module
+    # The verbatim §3.2 step-3 condition cannot hold for the publisher
+    # itself (its claim granted a live self lease just before publish),
+    # so the OR-group gains the self-holder disjunct — see the module
     # docstring. A DISTINCT owner under a live lease still fails every
     # branch, preserving mutual exclusion.
     condition = condition.replace(

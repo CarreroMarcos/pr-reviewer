@@ -1,4 +1,4 @@
-"""T051: error-classification rows (HLD §2.3 item 8; US5.AC1–AC3;
+"""T051: error-classification rows (ARCHITECTURE.md §2.3; US5.AC1–AC3;
 FR-017–FR-021).
 
 Drives the REAL `worker_handler.handler` with scripted collaborators,
@@ -21,7 +21,7 @@ pinning every verbatim row:
   `test_llm_timeout_raises`, `test_llm_invalid_output_raises`
 * assembled-comment validation failure → non-retryable complete, never
   published → `test_assemble_refused_completes`
-* D2 (T054 wiring): final-attempt transient → notice published, then the
+* D2: final-attempt transient → notice published, then the
   original error still raises →
   `test_final_attempt_transient_publishes_notice_then_raises`
 * D2: permanent assemble failure → notice immediately, complete →
@@ -151,9 +151,9 @@ class FakeTable:
         return {"Attributes": dict(self.items[pk])}
 
     def delete_item(self, **kwargs):
-        """HLD-004 D9 mutex-release passthrough (T027 port extension):
-        drop the keyed row (conditions stay pinned by the state-machine
-        tier — permissive here by this double's contract)."""
+        """Mutex-release passthrough (ARCHITECTURE.md §5.1): drop the
+        keyed row (conditions stay pinned by the state-machine tier —
+        permissive here by this double's contract)."""
         self.items.pop((kwargs.get("Key") or {}).get("pk"), None)
         return {}
 
@@ -667,7 +667,7 @@ def test_final_attempt_transient_publishes_notice_then_raises():
     assert "could not be completed" in posts[0]["body"]
     # Redrive tolerance: count 5 > maxReceiveCount 3 is CLAMPED to the
     # configured budget — the notice must not claim attempts that never
-    # happened in this configuration (Gate #89 Finding 6).
+    # happened in this configuration.
     assert "after 3 attempts" in posts[0]["body"]
     assert "after 5 attempts" not in posts[0]["body"]
     (line,) = h.log_lines()
@@ -713,7 +713,7 @@ def test_final_notice_attempts_clamped_to_queue_budget(receive_count):
 
 
 def test_receive_count_wire_string_coerced_to_int_at_ingestion():
-    """Type pin (Gate #91 follow-up 1): `ApproximateReceiveCount` is a
+    """Type pin: `ApproximateReceiveCount` is a
     STRING on the SQS wire; `_record_delivery_context` coerces it to a
     real int BEFORE any consumer — the final-attempt notice clamp does
     `min(receive_count, _MAX_RECEIVE_COUNT)`, which would TypeError on a
@@ -784,7 +784,7 @@ def test_github_401_skips_notice():
     assert line["failure_notice_published"] == "false"
 
 
-# --- SPR-58: invalid_key trigger row + final-attempt 429 combination ---
+# --- invalid_key trigger row + final-attempt 429 combination -----------------
 
 
 def test_notice_trigger_invalid_key_maps_to_immediate_row():
@@ -843,7 +843,7 @@ def test_notice_lifecycle_retrying_once_then_final_then_success_clears():
       (marker-bearing, stateful list), the notice text flows into the
       LLM prompt as inert context, and the review still publishes —
       PATCHing that SAME comment id. The stale "retrying" warning cannot
-      survive a successful publish (Gate #89 Coverage gap 1).
+      survive a successful publish.
 
     Exactly ONE canonical comment id exists across the whole lifecycle.
     """

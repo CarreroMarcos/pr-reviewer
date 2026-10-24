@@ -1,4 +1,4 @@
-"""T058 pinned model-eval rubric harness (HLD §4.4; OFFLINE — no network).
+"""Pinned model-eval rubric harness (ARCHITECTURE.md §5.4; offline).
 
 Scores the pinned outputs in `pinned_outputs.json` (written out-of-band by
 `capture.py`) against three rubric dimensions:
@@ -129,10 +129,10 @@ def _assert_prohibited_absent(output: str) -> None:
 
 
 def test_pinned_set_current() -> None:
-    """Staleness guard FIRST: pinned meta must match the live prompt version.
+    """Staleness guard: pinned meta must match the live prompt version.
 
     Any `prompt_version`/system-prompt change fails CI here until a human
-    re-runs `capture.py` (HLD §4.4 item 4).
+    re-runs `capture.py` (ARCHITECTURE.md §5.4).
     """
     pinned = _pinned()
     meta = pinned["meta"]
@@ -224,11 +224,10 @@ def test_floor_violations_table() -> None:
 
 
 def test_pinned_baseline_meets_floors() -> None:
-    """Quality floors (Reflect 2026-09-20, Mars-approved): the checked-in pin
-    is publishable evidence, not merely reproducible — recall complete, zero
-    fabricated findings, bounded unparsable prose (5 = the observed stable
-    count across all three live v2 runs — publish-legal prose-in-Findings
-    lines; the floor trips at double that)."""
+    """Quality floors: the checked-in pin is publishable evidence, not
+    merely reproducible — recall complete, zero fabricated findings,
+    bounded unparsable prose (5 = the observed stable count across all
+    three live v2 runs; the floor trips at double that)."""
     if not RESULTS_PATH.exists():
         pytest.fail(f"baseline missing at {RESULTS_PATH} — re-run capture.py")
     baseline = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
@@ -269,11 +268,11 @@ def _fake_case(manifest):
 
 
 def test_capture_record_and_continue_on_transient_failure(tmp_path, monkeypatch, capsys):
-    """T045 pre-flight: a transient mid-batch failure (the overnight GLM
-    read timeout) is recorded with its error plus empty output — the
-    batch completes the remaining cases instead of aborting with nothing
-    written. Fake case ids sit outside SEED_SCORING_IDS, so the vacuous
-    aggregate still passes floors and the pin lands with the error entry."""
+    """A transient mid-batch failure is recorded with its error plus
+    empty output — the batch completes the remaining cases instead of
+    aborting with nothing written. Fake case ids sit outside
+    SEED_SCORING_IDS, so the vacuous aggregate still passes floors and
+    the pin lands with the error entry."""
     manifest = {"expected_findings": [], "changed_paths": ["a.py"]}
     monkeypatch.setattr(
         fixtures,

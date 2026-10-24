@@ -1,12 +1,12 @@
-"""T011: fenced-publication protocol scenarios on an in-memory DynamoDB stub.
+"""Fenced-publication protocol scenarios on an in-memory DynamoDB stub.
 
-Covers HLD §3.3 (exact order: establish → review → claim → fence → publish →
-conditional finalize), §3.2 (state model/transitions), and §6 failure modes
-6–10. Imports the executor from `common.protocol` (T012); the stub in
-`dynamodb_stub.py` evaluates the exact ConditionExpression strings the merged
+Covers ARCH §3.2 (exact order: establish → review → claim → fence →
+publish → conditional finalize) and ARCH §3.1 (state model/transitions).
+Imports the executor from `common.protocol`; the stub in
+`dynamodb_stub.py` evaluates the exact ConditionExpression strings the
 `common.state` builders emit.
 
-Mapping (§3.3 step / failure mode → test):
+Mapping (ARCH §3.2 step / failure mode → test):
 
 * step 1a first write → `test_establish_first_write_creates_claimed_record`,
   `test_first_delivery_publishes_and_finalizes`
@@ -33,7 +33,7 @@ Mapping (§3.3 step / failure mode → test):
 * mode 9 worker death mid-claim (expiry + takeover) → `test_claim_succeeds_on_expired_lease`
 * mode 10 duplicate comments during recovery → `test_duplicate_delivery_publishes_once`
   (protocol side: claim exclusivity ⇒ exactly one publish; full marker-based
-  reconciliation per §3.4 is T039 scope, not the executor's)
+  reconciliation per ARCH §3.3 is separate scope, not the executor's)
 
 All tests are deterministic: a fake fixed clock (`NOW`), scripted live-head
 fetches, and review/fence/publish fakes sharing one call log. No sleeps.
@@ -59,7 +59,7 @@ GUID_1 = "11111111-1111-4111-8111-111111111111"
 GUID_2 = "22222222-2222-4222-8222-222222222222"
 GUID_OTHER = "33333333-3333-4333-8333-333333333333"
 NOW = 1_750_000_000
-PRE_T047_LEASE_S = 180  # pre-T047 claim lease (DECISIONS 2026-09-28)
+PRE_T047_LEASE_S = 180  # claim lease before it was widened to 780
 COMMENT_ID = 987654
 UPDATED_AT = "2026-09-12T10:00:00Z"
 
@@ -179,7 +179,7 @@ def test_establish_first_write_creates_claimed_record():
         ExpressionAttributeValues=values,
     )
     item = table.items[PK]
-    assert item["status"] == "CLAIMED"  # HLD §3.2 postcondition
+    assert item["status"] == "CLAIMED"  # ARCH §3.1 postcondition
     assert item["generation"] == 0
     assert item["head_sha"] == SHA_B
     assert item["last_seen_sha"] == SHA_B
@@ -196,11 +196,11 @@ def test_first_delivery_publishes_and_finalizes():
     assert item["status"] == "ACTIVE"
     assert item["head_sha"] == SHA_B
     assert item["comment_id"] == COMMENT_ID
-    assert "claim_owner" not in item  # lease released at finalize (HLD §3.2)
+    assert "claim_owner" not in item  # lease released at finalize (ARCH §3.1)
 
 
 def test_review_port_receives_established_pair():
-    """003-T1: `run_review` passes the established `(head_sha, generation)`
+    """`run_review` passes the established `(head_sha, generation)`
     pair to the review port — first write yields `(sha, 0)`, a confirmed new
     revision yields the bumped generation."""
     h = Harness(live_shas=[SHA_B])
@@ -272,7 +272,7 @@ def test_establish_retry_same_sha_converges():
 
 
 def test_observe_guard_retries_on_fresh_base_after_concurrent_move():
-    """US3.AC1 + Gate-3 D1: a newer establish-(c) landing between this run's
+    """A newer establish-(c) landing between this run's
     read and its observe write must not drag `last_seen_sha` backward. The
     observe guard (equality with the read value) fails → the loop retries
     on the fresh base (second live fetch) and re-observes there."""
@@ -361,11 +361,11 @@ def test_claim_fails_on_live_lease_held():
 
 
 def test_widened_lease_rejects_mid_review_redelivery():
-    """T047 (HLD D9): a same-head redelivery landing mid-review — inside the
+    """A same-head redelivery landing mid-review — inside the
     widened lease but past the pre-T047 one (arrival at the midpoint between
     the two leases) — must NOT steal the claim. Under the old lease this
     arrival found an expired row and claimed it, racing the live review to
-    publish (the steal-window residual D9 records)."""
+    publish (the steal-window residual)."""
     # Non-degeneracy: the midpoint arrival below pins the widened window only
     # if the lease actually moved past the pre-T047 value — at equality the
     # arrival lands exactly on the strict (`claim_until < now`) expiry edge
@@ -382,7 +382,7 @@ def test_widened_lease_rejects_mid_review_redelivery():
 
 
 def test_widened_lease_still_expires_for_takeover():
-    """T047: the widened lease is a window, not a lock — one second past its
+    """The widened lease is a window, not a lock — one second past its
     edge a contender takes over (crash recovery unregressed; takeover never
     bumps generation, finalize releases the lease)."""
     h = Harness(live_shas=[SHA_B])
@@ -415,17 +415,17 @@ def test_fence_after_claim_before_publish():
 def test_fence_mismatch_discards_stale_without_publish():
     """Step 4 + mode 7: a newer push lands between claim and fence → mismatch →
     discard as stale; publish NEVER called; record left claimed (lease expiry
-    is the recovery path; §3.3 step 4 names no release write)."""
+    is the recovery path; ARCH §3.2 step 4 names no release write)."""
     h = Harness(live_shas=[SHA_B, SHA_C])
     _seed(h.table, head=SHA_A, gen=4, comment=111)
     outcome = h.run(incoming_sha=SHA_B)
     assert outcome.kind == OutcomeKind.DISCARDED_STALE
     assert not any(entry[0] == "publish" for entry in h.calls)
     item = h.table.items[PK]
-    assert item["status"] == "CLAIMED"  # left claimed per §3.3 (no release write)
+    assert item["status"] == "CLAIMED"  # left claimed per ARCH §3.2 (no release write)
     assert item["head_sha"] == SHA_B
     assert item["generation"] == 5
-    # establish (c) emits REMOVE comment_id (HLD 3.1: comment_id is
+    # establish (c) emits REMOVE comment_id (ARCH §3.1: comment_id is
     # ACTIVE-only), so the stored CLAIMED record stays decodable by
     # from_item. The fence-mismatch invariant is no-publish.
     assert "comment_id" not in item
@@ -446,11 +446,10 @@ def test_finalize_success_sets_active_with_comment_id():
 
 
 def test_finalize_releases_the_claim_lease():
-    """Step 6 + HLD §3.2 lease lifecycle: the lease is held only from claim
+    """Step 6 + ARCH §3.1 lease lifecycle: the lease is held only from claim
     through finalize — a finalized record carries no live lease, so a
-    same-SHA redelivery (reopen) can re-claim immediately (acceptance (k);
-    surfaced live by T035: the leftover lease discarded quick reopens as
-    CLAIM_HELD)."""
+    same-SHA redelivery (reopen) can re-claim immediately; a leftover
+    lease would discard quick reopens as CLAIM_HELD."""
     h = Harness(live_shas=[SHA_B, SHA_B])
     _seed(h.table, head=SHA_A, gen=7, comment=111)
     outcome = h.run(incoming_sha=SHA_B)
@@ -503,9 +502,9 @@ def test_superseded_event_leaves_record():
 
 def test_duplicate_delivery_after_finalize_republishes_same_comment():
     """Mode 10 (protocol side): a duplicate delivery of an already-published
-    SHA arriving after finalize (lease released, HLD §3.2) re-reviews and
+    SHA arriving after finalize (lease released, ARCH §3.1) re-reviews and
     PATCHes the SAME canonical comment — bounded duplicate LLM spend, no
-    second publication (HLD §3.2: fencing prevents duplicate publication).
+    second publication (ARCH §3.1: fencing prevents duplicate publication).
     A duplicate arriving DURING a live lease is instead discarded
     (test_claim_fails_on_live_lease_held)."""
     h = Harness(live_shas=[SHA_B, SHA_B])

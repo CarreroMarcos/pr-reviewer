@@ -1,4 +1,5 @@
-"""SPR-101 T016: verifier-stage contract tests (HLD-004 D3, §6 closed-schema pin).
+"""T016: verifier-stage contract tests (ARCHITECTURE.md §5.1, D3;
+closed-schema pin).
 
 Policy (code-enforced — severity rides trusted candidate data, so both
 rules are mechanically checkable): unverifiable HIGH → `escalated`
@@ -10,9 +11,6 @@ properties, any unknown/duplicated/omitted `candidate_id` → the stage
 fails (`verification_failed` event + `FanoutDegraded`, never forwarded).
 The verifier re-anchors coordinates; the code counts moves onto
 `verification_done.coordinates_reanchored_n`.
-
-RED state: `common.fanout` has no verifier symbol — collection errors
-on import.
 """
 
 import concurrent.futures
@@ -424,7 +422,7 @@ def test_non_string_field_fails():
 
 
 def test_unusual_string_enums_pass_through():
-    """Gate-6(c): NO category-vs-specialty runtime check v1 — unusual but
+    """No category-vs-specialty runtime check — unusual but
     well-typed strings ride through untouched."""
     item = verified_item("correctness:0", severity="CRITICAL", category="style")
     payload = {"verified": [item], "killed": [], "escalated": []}
@@ -613,10 +611,10 @@ def test_events_carry_run_id():
 
 
 # --- format-fumble resilience: fence-tolerant parse + one re-ask --------------------
-# T045 capture evidence (2026-09-28): ~17% of live verifier legs returned
-# unparseable content; ~half were fence-wrapped verdicts, ~half genuinely
-# malformed JSON (escape-heavy diffs). The leg strips fences; the stage
-# re-asks ONCE on invalid_response; transport faults stay fail-fast.
+# Live verifier legs return unparseable content in two shapes:
+# fence-wrapped verdicts and genuinely malformed JSON (escape-heavy
+# diffs). The leg strips fences; the stage re-asks ONCE on
+# invalid_response; transport faults stay fail-fast.
 
 GOOD_VERDICT = {"verified": [verified_item("correctness:0")], "killed": [], "escalated": []}
 # Echo contract: every candidate id must be echoed exactly once — scope

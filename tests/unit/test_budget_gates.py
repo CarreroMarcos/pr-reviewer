@@ -1,4 +1,4 @@
-"""SPR-97 T012: elapsed-budget gate contract tests (HLD-004 D9).
+"""T012: elapsed-budget gate contract tests (ARCHITECTURE.md §5.1).
 
 Four cumulative gates over Lambda remaining time: pre-wave covers
 wave+verifier+synth+margin; pre-verifier covers verifier+synth+margin

@@ -1,4 +1,5 @@
-"""T015: log redaction + fixed field-set contract (HLD §5.4; FR-026; Constitution III).
+"""T015: log redaction + fixed field-set contract
+(ARCHITECTURE.md §6.2, §7; FR-026; Constitution III).
 
 Payload-shaped inputs (envelope-like dicts, optionally carrying hostile extras
 such as Authorization headers, PAT shapes, secrets, raw payloads, diffs, or
@@ -410,7 +411,7 @@ def test_error_types_are_value_errors():
     assert issubclass(RedactionError, ValueError)
 
 
-# --- QA-A: build_event validation (every cleaner, public seam) ----------------
+# --- build_event validation (every cleaner, public seam) -------------------------
 
 
 def _valid_kwargs(**overrides):
@@ -442,7 +443,7 @@ def test_build_event_rejects_overlong_repo():
 
 
 def test_build_event_rejects_unicode_homoglyph_repo():
-    # Given a Cyrillic-о lookalike owner Then rejected: the charset is ASCII-only
+    # A Cyrillic-о lookalike owner — rejected: the charset is ASCII-only
     with pytest.raises(LogsError) as excinfo:
         build_event(**_valid_kwargs(repo_full_name="оcto-org/hello-world"))
     assert excinfo.value.field == "repo_full_name"
@@ -485,14 +486,14 @@ def test_build_event_rejects_malformed_guid():
 
 
 def test_build_event_accepts_uppercase_guid():
-    # Given an uppercase-hex GUID Then accepted (identifier formats allow A-F)
+    # An uppercase-hex GUID — accepted (identifier formats allow A-F)
     guid = str(uuid.uuid4()).upper()
     assert build_event(**_valid_kwargs(delivery_guid=guid))["delivery_guid"] == guid
 
 
 def test_build_event_drops_non_string_prompt_version_with_warning(caplog):
-    # Given a non-string prompt version Then the field drops to None with a
-    # loud warning — never raised into the request path (SPR-62 hardening).
+    # A non-string prompt version drops the field to None with a loud
+    # warning — never raised into the request path.
     with caplog.at_level(logging.WARNING, logger="common.logs"):
         event = build_event(**_valid_kwargs(prompt_version=123))
     assert event["prompt_version"] is None
@@ -501,8 +502,8 @@ def test_build_event_drops_non_string_prompt_version_with_warning(caplog):
 
 @pytest.mark.parametrize("version", ["", "v" * 65, "v1; DROP", "v1\n", "v 1", "Bearer abc123"])
 def test_build_event_drops_off_charset_prompt_version_with_warning(caplog, version):
-    # Given an empty, overlong, charset-violating, or hostile prompt version
-    # Then the field drops to None with a loud warning carrying only a fixed
+    # An empty, overlong, charset-violating, or hostile prompt version
+    # drops the field to None with a loud warning carrying only a fixed
     # reason code — never the offending value, never a raise.
     with caplog.at_level(logging.WARNING, logger="common.logs"):
         event = build_event(**_valid_kwargs(prompt_version=version))
@@ -517,8 +518,8 @@ def test_build_event_drops_off_charset_prompt_version_with_warning(caplog, versi
 
 @pytest.mark.parametrize("version", ["v1", "v3", "v1.2-rc_3"])
 def test_build_event_passes_charset_clean_prompt_version(version):
-    # Given a charset-clean code-identity version Then it passes through
-    # untouched and no rejection warning fires.
+    # A charset-clean code-identity version passes through untouched
+    # and no rejection warning fires.
     event = build_event(**_valid_kwargs(prompt_version=version))
     assert event["prompt_version"] == version
 
@@ -551,24 +552,24 @@ def test_build_event_rejects_overlong_error_class():
     assert excinfo.value.reason == "bad_error_class"
 
 
-# --- QA-A: redaction under hostile field shapes --------------------------------
+# --- redaction under hostile field shapes ---------------------------------------
 
 
 def test_pat_smuggled_in_error_class_trips_guard():
-    # Given a PAT-shaped error class Then the guard refuses instead of emitting
+    # A PAT-shaped error class — the guard refuses instead of emitting
     with pytest.raises(RedactionError):
         build_event(**_valid_kwargs(error_class="ghp_" + "A" * 36))
 
 
 def test_bearer_smuggled_in_status_trips_guard():
-    # Given a bearer-shaped status Then the guard refuses instead of emitting
+    # A bearer-shaped status — the guard refuses instead of emitting
     with pytest.raises(RedactionError):
         build_event(**_valid_kwargs(status="bearer_token"))
 
 
 def test_charset_clean_bearer_shaped_prompt_version_dropped_with_warning(caplog):
-    # Given the lowercase "bearer" token (passes the charset, trips the
-    # redaction guard) Then the field still drops with a warning, never emits.
+    # The lowercase "bearer" token passes the charset but trips the
+    # redaction guard — the field still drops with a warning, never emits.
     with caplog.at_level(logging.WARNING, logger="common.logs"):
         event = build_event(**_valid_kwargs(prompt_version="bearer"))
     assert event["prompt_version"] is None
@@ -576,7 +577,7 @@ def test_charset_clean_bearer_shaped_prompt_version_dropped_with_warning(caplog)
 
 
 def test_nested_hostile_extras_never_emitted():
-    # Given hostile extras nested inside dict/list values Then nothing leaks: extras are never read
+    # Hostile extras nested inside dict/list values — nothing leaks: extras are never read
     payload = _envelope()
     payload["nested"] = {"Authorization": AUTH_VALUE, "diff": DIFF_TEXT}
     payload["items"] = [AUTH_VALUE, DIFF_TEXT, LLM_REQUEST]
@@ -605,7 +606,7 @@ def test_emit_rejects_non_string_keys():
     assert lines == []
 
 
-# --- SPR-62: prompt_sha256 telemetry -----------------------------------------
+# --- prompt_sha256 telemetry ----------------------------------------------------
 
 
 def test_prompt_sha256_matches_known_vector():
@@ -662,7 +663,7 @@ def test_emit_preserves_non_string_values_verbatim():
     assert parsed["prompt_sha256"] == "ab" * 32
 
 
-# --- SPR-62: ingress status events (G6-F3) ------------------------------------
+# --- ingress status events ------------------------------------------------------
 
 
 def test_ingress_fixed_fields_are_pinned():

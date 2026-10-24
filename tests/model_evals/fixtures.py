@@ -1,4 +1,4 @@
-"""T058 pinned model-eval input fixtures (HLD §4.4).
+"""Pinned model-eval input fixtures (ARCHITECTURE.md §5.4).
 
 Deterministic input builders for the offline rubric harness
 (`test_model_evals.py`) and the out-of-band capture tool (`capture.py`).
@@ -39,7 +39,7 @@ def _forbidden() -> dict[str, bool]:
 
 
 def _meta(*, title: str, body: str, prior_comment: str = "") -> dict[str, str]:
-    """Synthetic PR metadata for the payload builder (003-T2).
+    """Synthetic PR metadata for the payload builder.
 
     The eval corpus has no live PR, so title/body/prior are fixed synthetic
     strings. The injection case carries injection text in the meta sections
@@ -573,17 +573,16 @@ _SEED_SPECS: tuple[dict, ...] = (
     },
 )
 
-# --- T037 growth specs: tests-gap + subtle-true (HLD D8) ---
+# --- Growth specs: tests-gap + subtle-true (HLD D8) ---
 #
 # Same `_SEED_SPECS` shape (anchor-on-line, ≤60-line budget, one planted
 # defect each) so `_seed_builder` enforces the identical discipline.
 # Classification lives in TESTS_GAP_IDS / SUBTLE_TRUE_IDS below — the
 # manifests stay byte-compatible with the existing scorer contract.
-# Tests-gap: the corpus had ZERO tests-category coverage (D8). Each case
-# is a tests-code defect (tautology, skipped security test, clock-flaky
-# test) — the Tests specialist's scope per D3.
-# Subtle-true: TRUE defects that read innocent (wrongful-kill guards per
-# D8 gate 3 — the verifier must verify-or-escalate, never kill).
+# Tests-gap: each case is a tests-code defect (tautology, skipped
+# security test, clock-flaky test) — the tests specialist's scope.
+# Subtle-true: true defects that read innocent (wrongful-kill guards —
+# the verifier must verify-or-escalate, never kill).
 
 _GAP_SPECS: tuple[dict, ...] = (
     {
@@ -762,8 +761,8 @@ def _seed_builder(spec: dict) -> Callable[[], tuple[str, dict, dict]]:
 # Registry: single ordered mapping id -> builder. Seeded scoring cases are
 # the 12 specs above plus `representative_diff` (seeded SQLi); robustness
 # cases keep behavioral assertions and are excluded from recall/precision.
-# T037 growth registers through the same `_seed_builder` discipline below;
-# the scored vocabulary stays frozen (HLD D8: "13 seeded" = scored set).
+# Growth registers through the same `_seed_builder` discipline below; the
+# scored vocabulary stays frozen (HLD D8: "13 seeded" = scored set).
 CORPUS: dict[str, Callable[[], tuple[str, dict, dict]]] = {"representative": representative_diff}
 for _spec in _SEED_SPECS:
     CORPUS[_spec["id"]] = _seed_builder(_spec)
@@ -777,7 +776,7 @@ CORPUS["large"] = large_diff
 TESTS_GAP_IDS: tuple[str, ...] = tuple(spec["id"] for spec in _GAP_SPECS)
 SUBTLE_TRUE_IDS: tuple[str, ...] = tuple(spec["id"] for spec in _SUBTLE_SPECS)
 
-# --- T038 verifier traps (HLD D8 Trap Validation Protocol) ---
+# --- Verifier traps (HLD D8 Trap Validation Protocol) ---
 #
 # Plausible-but-false findings: diffs that bait a finding no careful
 # reader should emit. Each frozen trap carries ZERO ground-truth
@@ -963,20 +962,19 @@ _PROMPT_SHAS = {
     "specialist_security": "b744e49f9c158bbe683164c778d9391366e8b0a6a4951e9d244da8dabd0ec3f1",
     "specialist_tests": "0400f8fcd3c830b5cba58b08bad2d706d6cd327bc4da789efcfa726ed5530e02",
     "verifier": "0550192107281167a0cb19f3920e2ab1f26fab9351e8e6cc30c6bb4b1f66bd07",
-    # Pinned since 2026-09-29 (T070): the synthesizer is security-load-bearing
-    # (floors-gate owner for injection laundering) — its sha is pinned so any
-    # edit forces a conscious update. No trap arms depend on this stage.
+    # The synthesizer is security-load-bearing (floors-gate owner for
+    # injection laundering) — its sha is pinned so any edit forces a
+    # conscious update. No trap arms depend on this stage.
     "synthesizer": "6c046ad4f4b085a8d521068db16a6608560f7e7f044a6bfbdaef539a579bb975",
 }
 
 TRAP_VETTING: dict[str, dict] = {
-    # Coverage note (T070, 2026-09-29): since the gil_atomic_copy and
-    # injected_finding_order flips, NO live trap exercises the verifier's
-    # kill gate — their decoys are generator-avoided, so a kill arm has
-    # nothing to vet. Kill-gate coverage now rests on the kill-set corpus
-    # scoring (t046_exit_scoring.py over the capture of record — 15 cases,
-    # capture-gated, not CI). Creating a new kill-arm trap whose decoy the
-    # generator still emits is future work (live vetting run required).
+    # Coverage note: no live trap exercises the verifier's kill gate —
+    # the gil_atomic_copy and injected_finding_order decoys are
+    # generator-avoided, so a kill arm has nothing to vet. Kill-gate
+    # coverage rests on the kill-set corpus scoring
+    # (t046_exit_scoring.py over the capture of record — 15 cases,
+    # capture-gated, not CI).
     "gil_atomic_copy": {
         "mode": "generator-avoidance",
         "plausibility": (
@@ -1084,8 +1082,8 @@ TRAP_VETTING: dict[str, dict] = {
 
 
 # Frozen scored vocabulary (HLD D8): exactly the 13 pre-growth cases.
-# New classes register in CORPUS (capture/harness surface) but NEVER join
-# this tuple until a capture run pins their outputs (T039/T045) — the
-# single-pass scorer and its drift guards keep scoring exactly these 13.
+# New classes register in CORPUS (capture/harness surface) but never join
+# this tuple until a capture run pins their outputs — the single-pass
+# scorer and its drift guards keep scoring exactly these 13.
 SEED_SCORING_IDS: tuple[str, ...] = ("representative",) + tuple(spec["id"] for spec in _SEED_SPECS)
 ROBUSTNESS_IDS: tuple[str, ...] = ("injection", "large")

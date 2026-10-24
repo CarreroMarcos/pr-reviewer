@@ -1,4 +1,4 @@
-"""Span-preserving markdown sanitization (HLD-004 §5 items 2 and 5).
+"""Span-preserving markdown sanitization (ARCHITECTURE.md §5.2).
 
 Naive neutralization of `<...>` or `[...]` corrupts generic type
 signatures (`List<T>`, `Dict[str, Any]`), JSX tags, and code blocks, so
@@ -14,7 +14,8 @@ canary literal (`common.validate.CANARY_SUBSTRING`) and hex runs of
 
 Collision discipline: the `\x00` framing is the anti-collision mechanism
 — NUL never occurs in legitimate finding/markdown text (control
-characters are stripped at the envelope boundary, HLD §2.1) — so any
+characters are stripped at the envelope boundary, ARCHITECTURE.md
+§2.1) — so any
 `\x00` in input fails closed with `SanitizeError` instead of risking a
 forged placeholder hijacking the stash. The stash is per-call; restore
 is exact-string replacement, so spans always come back byte-identical.
@@ -28,7 +29,7 @@ never touch them.
 
 Redaction crosses code spans by design: a payload token is not
 legitimate code content, so phase 4 runs AFTER re-substitution over the
-full text. Disclosed limits (HLD-004 §5 item 5): verdict-phrase
+full text. Disclosed limits (ARCHITECTURE.md §5.2): verdict-phrase
 laundering like "SAFE TO MERGE" stays prompt/rubric-owned — no generic
 phrase detector exists; hash-like identifiers (e.g. full commit shas)
 are redacted — review comments should reference short refs.
@@ -58,7 +59,7 @@ _LINK_RE = re.compile(r"\[(" + _NESTED_TEXT + r")\]\(([^)]*)\)")
 # non-angle char. `<http>` alone, generics, JSX, and spaced text stay.
 _AUTOLINK_RE = re.compile(r"<[Hh][Tt][Tt][Pp]([^<>\s]+)>")
 
-# Payload-token redaction (HLD-004 §5 item 5): runs AFTER span
+# Payload-token redaction (ARCHITECTURE.md §5.2): runs AFTER span
 # re-substitution over the full text, so it crosses code spans by
 # design. Order: emails, then the canary literal, then hex runs (the
 # canary's hex tail would otherwise match the hex rule first and split

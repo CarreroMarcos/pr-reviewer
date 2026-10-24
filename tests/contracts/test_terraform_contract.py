@@ -1,5 +1,5 @@
 """Three-way queue contract: terraform/messaging.tf ↔ worker constant ↔
-failure-notice default (HLD §2.2).
+failure-notice default (ARCH §2.2).
 
 Parses the terraform TEXT (no terraform binary needed) and asserts the
 redrive budget and visibility window cannot drift from the code that
@@ -34,7 +34,7 @@ EXPECTED_BATCH_SIZE = 1
 
 
 def _hcl_canary(match: re.Match[str] | None, what: str) -> re.Match[str]:
-    """T065 (Gate-13 aside): every terraform-text extraction is bounded
+    """Every terraform-text extraction is bounded
     by this canary. A None match means the HCL SHAPE changed (reformat,
     rename, restructure) — not that a pinned value drifted — so fail
     with the loud, actionable message instead of a bare "not found"."""
@@ -117,7 +117,7 @@ def test_visibility_covers_worker_timeout_no_duplicate_processing():
 
 
 def test_mutex_lease_ttl_matches_worker_timeout_three_way():
-    """T063 (D9 lease TTL pin, Gate-15): the mutex lease constant, the
+    """The mutex lease constant, the
     worker-timeout constant, and the parsed compute.tf worker timeout
     are one value — the mutex module and the terraform contract pin it
     separately, so without this link either side can drift silently

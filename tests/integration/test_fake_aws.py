@@ -87,14 +87,11 @@ REVIEW_BODY = (
 APPROVAL_BODY = REVIEW_BODY + "\nSafe to merge when ready.\n"
 
 
-# --- fake-AWS stack ---------------------------------------------------------
-
-
 @pytest.fixture(autouse=True)
 def _moto(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Activate moto's fake AWS for every test in this module."""
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "fake-test-key")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-test-secret")  # noqa: S106
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-test-secret")  # noqa: S106 (moto dummy)
     monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     moto = mock_aws()
@@ -240,7 +237,7 @@ def _llm_factory(body: bytes = _completion_body()) -> Any:
 class FakeGitHub:
     """Issues-Comments double: records (method, url, parsed body).
 
-    T040: stateful comment list so the reconcile path runs faithfully — GET
+    Stateful comment list so the reconcile path runs faithfully — GET
     returns the current list, POST appends, PATCH refreshes the stored body,
     DELETE removes. `script` ordered overrides fire first (e.g. a one-shot
     PATCH 404 modeling a comment deleted on GitHub)."""
@@ -370,9 +367,6 @@ def _queue_depth(sqs: Any, url: str) -> int:
     return int(attrs.get("ApproximateNumberOfMessages", "0"))
 
 
-# --- rides ------------------------------------------------------------------
-
-
 def test_a_happy_ride_ingress_to_finalize(stack: SimpleNamespace) -> None:
     """Signed webhook → 202 → one work message → published → finalized.
 
@@ -441,9 +435,9 @@ def test_b_redelivery_while_lease_held_discards(stack: SimpleNamespace) -> None:
 
 
 def test_c_same_sha_rereview_after_finalize_patches(stack: SimpleNamespace) -> None:
-    """Finalize drops the lease (HLD §3.2), so a same-SHA re-review re-claims
-    and refreshes the SAME comment via PATCH — never a second POST, never
-    DISCARDED_CLAIM_HELD."""
+    """Finalize drops the lease (ARCHITECTURE.md §3.2), so a same-SHA
+    re-review re-claims and refreshes the same comment via PATCH — never
+    a second POST, never DISCARDED_CLAIM_HELD."""
     pr_number = 103
     response = _ingress(stack, _pr_payload("opened", SHA_B, pr_number), GUID_1)
     assert response == {"statusCode": 202, "body": ""}
@@ -607,8 +601,8 @@ def test_h_patch_404_recovers_via_creation_lease(stack: SimpleNamespace) -> None
     marker comment, creation lease → POST → persist → re-check. Exactly one
     canonical comment exists afterwards, and the record points at the new
     id. Moto evaluates the creation-lease condition with its real DynamoDB
-    expression parser — this ride pins the T039 condition string beyond
-    what the hand-written state-machine stub can."""
+    expression parser — this ride pins the creation-lease condition string
+    beyond what the hand-written state-machine stub can."""
     pr_number = 108
     pk = review_pk(REPO, pr_number)
     stack.table.put_item(

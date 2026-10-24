@@ -1,4 +1,4 @@
-"""T005: envelope schema cases per contracts/ingress-webhook.md.
+"""T005: envelope schema cases per ARCHITECTURE.md §2.1, §4.
 
 Valid/invalid cases mirror the contract's SQS-envelope schema table
 verbatim, including the D1 delta (`reopened` is accepted). Every
@@ -93,7 +93,7 @@ def test_envelope_error_is_value_error():
 def test_envelope_is_frozen():
     envelope = validate_envelope(_valid())
     with pytest.raises(FrozenInstanceError):
-        envelope.action = "closed"  # type: ignore[misc]
+        envelope.action = "closed"  # type: ignore[misc] (frozen-instance probe)
 
 
 # --- version / event / action --------------------------------------------
@@ -239,8 +239,8 @@ def test_non_object_payload(payload):
 def test_trailing_newline_rejected(field_kwargs, field, reason):
     """Python `$` also matches before a trailing newline, so `$`-anchored
     regexes admitted single-trailing-newline variants of validated identity
-    fields. Anchors are `\\Z` (exact end) — found by the SPR-15 logs lane's
-    redaction-guard work (logs.py anchors with \\Z for the same reason)."""
+    fields. Anchors are `\\Z` (exact end); `logs.py` anchors with `\\Z`
+    for the same reason."""
     _rejected(_valid(**field_kwargs), field, reason)
 
 
@@ -252,7 +252,7 @@ def test_trailing_newline_guid_rejected():
     )
 
 
-# --- QA-A: additive evolution + hostile shapes ---------------------------------
+# --- additive evolution + hostile shapes -----------------------------------------
 
 
 def test_extra_fields_ignored():

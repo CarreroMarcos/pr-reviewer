@@ -1,7 +1,7 @@
-"""Static replay-viewer pins (T055).
+"""Static replay-viewer pins.
 
 The per-review replay page (static/index.html + review.css + review.js)
-is the render boundary for model-controlled archive bytes (HLD §5, §7):
+is the render boundary for model-controlled archive bytes:
 every reasoning excerpt, finding field, and raw archive byte passes
 through the JS three-phase span-preserving sanitizer (mirroring
 lambda/common/sanitize.py) and reaches the DOM via textContent-backed
@@ -54,7 +54,7 @@ def test_viewer_flat_files_match_server_allowlist():
 
 def test_no_third_party_sources():
     """No CDN links, no external URLs in script/link/img sources — the
-    page is single-origin by construction (HLD §7)."""
+    page is single-origin by construction."""
     for name, source in (("index.html", HTML), ("review.css", CSS), ("review.js", JS)):
         assert "https://" not in source and "http://" not in source, (
             f"{name} contains an external URL — third-party sources are forbidden"
@@ -213,7 +213,7 @@ def test_reasoning_excerpt_guarded_render():
 
 
 def test_api_contract_shapes():
-    """The shell speaks the T053/T054 viewer contract: latest-run lookup
+    """The shell speaks the viewer contract: latest-run lookup
     plus the two archive objects, all on same-origin relative paths.
     Asserts bind to the actual construction and field-usage sites, not
     bare substrings a comment could satisfy."""

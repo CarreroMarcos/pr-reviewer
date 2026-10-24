@@ -1,19 +1,19 @@
-"""Multi-agent fan-out stage (HLD-004 §5, D1, D3, D9).
+"""Multi-agent fan-out stage (ARCHITECTURE.md §5.1).
 
-Three sections, kept separable:
+Sections, kept separable:
 
-1. Elapsed-budget gates (D9 Cumulative Downstream Protection): pure
+1. Elapsed-budget gates (cumulative downstream protection): pure
    predicates over Lambda remaining time that decide proceed vs
    degrade-to-single-pass BEFORE each stage burns budget.
-2. Wave stage (D1): three specialist coroutines over an explicit
-   per-invocation `ThreadPoolExecutor` (runtime-fix pattern verbatim),
+2. Wave stage: three specialist coroutines over an explicit
+   per-invocation `ThreadPoolExecutor`,
    fresh `asyncio.run` per call, events emitted ONLY from the coroutines
    on the loop thread, ≥2-survivor rule with `FanoutDegraded` fallback.
-3. Verifier stage (D3): one falsification leg over the same pool/loop
+3. Verifier stage: one falsification leg over the same pool/loop
    machinery, closed-schema validation of the model verdict, policy
    routing (HIGH never killed; kills need cited reasons), post-image
    re-anchor counting onto `verification_done`.
-4. Synthesizer stage (D3, §5 item 3): deterministic four-condition
+4. Synthesizer stage: deterministic four-condition
    duplicate merge over verifier survivors (STOPWORDS title similarity,
    highest severity wins, adjacent ordering), exact `## Findings`
    rendering, one comment leg over the same pool/loop machinery.
@@ -71,7 +71,7 @@ _MS_PER_S = 1000
 
 
 def wave_budget_ok(remaining_ms: int, cfg: MultiAgentConfig) -> bool:
-    """Pre-wave gate (D9.1): remaining covers wave + verifier +
+    """Pre-wave gate: remaining covers wave + verifier +
     synthesizer + margin. False → skip fan-out entirely."""
     return (
         remaining_ms
@@ -86,7 +86,7 @@ def wave_budget_ok(remaining_ms: int, cfg: MultiAgentConfig) -> bool:
 
 
 def verifier_budget_ok(remaining_ms: int, cfg: MultiAgentConfig) -> bool:
-    """Pre-verifier gate (D9.2): remaining covers verifier + synthesizer
+    """Pre-verifier gate: remaining covers verifier + synthesizer
     + margin. False → degrade to single-pass fallback NOW, while
     single-pass still has budget."""
     return (
@@ -96,13 +96,13 @@ def verifier_budget_ok(remaining_ms: int, cfg: MultiAgentConfig) -> bool:
 
 
 def synthesizer_budget_ok(remaining_ms: int, cfg: MultiAgentConfig) -> bool:
-    """Pre-synthesizer gate (D9.3): remaining covers synthesizer +
+    """Pre-synthesizer gate: remaining covers synthesizer +
     margin. False → degrade to single-pass fallback."""
     return remaining_ms >= (cfg.synthesizer_wait_for_s + cfg.budget_margin_s) * _MS_PER_S
 
 
 def single_pass_budget_ok(remaining_ms: int, cfg: MultiAgentConfig) -> bool:
-    """Pre-fallback gate (D9.4): remaining covers a single-pass call +
+    """Pre-fallback gate: remaining covers a single-pass call +
     margin. False → no budget left even for fallback (terminal)."""
     return remaining_ms >= (cfg.single_pass_wait_for_s + cfg.budget_margin_s) * _MS_PER_S
 
@@ -113,7 +113,7 @@ class FanoutDegraded(Exception):
     `insufficient_wave_survivors`, …); `failed_stage` names the stage
     (`wave`, `verifier`, `synthesizer`). Caught INSIDE the review closure
     around `run_fanout` only — never propagates to `run_review` or the
-    worker boundary (HLD §5 FanoutDegraded wiring pin)."""
+    worker boundary (ARCHITECTURE.md §5.1)."""
 
     def __init__(self, reason: str, failed_stage: str) -> None:
         self.reason = reason
@@ -240,7 +240,7 @@ async def _specialist_coro(
             )
         )
         return _SpecialistOutcome(False, None, "invalid_response")
-    # Capture-truncated reasoning excerpt (D6): raw reasoning sliced at
+    # Capture-truncated reasoning excerpt: raw reasoning sliced at
     # REASONING_MAX_CHARS the moment it arrives — never summarized, never
     # a second model call. Absent reasoning emits no event (the replay
     # renders reasoning WHEN PRESENT).
@@ -329,8 +329,8 @@ async def _wave_async(
     if len(survivors) >= 2:
         return survivors
     if not survivors and losses and all(error_class == "http_401" for error_class in losses):
-        # Uniform auth failure across EVERY specialist — HLD D1's literal
-        # antecedent ("when all specialists fail on 401"). Recovery is the
+        # Uniform auth failure across EVERY specialist ("when all
+        # specialists fail on 401"). Recovery is the
         # sync fallback's lazy SSM refresh; this wave never touches creds.
         # A mixed wave with a survivor is survivor-rule territory below.
         events.append(
@@ -358,26 +358,26 @@ def run_wave(
 ) -> list[WaveSurvivor]:
     """Run the multi-agent wave: dispatch every specialty's sync
     provider call onto one explicit per-invocation pool, collect
-    survivors (D1 runtime-fix pattern verbatim).
+    survivors.
 
-    `cfg` is the immutable pre-hydrated snapshot (D1 Credential Thread
-    Safety — never re-read, never mutated); `events` is caller-owned and
+    `cfg` is the immutable pre-hydrated snapshot (never re-read, never
+    mutated); `events` is caller-owned and
     appended ONLY from the coroutines on the loop thread, never from
     pool threads and never from this sync entry point. `system_prompts`
     carries one assembled prompt per specialty (missing specialty =
     loud `KeyError`, fail fast before dispatch). The socket budget is
     the `_read_timeout_s()` resolution, resolved ONCE here and passed
-    explicitly to every specialist call (HLD §9 item 1).
+    explicitly to every specialist call.
 
     Returns ≥2 survivors; otherwise raises `FanoutDegraded` for the
     review closure to catch (single-pass fallback owns recovery).
     """
     for specialty in specialties:
         if specialty not in system_prompts:
-            raise KeyError(specialty)  # loud pre-dispatch failure (docstring pin)
+            raise KeyError(specialty)  # loud pre-dispatch failure
     fn = review_fn if review_fn is not None else llm.review_diff
     read_timeout_s = llm._read_timeout_s()
-    # ADV-9 (first wiring PR): env-sourced effort rides stripped.
+    # Env-sourced effort rides stripped.
     effort = cfg.reasoning_effort.strip()
     pool = ThreadPoolExecutor(
         max_workers=cfg.fanout_concurrency,
@@ -406,7 +406,7 @@ def run_wave(
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-# Verifier stage (HLD-004 D3). reroute marker: fixed system provenance
+# Verifier stage. Reroute marker: fixed system provenance
 # for kills the policy refuses (HIGH, or reasonless) — the downstream
 # synthesizer renders it beside [Requires Verification].
 _POLICY_REROUTE_NOTE = "rerouted by policy: kill lacked evidence citation"
@@ -446,8 +446,8 @@ _VERDICT_KEYS = frozenset({"verified", "killed", "escalated"})
 def _parse_verifier_payload(content: str) -> Any:
     """json.loads with markdown-fence tolerance.
 
-    Live captures (T045, 2026-09-28) show roughly half of all
-    `invalid_response` verifier faults are a well-formed verdict wrapped
+    Roughly half of observed `invalid_response` verifier faults are a
+    well-formed verdict wrapped
     in ``` / ```json fences — transport noise around a contract-shaped
     payload. Strip the fences and parse. Accepted fence grammar: >=3
     backticks, optional json tag (the shapes observed in capture);
@@ -476,7 +476,7 @@ class _VerifierFailure(Exception):
 
 
 class _InvalidOutput(Exception):
-    """Model verdict violated the closed §6 schema or the echo contract.
+    """Model verdict violated the closed schema or the echo contract.
     Raised during validation; converted to `_VerifierFailure` with the
     uniform `invalid_response` class at the single conversion point."""
 
@@ -491,7 +491,7 @@ def _require_str(item: dict[str, Any], key: str) -> str:
 
 
 def _require_line(item: dict[str, Any], key: str) -> int:
-    # Integer coordinates, bools excluded. NO minimum: the §6 verifier
+    # Integer coordinates, bools excluded. NO minimum: the verifier
     # item schema shows no minimum (unlike the candidate schema) —
     # re-anchoring and the downstream clamp own ranges, not this gate.
     value = item.get(key)
@@ -503,9 +503,9 @@ def _require_line(item: dict[str, Any], key: str) -> int:
 def _check_verified_item(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict) or set(item) != _VERIFIED_FIELDS:
         raise _InvalidOutput("bad verified item")
-    # Severity/category ride through as strings (Gate-6(c): no
-    # category-vs-specialty runtime check v1) — enums stay prompt
-    # contract, exactly as the §6 verifier schema (plain strings).
+    # Severity/category ride through as strings (no
+    # category-vs-specialty runtime check) — enums stay prompt
+    # contract, exactly as the verifier schema (plain strings).
     return {
         "candidate_id": _require_str(item, "candidate_id"),
         "file_path": _require_str(item, "file_path"),
@@ -549,7 +549,7 @@ def _check_escalated_item(item: Any) -> dict[str, Any]:
 def _validate_verifier_output(
     payload: Any, known_ids: frozenset[str]
 ) -> dict[str, list[dict[str, Any]]]:
-    """Closed-schema + echo validation (§6 Verifier Output pin).
+    """Closed-schema + echo validation.
 
     Top level is exactly {verified, killed, escalated} arrays; every
     item carries exactly its array's properties (unknown fields fail,
@@ -578,8 +578,8 @@ def _validate_verifier_output(
                 raise _InvalidOutput("bad candidate_id echo")
             seen[cid] = key
     if set(seen) != set(known_ids):
-        # MUST-echo violation (HLD §6): an assigned ID with no verdict
-        # is malformed output — never a silent drop.
+        # MUST-echo violation: an assigned ID with no verdict is
+        # malformed output — never a silent drop.
         raise _InvalidOutput("incomplete candidate_id echo")
     return validated
 
@@ -588,7 +588,7 @@ def _route_verdict(
     validated: dict[str, list[dict[str, Any]]],
     by_id: Mapping[str, dict[str, Any]],
 ) -> tuple[dict[str, list[dict[str, Any]]], int]:
-    """Apply the D3 kill policy + count re-anchors.
+    """Apply the kill policy + count re-anchors.
 
     HIGH-severity kills reroute to escalated (never killed, no
     exceptions); MEDIUM/LOW kills stand ONLY with a non-blank
@@ -721,7 +721,7 @@ async def _verify_async(
     # One deliberate re-ask, and only for a fumbled FORMAT: an
     # unparseable or shape-invalid verdict is stochastic model output,
     # not a transport fault — one re-roll turns a per-attempt rate p
-    # into ~p² (T045 capture evidence, 2026-09-28). Transport faults
+    # into ~p². Transport faults
     # (429/1302/timeout) and window expiry still fail fast exactly as
     # before. Both attempts share the stage window deadline, and a
     # re-ask only fires with >=25% of the window remaining — a
@@ -833,14 +833,14 @@ def run_verifier(
 ) -> dict[str, list[dict[str, Any]]]:
     """Run the falsification stage: one verifier leg over an explicit
     per-invocation pool (max_workers=1), fresh `asyncio.run` per call,
-    closed-schema validation of the model verdict, D3 policy routing.
+    closed-schema validation of the model verdict, policy routing.
 
     `candidates` carry assigned `candidate_id`s (run_fanout's
     post-wave assignment — never model-generated); every ID must be
     echoed exactly once. `wave_survivors` is wave data carried onto the
     `verification_done` event. The socket budget is the
     `_read_timeout_s()` resolution, resolved ONCE here and passed
-    explicitly (HLD §9 item 1).
+    explicitly.
 
     Returns {"verified", "killed", "escalated"}; any leg or validation
     failure emits `verification_failed` and raises `FanoutDegraded`
@@ -848,7 +848,7 @@ def run_verifier(
     """
     fn = review_fn if review_fn is not None else llm.review_diff
     read_timeout_s = llm._read_timeout_s()
-    # ADV-9 (first wiring PR): env-sourced effort rides stripped.
+    # Env-sourced effort rides stripped.
     effort = cfg.reasoning_effort.strip()
     pool = ThreadPoolExecutor(
         max_workers=1,
@@ -878,17 +878,15 @@ def run_verifier(
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-# Synthesizer stage (HLD-004 D3, §5 item 3). Pre-registered title-guard
-# contract: duplicate titles match at token Jaccard ≥ 0.6 over
-# lowercased tokens with stopwords removed. STOPWORDS is the frozen
-# infrastructure set below — conventional English grammar words
-# (multi-char only, so single-letter variable names keep their signal),
-# deliberately WITHOUT code-signaling words (null, missing, leak,
-# injection, unused, race, check, error, fail, ...). Threshold AND set
-# are tunable only by Phase-0 data (D8 effort-selection pre-registration
-# discipline); the ANTONym-pair caveat (with/without, before/after…
-# strip symmetrically per conventional lists) is accepted residual
-# noise inside the conjunctive four-condition rule, likewise tunable.
+# Synthesizer stage. Title-guard contract: duplicate titles match at
+# token Jaccard ≥ 0.6 over lowercased tokens with stopwords removed.
+# STOPWORDS is the frozen infrastructure set below — conventional
+# English grammar words (multi-char only, so single-letter variable
+# names keep their signal), deliberately WITHOUT code-signaling words
+# (null, missing, leak, injection, unused, race, check, error, fail,
+# ...). The antonym-pair caveat (with/without, before/after… strip
+# symmetrically per conventional lists) is accepted residual noise
+# inside the conjunctive four-condition rule.
 STOPWORDS = frozenset(
     {
         "about",
@@ -1092,7 +1090,7 @@ def _norm_path(path: str) -> str:
 
 
 def _duplicates(first: dict[str, Any], second: dict[str, Any]) -> bool:
-    """D3 four-condition duplicate predicate: same file AND proximate
+    """Four-condition duplicate predicate: same file AND proximate
     lines AND same category AND similar titles. All four, no shortcuts."""
     return (
         _norm_path(first["file_path"]) == _norm_path(second["file_path"])
@@ -1103,19 +1101,19 @@ def _duplicates(first: dict[str, Any], second: dict[str, Any]) -> bool:
 
 
 def _severity_rank(severity: Any) -> int:
-    # Unknown strings (verifier passthrough, Gate-6(c)) rank 0: they
-    # never outrank a known severity; ties keep the anchor.
+    # Unknown strings (verifier passthrough) rank 0: they never
+    # outrank a known severity; ties keep the anchor.
     return _SEVERITY_RANK.get(severity, 0) if isinstance(severity, str) else 0
 
 
 def dedupe_findings(
     verified: list[dict[str, Any]], escalated: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Deterministic duplicate merge over verifier survivors (HLD D3).
+    """Deterministic duplicate merge over verifier survivors.
 
     Survivors pool in location-major order (path, start, end, category,
     title — fully deterministic regardless of model output order, and
-    non-duplicate same-location pairs land ADJACENT as pinned). Each
+    non-duplicate same-location pairs land adjacent). Each
     item greedily joins the first anchor group it duplicates (anchor
     linkage — no transitive chaining across distant items). Merged
     groups keep the anchor's fields with severity upgraded to the group
@@ -1166,7 +1164,7 @@ def _one_line(text: Any) -> str:
 
 
 def render_findings_section(merged: list[dict[str, Any]]) -> str:
-    """Render the exact `## Findings` section (HLD D3, §5 item 3).
+    """Render the exact `## Findings` section.
 
     One `- [SEVERITY] \\`path:line\\` — title. Description. Fix: …`
     bullet per merged item, backticked location (the scorer REQUIRES
@@ -1215,12 +1213,12 @@ class _SynthFailure(Exception):
 
 
 def _render_residuals(residuals: list[str]) -> str:
-    # Gate-6(d): empty residuals substitute as the empty string.
+    # Empty residuals substitute as the empty string.
     return "\n".join(f"- {residual}" for residual in residuals)
 
 
 def _fill_prompt(template: str, values: Mapping[str, str]) -> str:
-    # Single-pass slot substitution (Gate-6(a) payload-literal safety):
+    # Single-pass slot substitution (payload-literal safety):
     # replacements never re-scan each other, so finding/residual text
     # containing slot-looking markers cannot hijack the template.
     # Unknown slots pass through untouched (tolerant — each assembly
@@ -1259,8 +1257,8 @@ async def _synth_coro(
                 model=model,
                 endpoint=endpoint,
                 system_prompt=prompt,
-                # The synthesizer has no diff access (§5 flow feeds it
-                # findings + residuals only) — empty user content is the
+                # The synthesizer has no diff access (the flow feeds
+                # it findings + residuals only) — empty user content is the
                 # faithful argument; review_diff requires diff_text.
                 diff_text="",
                 thinking_enabled=True,
@@ -1331,11 +1329,11 @@ async def _synth_async(
             )
         )
         raise FanoutDegraded(exc.error_class, "synthesizer") from None
-    # Trust boundary (documented): the comment's ## Findings fidelity to
-    # `merged` is prompt-contract (verbatim-copy instruction) and
-    # eval-measured (D8 Gate 4) — never runtime-rejected. A paraphrasing
-    # model degrades eval scores, not this stage: the event always
-    # carries the deterministic code truth.
+    # Trust boundary: the comment's ## Findings fidelity to `merged`
+    # is prompt-contract (verbatim-copy instruction) and eval-measured
+    # (ARCHITECTURE.md §5.4, synthesizer-fidelity gate) — never
+    # runtime-rejected. A paraphrasing model degrades eval scores, not
+    # this stage: the event always carries the deterministic code truth.
     events.append(
         review_synthesized(
             findings_merged_n=len(merged),
@@ -1372,9 +1370,8 @@ def run_synthesizer(
     comment leg, `review_synthesized` event with code-exact counts.
 
     `verified`/`escalated` are the verifier's finding-shaped items;
-    `residuals` are accepted-residual lines (HLD §5 flow feeds them to
-    the synthesizer — raw lines here, never the loader: ADV-17's file
-    wiring belongs to the assembly ticket). `synth_prompt` is the
+    `residuals` are accepted-residual lines (the flow feeds them to the
+    synthesizer — raw lines here, never the loader). `synth_prompt` is the
     template carrying `{{FINDINGS_SECTION}}` + `{{ACCEPTED_RESIDUALS}}`
     slots (NO `{{DIFF}}` — the flow feeds the synthesizer no diff; the
     summary derives solely from the findings). Empty survivors still
@@ -1395,7 +1392,7 @@ def run_synthesizer(
     )
     fn = review_fn if review_fn is not None else llm.review_diff
     read_timeout_s = llm._read_timeout_s()
-    # ADV-9 (first wiring PR): env-sourced effort rides stripped.
+    # Env-sourced effort rides stripped.
     effort = cfg.reasoning_effort.strip()
     pool = ThreadPoolExecutor(
         max_workers=1,
@@ -1424,40 +1421,36 @@ def run_synthesizer(
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-# Prompt assembly + nonced injection delimiters (HLD-004 §5 items 1, 4).
+# Prompt assembly + nonced injection delimiters (ARCHITECTURE.md §5.2).
 #
 # Pure string mechanics: each function takes template + data and returns
-# one model-visible prompt string. NO stage-signature changes, NO
-# run_fanout wiring — the homeless assembly ticket owns integration
-# (Gate-9 Finding 2); these functions are its building blocks.
+# one model-visible prompt string.
 #
-# Freshness reading (HLD §5 scope pin vs task-text EXACTLY-TWICE): the
-# pin's "one fresh nonce per model-visible prompt string" is the
-# freshness SCOPE (no cross-string reuse ever); within a string each
-# nonced block binds its OWN nonce so every nonce appears EXACTLY TWICE
-# (own open/close tags). A verifier prompt therefore carries two nonces
-# (candidates + reasoning), a synthesizer prompt one, specialist prompts
-# none. Collision re-rolls are deliberately absent: at 2^-64 per string
-# the check would be theater, and boundary-break DETECTION belongs to
-# the sequencer (which owns the nonce and the content together), never
-# to assembly.
+# Nonce freshness: one fresh nonce per model-visible prompt string (no
+# cross-string reuse ever); within a string each nonced block binds its
+# OWN nonce so every nonce appears EXACTLY TWICE (its own open/close
+# tags). A verifier prompt therefore carries two nonces (candidates +
+# reasoning), a synthesizer prompt one, specialist prompts none.
+# Collision re-rolls are deliberately absent: at 2^-64 per string the
+# check would be theater, and boundary-break DETECTION belongs to the
+# sequencer (which owns the nonce and the content together), never to
+# assembly.
 #
 # The diff is fenced-verbatim (plain ``` fences, exact bytes — never
 # escaped, never stripped; one structural newline separates content
-# from the closer). It is NEVER nonced: HLD item 1 binds nonces to
-# stage-boundary <<<>>> blocks only, and the task text pins specialists
-# receiving the diff un-nonced.
+# from the closer). It is NEVER nonced: nonces bind to stage-boundary
+# <<<>>> blocks only, and specialists receive the diff un-nonced.
 
 
 def new_nonce() -> str:
-    """One 64-bit hex stage nonce (HLD §5 item 1 verbatim:
-    `secrets.token_hex(8)`)."""
+    """One 64-bit hex stage nonce (ARCHITECTURE.md §5.2):
+    `secrets.token_hex(8)`."""
     return secrets.token_hex(8)
 
 
 def candidate_findings_block(*, candidates: list[dict[str, Any]], nonce: str) -> str:
-    """Wrap verifier candidates in the nonced stage-boundary block (HLD
-    §5 item 1 verbatim tags). Compact JSON encoding (repo discipline);
+    """Wrap verifier candidates in the nonced stage-boundary block
+    (ARCHITECTURE.md §5.2 tags). Compact JSON encoding;
     the contract is round-trip (`json.loads` recovers the structures),
     not byte-identity — byte-verbatim is the DIFF's pin, not this
     block's."""
@@ -1470,9 +1463,9 @@ def candidate_findings_block(*, candidates: list[dict[str, Any]], nonce: str) ->
 
 
 def reasoning_block(*, excerpts: list[tuple[str, str | None]], nonce: str) -> str:
-    """Wrap specialist reasoning excerpts (HLD §5 item 4 verbatim tags).
-    Present excerpts only (absent reasoning emits no entry — D6 renders
-    when present); the block itself is ALWAYS emitted (uniform shape —
+    """Wrap specialist reasoning excerpts (ARCHITECTURE.md §5.2 tags).
+    Present excerpts only (absent reasoning emits no entry — reasoning
+    renders when present); the block itself is ALWAYS emitted (uniform shape —
     every verifier/synthesizer prompt carries exactly one reasoning
     block even with an empty body). Excerpt bytes ride verbatim."""
     body = "\n".join(f"[{specialty}]\n{excerpt}" for specialty, excerpt in excerpts if excerpt)
@@ -1486,8 +1479,8 @@ def reasoning_block(*, excerpts: list[tuple[str, str | None]], nonce: str) -> st
 def _fenced_verbatim(diff_text: str) -> str:
     # Four-backtick fence (CommonMark): a closing fence must be at least
     # as long as the opening one, so a diff containing ``` lines cannot
-    # close the fence early. Every §5 pin still holds (verbatim, fenced,
-    # no escaping/mutation — fence length is unpinned). Residual: a diff
+    # close the fence early. The pins still hold (verbatim, fenced, no
+    # escaping/mutation — fence length is unpinned). Residual: a diff
     # line carrying 4+ backticks could still close it — accepted.
     return "````\n" + diff_text + "\n````"
 
@@ -1497,8 +1490,7 @@ def assemble_specialist_prompt(
 ) -> str:
     """Fill a specialist template: fenced-verbatim diff + rendered
     residuals (shared `_render_residuals`: bullets, empty → ""). No
-    nonce anywhere (HLD §5 scope pin) — specialists never see delimiter
-    machinery."""
+    nonce anywhere — specialists never see delimiter machinery."""
     return _fill_prompt(
         template,
         {
@@ -1518,8 +1510,8 @@ def assemble_verifier_prompt(
     """Fill a verifier template (nonced candidates block + fenced diff),
     then append the nonced reasoning block (the template carries no
     reasoning slot — instructions precede untrusted blocks). Two fresh
-    nonces, never shared across strings. No residuals: the HLD flow
-    does not feed the verifier residuals."""
+    nonces, never shared across strings. No residuals: the flow does
+    not feed the verifier residuals."""
     filled = _fill_prompt(
         template,
         {
@@ -1557,22 +1549,19 @@ def assemble_synth_prompt(
     return filled + "\n" + reasoning_block(excerpts=excerpts, nonce=new_nonce())
 
 
-# Sequencer assembly (HLD-004 :418, §5 flow tree, D8 5-calls pin).
+# Sequencer assembly.
 #
 # `run_fanout` composes the existing stage surfaces above — no
-# stage-signature changes, no worker wiring (T023 owns the review-closure
-# wiring; `run_fanout` stays unreferenced by production callers, exactly
-# like the other stage entry points).
+# stage-signature changes.
 
 
 def _remaining_ms(context: Any) -> int | None:
-    """Read Lambda remaining time in ms (HLD :418-420: threaded as in the
+    """Read Lambda remaining time in ms (threaded as in the
     single-pass path — `context.get_remaining_time_in_millis`).
 
-    Fail-closed discipline mirrors the worker's timeout-retry budget
-    (`worker_handler.py:485-499`): a missing/unreadable/non-numeric/
-    non-finite (NaN/Inf) clock yields `None`, and every budget gate
-    treats `None` as exhausted — degrade, never proceed blind.
+    Fail-closed: a missing/unreadable/non-numeric/non-finite (NaN/Inf)
+    clock yields `None`, and every budget gate treats `None` as
+    exhausted — degrade, never proceed blind.
     """
     get_remaining = getattr(context, "get_remaining_time_in_millis", None)
     if not callable(get_remaining):
@@ -1615,24 +1604,22 @@ def run_fanout(
     immutable multi-agent knob snapshot (budgets ride here); `context` is
     the Lambda context (remaining-time source, re-sampled per stage
     boundary). Credentials (`api_key`/`model`/`endpoint`) ride as explicit
-    keyword snapshots — immutable strings, never re-read, never mutated
-    (D1 read-only discipline; the HLD :73 `cfg = creds.current()` snapshot
-    in keyword form). `events` is caller-owned; every entry is appended by
-    the stages on the loop thread — this sequencer appends none of its own
-    (the T023 closure owns `review_started`/`degraded_to_single_pass`).
-    Templates are caller-provided text (production threads the
-    `prompts/*.md` files at T023; tests inject sentinels) — this module
-    stays I/O-free.
+    keyword snapshots — immutable strings, never re-read, never mutated.
+    `events` is caller-owned; every entry is appended by the stages on
+    the loop thread — this sequencer appends none of its own (the review
+    closure owns `review_started`/`degraded_to_single_pass`). Templates
+    are caller-provided text (production threads the `prompts/*.md`
+    files; tests inject sentinels) — this module stays I/O-free.
 
     Sequence: cumulative budget gate (wave + verifier + synth + margin)
     → wave (`assemble_specialist_prompt` per specialty, nonce-free) →
     post-wave clamp-and-flag per specialty (`clamp_to_post_image`,
-    backfilled onto that specialty's own `agent_completed` event — the
-    HLD :520 field) + `{specialty}:{index}` ID assignment (HLD :538-539:
-    index = position in that specialist's findings array) + location sort
-    (deterministic chain order) → budget gate (verifier + synth + margin)
-    → verifier (`assemble_verifier_prompt`: two fresh nonces) → budget
-    gate (synth + margin) → synthesizer (deterministic `dedupe_findings` +
+    backfilled onto that specialty's own `agent_completed` event) +
+    `{specialty}:{index}` ID assignment (index = position in that
+    specialist's findings array) + location sort (deterministic chain
+    order) → budget gate (verifier + synth + margin) → verifier
+    (`assemble_verifier_prompt`: two fresh nonces) → budget gate (synth
+    + margin) → synthesizer (deterministic `dedupe_findings` +
     `render_findings_section` pre-render composed via
     `assemble_synth_prompt`: one fresh nonce; the stage's internal slot
     fill's template is the pre-filled prompt, so payload-embedded slot
@@ -1642,21 +1629,20 @@ def run_fanout(
     Nonce authority: every nonce in the pipeline originates in this
     module's `assemble_*` composition during this call — fresh per
     invocation, never shared across prompt strings, specialists
-    nonce-free end-to-end (HLD §5 item 1).
+    nonce-free end-to-end (ARCHITECTURE.md §5.2).
 
     Fail-fast: any leg failure propagates its `FanoutDegraded` unchanged
     (reason + failed_stage from the stage) — no re-sampling, no
     in-invocation retry; all retry ownership stays with the SQS queue.
     Budget exhaustion raises `FanoutDegraded("insufficient_budget",
-    <upcoming stage>)` — reason strings are determined (HLD D9 pins the
-    arithmetic, not the strings) with no event emitted (the closure emits
-    the terminal event).
+    <upcoming stage>)` — reason strings are determined (the budget
+    arithmetic is pinned, not the strings) with no event emitted (the
+    closure emits the terminal event).
 
     Clamp posture: specialist coordinates are clamped post-wave;
-    verifier output is ACCEPTED WITH DOCUMENTATION (Gate-10
-    recommendation — HLD :111 pins clamping for specialist coordinates
-    only; synthesizer fidelity is prompt-contract + eval-measured, never
-    runtime-rejected).
+    verifier output is ACCEPTED WITH DOCUMENTATION (clamping is pinned
+    for specialist coordinates only; synthesizer fidelity is
+    prompt-contract + eval-measured, never runtime-rejected).
     """
     lengths = dict(file_lengths) if file_lengths else {}
     diff_text = render_diff_text(diff_result)
