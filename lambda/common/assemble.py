@@ -1,43 +1,37 @@
-"""Worker-side comment assembly (HLD §2.3 item 7, §2.7, §2.8; FR-001, FR-004, FR-020).
+"""Worker-side comment assembly (ARCHITECTURE.md §2.3, §2.7, §2.8).
 
-Position in the worker pipeline (§2.3 item 7, after LLM, before claim/fence/
-publish): `render_diff_text` serializes a budgeted `DiffResult` into the
-diff section of the review payload (model input), `render_review_payload`
+Position in the worker pipeline (after LLM, before claim/fence/publish):
+`render_diff_text` serializes a budgeted `DiffResult` into the diff
+section of the review payload (model input), `render_review_payload`
 assembles the full bounded payload (title + description + diff + prior
-comment, 003-T2), and `build_comment` assembles the publish-ready
-canonical comment from model output.
+comment), and `build_comment` assembles the publish-ready canonical
+comment from model output.
 
-`build_comment` prepends the worker-injected canonical marker (`common.marker`
-— never emitted by the model, Constitution IV), appends the truncation note
-when the diff was budgeted down, then runs the mandatory `validate()` gate
-(`common.validate`) before returning publish-ready content. A failing verdict
-raises `AssembleError` carrying the verdict — invalid content is never
-returned for publication (§2.3 item 8: non-retryable, alert).
+`build_comment` prepends the worker-injected canonical marker
+(`common.marker` — never emitted by the model), appends the truncation
+note when the diff was budgeted down, then runs the mandatory
+`validate()` gate (`common.validate`) before returning publish-ready
+content. A failing verdict raises `AssembleError` carrying the verdict
+— invalid content is never returned for publication (non-retryable).
 
-Interpretations (HLD silent — flagged, conservative readings):
-  1. Truncation placement: §2.7 names no truncation line, so the note is a
-     trailing line after the model content (outside the three sections, which
-     stay in order for the gate). Maintainers must know a review is partial
-     (FR-013); the note wording is gate-safe (no prohibited phrases).
-  2. Empty/whitespace model content is refused (`missing_sections` from the
-     gate), not published with a generated skeleton: empty inference output
-     is structurally invalid output, which the §2.3 item 8 validation row
-     completes non-retryably (alert) —
-     publishing a system-written "clean" comment would mislead maintainers
-     with a false clean bill. The §2.7 sentinel ("No significant issues
-     found.") is the model's defined empty-finding output and passes through
-     intact; assemble never rewrites model sections.
-  3. `render_diff_text` order is sorted-filename (Gate 2 seam): `diff.py`
-     truncation is deterministic in sorted-filename order, and sorting again
-     here keeps the model input byte-identical for the same `DiffResult`
-     regardless of input order. The lockfile summary is always trailed (the
-     system prompt names it part of the model input).
-  4. The gate verdict travels on the returned `AssembledComment` (and on the
-     raised `AssembleError`): "verdict required before any publish call"
-     means no publish-ready content exists without a passing verdict.
+Conservative readings where the spec is silent:
+  1. Truncation placement: the note is a trailing line after the model
+     content (outside the three sections, which stay in order for the
+     gate), so maintainers know a review is partial.
+  2. Empty/whitespace model content is refused (`missing_sections`),
+     not published with a generated skeleton: publishing a system-written
+     "clean" comment would mislead maintainers with a false clean bill.
+     The §2.7 sentinel ("No significant issues found.") is the model's
+     defined empty-finding output and passes through intact.
+  3. Sorting again here keeps the model input byte-identical for the
+     same `DiffResult` regardless of input order.
+  4. No publish-ready content exists without a passing verdict: the
+     verdict travels on the returned `AssembledComment` and on the
+     raised `AssembleError`.
 
-Stdlib + typing only; no I/O. The validator rides a keyword-only `_validate`
-seam so tests prove the gate runs without crafting prohibited content.
+Stdlib + typing only; no I/O. The validator rides a keyword-only
+`_validate` seam so tests prove the gate runs without crafting
+prohibited content.
 """
 
 from __future__ import annotations
@@ -52,15 +46,15 @@ from common.diff import DiffResult
 from common.marker import build_marker
 from common.validate import ValidationVerdict, validate_comment
 
-# 003-T1: worker-injected review header stamps in America/Los_Angeles.
+# Worker-injected review header stamps in America/Los_Angeles.
 # Evaluated at import/cold start so a missing tz database fails the
 # deployment smoke immediately instead of burning queue retries.
 PT = ZoneInfo("America/Los_Angeles")
 
-# HLD §2.7: the model's defined empty-finding output; passes through intact.
+# ARCHITECTURE.md §2.7: the model's defined empty-finding output.
 EMPTY_FINDINGS_SENTINEL = "No significant issues found."
 
-# Interpretation 1: trailing disclosure appended only when budgeted down.
+# Trailing disclosure appended only when the diff was budgeted down.
 TRUNCATION_NOTE = (
     "Note: the reviewed changes exceeded the input budget, "
     "so some files were omitted from this review."
@@ -102,12 +96,10 @@ def render_diff_text(diff: DiffResult) -> str:
     return "\n\n".join(parts)
 
 
-# 003-T2: review-payload bounds (title+body combined, prior comment).
-# Cap-constant pattern follows DEFAULT_MAX_FINDINGS (validate.py:43).
+# Review-payload bounds (title+body combined, prior comment).
 MAX_META_CHARS = 4096
 MAX_PRIOR_CHARS = 8192
 
-# Visible truncation marker appended as its own line when a cap cuts text.
 TRUNCATION_MARKER = "\n…[truncated]"
 
 
@@ -122,8 +114,8 @@ def _truncate_text(text: str, cap: int) -> str:
 
 def _truncate_meta(title: str, body: str, cap: int) -> tuple[str, str]:
     """Combined meta cap: the title is preserved whole and truncation falls
-    on the body first (Gate advisory A-b — a truncated title loses the
-    intent signal the payload exists to carry). Only when the title alone
+    on the body first (a truncated title loses the intent signal the
+    payload exists to carry). Only when the title alone
     meets/exceeds the cap is the body dropped and the title hard-truncated."""
     if len(title) + len(body) <= cap:
         return title, body
@@ -141,7 +133,7 @@ def render_review_payload(
     max_meta_chars: int = MAX_META_CHARS,
     max_prior_chars: int = MAX_PRIOR_CHARS,
 ) -> str:
-    """Assemble the bounded model input (003-T2): PR title, PR description,
+    """Assemble the bounded model input: PR title, PR description,
     the budgeted diff text verbatim, and — on re-reviews — the prior
     canonical comment as adversarial context.
 
@@ -165,7 +157,7 @@ def render_review_payload(
 
 
 def format_stamp(now: float) -> str:
-    """Render epoch seconds as `Mon D, H:MM AM/PM` in PT (003-T1).
+    """Render epoch seconds as `Mon D, H:MM AM/PM` in PT.
 
     12-hour clock, no seconds, hour not zero-padded. Pure function of
     its input (no clock read) for deterministic tests.

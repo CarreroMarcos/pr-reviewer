@@ -1,4 +1,4 @@
-"""T031: terraform multi-agent contract (HLD §8 checklists 3, 5, 7; §7 GSI).
+"""Terraform multi-agent contract.
 
 Parses the terraform TEXT (no terraform binary needed — house pattern
 from tests/contracts/test_terraform_contract.py) and pins the
@@ -7,30 +7,20 @@ multi-agent infrastructure surface:
 * GSI `pr-runs-index` on the state table (`pr_number (N)` +
   `started_ts (S)`, 5/5, `INCLUDE` projecting exactly `["run_id",
   "sha", "status", "pipeline", "archive_s3_key", "archive_written_at",
-  "findings_n"]` — HLD §7 + checklist 5; run_id projected per the Mars
-  ruling 2026-09-28, DECISIONS);
+  "findings_n"]` — ARCH §5.3 index; `run_id` is projected);
 * base table 20/20 rebalance (Always Free 25/25 envelope: 20 base + 5
-  GSI) — checklist 5;
-* ESM `scaling_config { maximum_concurrency = 2 }` — checklist 3;
-* worker function unreserved (no `reserved_concurrent_executions`) —
-  checklist 3;
-* all 12 multi-agent env vars present with the T005 defaults, plus the
+  GSI);
+* ESM `scaling_config { maximum_concurrency = 2 }`;
+* worker function unreserved (no `reserved_concurrent_executions`);
+* all 12 multi-agent env vars present with their defaults, plus the
   naming pin (no bare `MARGIN_S` / `DEGRADED_BUDGET_MARGIN_S`), plus a
-  three-way cross-check against `common.config` defaults — checklist 7;
+  three-way cross-check against `common.config` defaults;
 * viewer role read policy (`aws_iam_role_policy.viewer`): `s3:GetObject`
   on the archives bucket's `runs/*` + `static/*`, `dynamodb:Query`
   scoped to the `pr-runs-index` GSI ARN, `ssm:GetParameter` on the
-  replay-token ARN, and NO `kms:Decrypt` anywhere (Mars ruling
-  2026-09-28 — §7's decrypt clause superseded by §2.6 mechanics,
-  DECISIONS) — HLD §7 Viewer IAM.
-
-(Alarm-shape assertions included: the daily LLM-spend alarm threshold
-derives from the budget variable × the 5-call factor — the Mars-set
-budget value is snapshotted (T042, 2026-09-27) and drift = fail.)
-
-Commit-ladder note: these assertions failed red against the pre-GSI
-terraform (T031's creator commit, re-proven in a detached worktree); at
-this head they pin the final green surface.
+  replay-token ARN, and NO `kms:Decrypt` anywhere — SecureStrings are
+  decrypted server-side by SSM (ARCH §6.1 viewer role; ARCH §5.3 viewer
+  IAM).
 """
 
 import re
@@ -44,12 +34,11 @@ VARIABLES_TF = (TERRAFORM_DIR / "variables.tf").read_text(encoding="utf-8")
 VIEWER_TF = (TERRAFORM_DIR / "viewer.tf").read_text(encoding="utf-8")
 IAM_TF = (TERRAFORM_DIR / "iam.tf").read_text(encoding="utf-8")
 
-# The 12 HLD §8 checklist-7 vars. T005 defaults for all but MULTI_AGENT,
-# which T050 flipped to "1" at deploy time (Mars approval 2026-09-30; D8
-# gates passed via the r7 record — DECISIONS 2026-09-30). All quoted —
-# Lambda env is strings, matching the os.environ reads in common/config.py.
+# The 12 multi-agent vars, with their defaults except MULTI_AGENT
+# (deployed "1"; the code default stays 0). All quoted — Lambda env
+# is strings, matching the os.environ reads in common/config.py.
 EXPECTED_ENV = {
-    "MULTI_AGENT": "1",  # T050 activation; common.config default stays 0 (shadow fallback)
+    "MULTI_AGENT": "1",  # common.config default stays 0 (shadow fallback)
     "MULTI_AGENT_PHASE0": "1",
     "FANOUT_CONCURRENCY": "3",
     "MUTEX_LEASE_TTL_S": "900",
@@ -148,7 +137,7 @@ def _gsi_block() -> str:
         i += 1
 
 
-# --- GSI + base-table rebalance (checklist 5; §7 GSI) ----------------------------------------
+# --- GSI + base-table rebalance ---
 
 
 def test_gsi_pr_runs_index_exact_shape():
@@ -184,7 +173,7 @@ def test_base_table_20_20():
     assert _int_assignment(head, "write_capacity") == 20
 
 
-# --- ESM scaling + unreserved worker (checklist 3) ----------------------------------------------
+# --- ESM scaling + unreserved worker ---
 
 
 def test_esm_scaling_max_concurrency_2():
@@ -199,25 +188,24 @@ def test_worker_unreserved():
     assert "reserved_concurrent_executions" not in worker
 
 
-# --- twelve env vars + naming pin + config cross-check (list 7) ------------------------------
+# --- twelve env vars + naming pin + config cross-check ---
 
 
 def test_twelve_env_vars_with_t005_defaults():
     env = _worker_env_map()
     assert env.pop("GLM_ALLOWED_HOSTS") == "api.z.ai"  # pre-existing, untouched
-    # Archive contract target (T030, wired live by T069): read directly
+    # Archive contract target: read directly
     # by worker_handler (os.environ), not through common.config.
     assert env.pop("ARCHIVE_BUCKET") == "pr-reviewer-archives"
-    # T075: replay footer base — wired from the viewer Function URL
-    # resource, pinned in its own test below; not a §8 12-var knob.
+    # Replay footer base — wired from the viewer Function URL resource,
+    # pinned in its own test below; not one of the 12 vars.
     assert env.pop("REPLAY_BASE_URL") == "${aws_lambda_function_url.viewer.function_url}"
     assert env == EXPECTED_ENV
 
 
 def test_worker_replay_base_url_is_viewer_function_url():
-    """T075: the replay footer's base rides the viewer Function URL
-    resource attribute — never a committed literal (PR #167 canonical
-    LOW posture); outside the §8 12-var contract (spec PR #168)."""
+    """The replay footer's base rides the viewer Function URL resource
+    attribute — never a committed literal; outside the 12-var contract."""
     env = _worker_env_map()
     assert env["REPLAY_BASE_URL"] == "${aws_lambda_function_url.viewer.function_url}"
 
@@ -267,9 +255,9 @@ def test_env_defaults_match_config():
         )
 
     # MULTI_AGENT is the ONE documented divergence from the three-way pin:
-    # deployed "1" per T050 activation (Mars approval 2026-09-30), while
-    # the code default stays 0 so a lost env var degrades to shadow mode,
-    # never single-pass. Every other var: terraform == config default.
+    # deployed "1", while the code default stays 0 so a lost env var
+    # degrades to shadow mode, never single-pass. Every other var:
+    # terraform == config default.
     assert EXPECTED_ENV == {
         "MULTI_AGENT": "1",
         "MULTI_AGENT_PHASE0": str(DEFAULT_MULTI_AGENT_PHASE0),
@@ -286,11 +274,11 @@ def test_env_defaults_match_config():
     }
 
 
-# --- daily spend alarm recalibration (checklist 8; T034) ---------------------------------------
+# --- daily spend alarm ---
 
 
 def test_spend_budget_variable_default():
-    """T042 snapshot: budget default is pinned to the Mars-set $1."""
+    """Budget default is pinned to $1."""
     var_block = _resource_block(VARIABLES_TF, "daily_llm_spend_budget_usd", "", kind="variable")
     default = re.search(r"^\s*default\s*=\s*(\d+(?:\.\d+)?)\s*$", var_block, re.MULTILINE)
     assert default is not None, "budget default is not a numeric literal"
@@ -305,14 +293,14 @@ def test_metric_alarms_absent_for_free_tier():
     assert 'resource "aws_cloudwatch_metric_alarm"' not in OBSERVABILITY_TF
 
 
-# --- contention-rate alarm (HLD D9 lease TTL pin; T048a/b, Mars 2026-09-28) ---
+# --- contention-rate alarm ---
 
 
 def test_contention_metric_filter():
-    """T048a: the worker log group carries a metric filter counting
+    """The worker log group carries a metric filter counting
     `concurrency_single_pass` emissions. The envelope event never reaches
     logs (fixed-field vocabulary), so the worker logs the bare term at the
-    contender path (Mars ruling 2026-09-28) and the filter counts those
+    contender path and the filter counts those
     lines — the pattern must name exactly that term."""
     filt = _resource_block(
         OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "worker_contention"
@@ -332,9 +320,8 @@ def test_contention_metric_filter():
 
 
 def test_contention_rate_threshold_default():
-    """T048a: the threshold default is a numeric literal pinned at 10
-    sustained contention hits / 5 min — provisional implementer default
-    (Mars approved the scope 2026-09-28; tune from Phase-1 telemetry)."""
+    """The threshold default is a numeric literal pinned at 10 sustained
+    contention hits / 5 min."""
     var_block = _resource_block(VARIABLES_TF, "contention_rate_threshold", "", kind="variable")
     default = re.search(r"^\s*default\s*=\s*(\d+)\s*$", var_block, re.MULTILINE)
     assert default is not None, "threshold default is not a numeric literal"
@@ -342,7 +329,7 @@ def test_contention_rate_threshold_default():
 
 
 def test_contention_term_couples_emission_and_filter():
-    """T048b (bot review #1, PR #142): the filter's term and the worker's
+    """The filter's term and the worker's
     log call share one source of truth by construction — this test reads
     both ends, so a rename on either side fails here instead of silently
     leaving the alarm permanently dormant."""
@@ -358,13 +345,12 @@ def test_contention_term_couples_emission_and_filter():
     assert "concurrency_single_pass" in pattern.group(1)
 
 
-# --- T052: viewer role read policy (HLD §7 Viewer IAM) -------------------
+# --- viewer role read policy (ARCH §6.1) ---
 #
-# Mars ruling 2026-09-28 (DECISIONS, SPR-140 10419): §7's `kms:Decrypt`
-# clause is superseded by §2.6 mechanics — SecureStrings ride the AWS-
-# managed `aws/ssm` key and SSM decrypts server-side via WithDecryption
-# (iam.tf note #6, applied truth since T035). The absence pin below is
-# the enforcement: the superseded clause cannot silently return.
+# No `kms:Decrypt`: SecureStrings ride the AWS-managed `aws/ssm` key
+# and SSM decrypts server-side via WithDecryption, so no per-key grant
+# is needed. The absence pin below is the enforcement: a decrypt grant
+# cannot silently return.
 
 
 def _viewer_policy_block() -> str:
@@ -372,8 +358,8 @@ def _viewer_policy_block() -> str:
 
 
 def test_viewer_role_policy_s3_getobject_runs_and_static():
-    """T052: s3:GetObject scoped to the archives bucket's runs/* and
-    static/* prefixes — static shell + archive serving only (HLD §7)."""
+    """s3:GetObject scoped to the archives bucket's runs/* and
+    static/* prefixes — static shell + archive serving only."""
     block = _viewer_policy_block()
     assert re.search(r"role\s*=\s*aws_iam_role\.viewer\.id", block), (
         "viewer policy does not attach to the viewer role"
@@ -388,9 +374,8 @@ def test_viewer_role_policy_s3_getobject_runs_and_static():
 
 
 def test_viewer_role_policy_dynamodb_query_gsi_only():
-    """T052: dynamodb:Query scoped to the pr-runs-index GSI ARN — the
-    viewer answers latest-run-per-PR queries, never base-table reads
-    (HLD §7)."""
+    """dynamodb:Query scoped to the pr-runs-index GSI ARN — the viewer
+    answers latest-run-per-PR queries, never base-table reads."""
     block = _viewer_policy_block()
     assert '"dynamodb:Query"' in block, "no dynamodb:Query statement"
     assert re.search(r"aws_dynamodb_table\.state\.arn\}/index/pr-runs-index", block), (
@@ -399,10 +384,9 @@ def test_viewer_role_policy_dynamodb_query_gsi_only():
 
 
 def test_viewer_role_policy_ssm_token_and_no_kms_decrypt():
-    """T052: ssm:GetParameter on the replay-token ARN (the local map in
-    iam.tf pins the parameter path) and NO kms:Decrypt anywhere in the
-    viewer surface — SecureStrings need no per-key grant (§2.6
-    mechanics; superseded §7 clause must not return)."""
+    """ssm:GetParameter on the replay-token ARN (the local map in iam.tf
+    pins the parameter path) and NO kms:Decrypt anywhere in the viewer
+    surface — SecureStrings need no per-key grant."""
     block = _viewer_policy_block()
     assert '"ssm:GetParameter"' in block, "no ssm:GetParameter statement"
     assert re.search(r"local\.ssm_parameter_arn\.replay_token", block), (
@@ -417,12 +401,12 @@ def test_viewer_role_policy_ssm_token_and_no_kms_decrypt():
 
 
 def test_no_kms_actions_anywhere_in_terraform():
-    """Gate 39 F2 hardening: the superseded decrypt clause cannot return
+    """The superseded decrypt clause cannot return
     via variant spellings or out-of-block grants — case-insensitive
     `kms:` prefix scan over every .tf file's comment-stripped code.
     iam.tf note #6 is the standing truth (NO kms grants stack-wide); a
-    future customer-managed-key ruling amends DECISIONS and this pin in
-    the same change."""
+    future customer-managed-key decision amends DECISIONS and this pin
+    in the same change."""
     for tf in sorted(TERRAFORM_DIR.glob("*.tf")):
         code = re.sub(r"(?m)^\s*(?:#|//).*$", "", tf.read_text(encoding="utf-8"))
         assert re.search(r"kms:", code, re.IGNORECASE) is None, (
@@ -432,7 +416,7 @@ def test_no_kms_actions_anywhere_in_terraform():
 
 
 def test_runs_published_metric_filter():
-    """T077: the worker log group carries a filter counting published
+    """The worker log group carries a filter counting published
     review lines — the traffic term of the pipeline-mix drift alarm."""
     filt = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "runs_published")
     assert "log_group_name = aws_cloudwatch_log_group.worker.name" in filt
@@ -450,7 +434,7 @@ def test_runs_published_metric_filter():
 
 
 def test_runs_multi_agent_metric_filter():
-    """T077: the worker log group carries a filter counting lines whose
+    """The worker log group carries a filter counting lines whose
     pipeline discriminator is multi_agent — the routing term of the
     pipeline-mix drift alarm."""
     filt = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "runs_multi_agent")
@@ -468,9 +452,9 @@ def test_runs_multi_agent_metric_filter():
 
 
 def test_runs_docs_only_metric_filter():
-    """T077 (Gate-58 advisory to SPR-167): the worker log group carries a
-    filter counting deliberate docs-only routes (the bare term logged at
-    the T076 skip path) so the drift alarm's traffic term excludes them —
+    """The worker log group carries a filter counting deliberate
+    docs-only routes (the bare term logged at the docs-only skip path)
+    so the drift alarm's traffic term excludes them —
     prose-heavy repos must not false-page."""
     filt = _resource_block(OBSERVABILITY_TF, "aws_cloudwatch_log_metric_filter", "runs_docs_only")
     assert "log_group_name = aws_cloudwatch_log_group.worker.name" in filt

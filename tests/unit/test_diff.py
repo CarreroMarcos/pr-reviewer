@@ -1,13 +1,10 @@
-"""T027: diff fetch contract tests (HLD §2.3 items 2–4; FR-013).
+"""T027: diff fetch contract tests (ARCHITECTURE.md §2.3; FR-013).
 
 Endpoints constructed from `repo_full_name` + `pr_number` (never payload
 URLs), `X-GitHub-Api-Version: 2026-03-10` + explicit User-Agent, response
 shape-validation (`head.sha` 40-hex) before the fence, diff budget
 `MAX_FILES=500` / `MAX_CHANGED_LINES=25000` / `MAX_INPUT_BYTES=800000`,
 deterministic lockfile summaries.
-
-Red-first: this file imports `common.diff`, which does not exist yet, so
-collection fails with ImportError until T031 implements it.
 """
 
 import inspect
@@ -118,7 +115,7 @@ def test_invalid_pr_number_rejected_before_network():
 
 
 def test_no_payload_url_parameter_on_fetch_surface():
-    """HLD failure mode 18: response-embedded/payload URLs are never used for
+    """Failure mode 18: response-embedded/payload URLs are never used for
     navigation, so the fetch surface must not even accept one."""
     for func in (diff.fetch_pr_head_sha, diff.fetch_diff):
         params = set(inspect.signature(func).parameters)
@@ -444,7 +441,7 @@ def test_multi_page_accumulation_is_deterministic():
 
 
 def test_cross_page_truncation_is_deterministic():
-    # SPR-61: the pre-model budget applies across accumulated pages in
+    # The pre-model budget applies across accumulated pages in
     # sorted-filename order — page one alone fits, pages one+two overflow
     # MAX_CHANGED_LINES, and both runs agree byte-for-byte.
     page_one = [file_entry(f"src/a{i:03d}.py", additions=200) for i in range(diff.FILES_PER_PAGE)]
@@ -498,7 +495,7 @@ def test_empty_first_page_yields_empty_review_content():
     assert result.lockfile_summary == diff.EMPTY_LOCKFILE_SUMMARY
 
 
-# --- F4: _default_transport keeps every urlopen failure inside DiffError -----
+# --- _default_transport keeps every urlopen failure inside DiffError ----------
 # Timeout / URLError / OSError-class → RETRYABLE transport_error (status
 # None) so the worker raises for the queue; HTTPError → http_error with the
 # status attached so the worker applies the item-8 status table. The live
@@ -577,7 +574,7 @@ def test_default_transport_maps_http_404_to_status_taxonomy():
     assert exc.status == 404
 
 
-# --- 003-T2 PR metadata (title/body from the same meta GET) --------------------
+# --- PR metadata (title/body from the same meta GET) ----------------------------
 
 
 def meta_body_with(sha=HEAD_SHA, **fields):

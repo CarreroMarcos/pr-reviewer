@@ -1,4 +1,4 @@
-"""T058/Q2 out-of-band pinned-output capture (HLD §4.4 item 3).
+"""Out-of-band pinned-output capture (ARCHITECTURE.md §5.4).
 
 Human-run tool that calls the live model once per corpus case and pins the
 raw outputs to `pinned_outputs.json` plus the scored Q2 baseline to
@@ -14,8 +14,8 @@ Usage (after `aws login` + exported creds)::
 Refuses to overwrite existing outputs unless `--force`. One mint of AWS
 creds (SSM read ONCE per process); no retry loops on AWS/LLM calls.
 Per-case errors are recorded as `{"output": "", "error": ...}` and the batch
-continues — a transient timeout must not void a 72-call run (record-and-continue,
-T045 pre-flight). The empty output scores 0 through the standard functions,
+continues — a transient timeout must not void a 72-call run (record-and-continue).
+The empty output scores 0 through the standard functions,
 so errored defect cases fail the quality floors mechanically (no silent
 partial pin); total failures (SSM/creds) still raise before the loop with
 nothing written — and a run where EVERY case fails writes nothing at all
@@ -133,17 +133,13 @@ def _post_review(
         conn.close()
 
 
-# Quality floors for the pinned baseline (Reflect 2026-09-20, Mars-approved):
-# a pin must be publishable evidence, not merely reproducible bytes — recall
-# complete, zero fabricated findings, bounded unparsable prose. capture
-# refuses to write a violating pin (bad rolls never reach CI); the offline
-# suite re-checks the checked-in pin against the same floors.
-#
-# unparsable_max=5 is evidence-backed: all three live v2 runs pinned exactly
-# 5 unparsable prose lines (stable count, rotating cases — publish-legal
-# prose inside Findings). 5 trips at double the stable badness. Tightening
-# to <=2 requires a "Findings: bullets only" output-contract line + re-pin —
-# deliberately deferred (don't over-engineer; Mars's call if wanted later).
+# Quality floors for the pinned baseline: a pin must be publishable evidence,
+# not merely reproducible bytes — recall complete, zero fabricated findings,
+# bounded unparsable prose. capture refuses to write a violating pin; the
+# offline suite re-checks the checked-in pin against the same floors.
+# unparsable_max=5: all three live v2 runs pinned exactly 5 unparsable prose
+# lines, so the floor trips at double the observed count. Tightening needs a
+# "Findings: bullets only" output-contract line + re-pin.
 QUALITY_FLOORS = {"recall_min": 1.0, "fabricated_max": 0, "unparsable_max": 5}
 
 
@@ -223,16 +219,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             }
         except Exception as exc:  # noqa: BLE001 (out-of-band tool: record, don't raise)
-            # Record-and-continue (T045 pre-flight; disclosed Gate-22 scope
-            # touching the :498 pin-without-checkpoint asymmetry): a failed
-            # case is recorded and the batch NEVER aborts mid-loop — the
-            # overnight 72-call re-baseline died with nothing written on
-            # ONE transient timeout. Legacy records the multi harness's
+            # Record-and-continue: a failed case is recorded and the batch
+            # never aborts mid-loop — one transient timeout must not void
+            # the whole run. Legacy records use the multi harness's
             # FanoutDegraded convention (empty output + error): the empty
-            # output scores through the standard functions, so a defect
-            # case counts its miss mechanically in the floors below
-            # instead of voiding the whole run. Variant keeps its
-            # error-only record (its aggregate counts errors separately).
+            # output scores 0, so a defect case counts its miss in the
+            # floors below. Variant keeps its error-only record (its
+            # aggregate counts errors separately).
             if variant:
                 cases[name] = {"error": f"{type(exc).__name__}: {exc}"}
             else:
@@ -242,10 +235,9 @@ def main(argv: list[str] | None = None) -> int:
             latencies[name] = int((time.perf_counter() - start) * 1000)
     n_err = sum(1 for name in wanted if "error" in cases.get(name, {}))
     if not variant and n_err == len(wanted):
-        # Vacuous-pin guard (bot R1 MEDIUM, PR #135): record-and-continue
-        # keeps per-case diagnostics, but a run where EVERY case failed
-        # must write nothing — an all-empty aggregate must never pass
-        # floors by vacuity.
+        # Vacuous-pin guard: record-and-continue keeps per-case diagnostics,
+        # but a run where every case failed must write nothing — an all-empty
+        # aggregate must never pass floors by vacuity.
         print(
             "capture FAILED for every case — refusing to write a vacuous pin"
             " (per-case diagnostics above); nothing written",
@@ -253,8 +245,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     if not variant and n_err:
-        # Louder near-vacuous signal (bot R2 LOW, PR #135): a mostly-failed
-        # re-baseline must not slide in quietly; floors still arbitrate.
+        # A mostly-failed re-baseline must not slide in quietly;
+        # floors still arbitrate.
         print(
             f"WARNING: {n_err}/{len(wanted)} cases errored in this"
             " re-baseline — floors must refuse the pin if the misses matter",
@@ -265,10 +257,10 @@ def main(argv: list[str] | None = None) -> int:
     scored_metrics = [
         scoring.score_output(name, cases[name]["output"], manifests[name]) for name in scored
     ]
-    # Baseline stays EXACTLY offline-reproducible (drift-guard contract):
+    # Baseline stays exactly offline-reproducible (drift-guard contract):
     # pure score_output().to_dict() / aggregate() — no run-local latency or
-    # error bookkeeping (a legacy re-pin since f4a19b9 otherwise drifts).
-    # Run diagnostics enrich only the variant results file.
+    # error bookkeeping (a legacy re-pin otherwise drifts). Run diagnostics
+    # enrich only the variant results file.
     per_case = {m.case_id: m.to_dict() for m in scored_metrics}
     run_per_case = {
         cid: dict(fields, latency_ms=latencies[cid]) for cid, fields in per_case.items()

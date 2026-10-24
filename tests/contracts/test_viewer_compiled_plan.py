@@ -1,34 +1,29 @@
-"""T052: registered-state pin for the viewer Function URL hardening.
+"""Registered-state pin for the viewer Function URL hardening.
 
-Closes the Gate-38 deferred finding on PR #144 (bot-concurred, owner
-T052): the source-text pins in tests/contracts/test_viewer_infra.py
-prove the .tf uses the provider-native typed arguments
+The source-text pins in tests/contracts/test_viewer_infra.py prove the
+.tf uses the provider-native typed arguments
 (`function_url_auth_type` / `invoked_via_function_url`), but a source
 pin cannot catch provider-version drift where the spelling passes and
 the compiled posture changes. This module asserts the RESOLVED values
 as registered in the HCP workspace state — including the viewer policy
-document, where the Mars-ruled absence of `kms:Decrypt` is checked
-against what the workspace has actually registered (DECISIONS
-2026-09-28).
+document, where the absence of `kms:Decrypt` is checked against what
+the workspace has actually registered.
 
-Mechanism note (PR #149 evidence-run discovery): this workspace runs
-in HCP REMOTE execution — every plan executes in HCP against the
-VCS-tracked configuration and saved plans are banned — so "compile
-the local tree and assert the plan" is structurally unavailable. The
-registered state is the honest compiled surface; see
-`_registered_resources` below.
+Mechanism: this workspace runs in HCP REMOTE execution — every plan
+executes in HCP against the VCS-tracked configuration and saved plans
+are banned — so "compile the local tree and assert the plan" is
+structurally unavailable. The registered state is the honest compiled
+surface; see `_registered_resources` below.
 
-Evidence-class test (mars-law: terraform and full pytest run in
-separate shells). It skips — never fails — outside its evidence
+Evidence-class test. It skips — never fails — outside its evidence
 environment:
 
 * no terraform binary, or no AWS creds (the evidence-intent signal —
   `eval "$(aws configure export-credentials --format env)"` first);
-* the viewer handler is still the T051b stub — the Lambda's plan-time
-  precondition (intentionally) hard-fails every plan until T054 lands
-  the real handler, so this pin arms itself at T054;
-* a pinned resource is not yet registered (T052's policy ships at the
-  next tf-tag apply) — the specific test skips with that reason.
+* the viewer handler is still a stub — the Lambda's plan-time
+  precondition hard-fails every plan while the handler is a stub;
+* a pinned resource is not yet registered — the specific test skips
+  with that reason.
 
 Evidence run:
 
@@ -37,8 +32,7 @@ Evidence run:
     uv run --frozen pytest tests/contracts/test_viewer_compiled_plan.py -v
 
 This module never runs `init` itself: it only consumes the existing
-provider install, so no evidence run writes into the working tree
-(bot F1, PR #147).
+provider install, so no evidence run writes into the working tree.
 """
 
 import json
@@ -83,7 +77,7 @@ pytestmark = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
 def _registered_resources() -> dict[str, dict]:
     """address -> registered values from the workspace state.
 
-    Evidence-surface law (PR #149 discovery): the pr-reviewer HCP
+    The pr-reviewer HCP
     workspace runs in REMOTE execution mode — every `terraform plan`
     executes in HCP against the VCS-tracked configuration, and saved
     plans are banned outright ("Saved plans not allowed for workspaces

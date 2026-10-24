@@ -1,14 +1,14 @@
-"""Publication validation gate (HLD §2.3 item 7, §2.7; FR-020, FR-025).
+"""Publication validation gate (ARCHITECTURE.md §2.3, §2.7, §4).
 
-Validates the worker-assembled canonical comment before any publish call
-(`specs/001-pr-reviewer/contracts/canonical-comment.md`). Consumes the Model
-I/O contract defined in `prompts/system_prompt.md` (`prompt_version` v1):
+Validates the worker-assembled canonical comment before any publish
+call. Consumes the Model I/O contract defined in
+`prompts/system_prompt.md` (`prompt_version` v3):
 the canonical marker is present (worker-injected via `common.marker`, never
 emitted by the model), length is bounded, expected sections are present in
 order, and prohibited content plus the prompt canary are absent.
 
 Returns a typed `ValidationVerdict` with machine-readable reason codes.
-Invalid content is never published (§2.3 item 8: non-retryable, alert).
+Invalid content is never published (§2.3: non-retryable, alert).
 
 Reason codes: `missing_marker`, `marker_spoofed`, `not_text`, `over_length`,
 `missing_sections`, `too_many_findings`, `credential_like`, `hidden_html`,
@@ -30,19 +30,20 @@ from dataclasses import dataclass
 from common.marker import build_marker
 
 # Mirrors the `prompt_version` header in `prompts/system_prompt.md`; kept in
-# sync manually. Any change reruns the pinned model evaluation set (§4.4 item 4).
+# sync manually. Any change reruns the pinned model evaluation set
+# (ARCHITECTURE.md §5.4).
 PROMPT_VERSION = "v3"
 
 # Tripwire embedded verbatim in `prompts/system_prompt.md`: output containing
 # it proves prompt leakage into review content — rejected, never published.
 CANARY_SUBSTRING = "pr-reviewer-canary-9f3a7c2e1b4d6a8e"
 
-# HLD §2.7: finding count ≤ the `max_findings` configuration parameter
+# ARCHITECTURE.md §2.7: finding count ≤ the `max_findings` parameter
 # (default 20). `AppConfig` (common.config) carries only SSM hydration values,
 # so the bound travels as an explicit parameter defaulting to 20 here.
 DEFAULT_MAX_FINDINGS = 20
 
-# GitHub comment ceiling; the HLD bounds output via the worker-side
+# GitHub comment ceiling; output is bounded via the worker-side
 # `max_output_tokens` config parameter, and this character bound is the
 # defense-in-depth publish-side backstop for the assembled comment.
 MAX_COMMENT_CHARS = 65536
@@ -72,7 +73,8 @@ _HTML_TAG_RES = tuple(
 )
 _EVENT_HANDLER_RE = re.compile(r"""\son(?:load|click|error|mouseover|focus)\s*=""", re.IGNORECASE)
 
-# Repository content must not establish control-plane state (§5.3): heuristic
+# Repository content must not establish control-plane state
+# (ARCHITECTURE.md §6.2): heuristic
 # tripwires for instruction-override phrasing, not an exhaustive filter.
 _CONTROL_DIRECTIVE_RES = (
     re.compile(r"(?i)ignore\s+(all\s+)?previous\s+instructions"),
@@ -92,7 +94,7 @@ _MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?
 _IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\(\s*https?://", re.IGNORECASE)
 _IMG_TAG_RE = re.compile(r"<img\b", re.IGNORECASE)
 
-# Marker-spoof tripwire (§9: model output is untrusted): the worker injects
+# Marker-spoof tripwire (model output is untrusted): the worker injects
 # exactly one canonical marker, so any further `pr-reviewer:canonical`
 # string is model-emitted spoof. Matching is case-insensitive over
 # invisible-char-stripped text, so case/zero-width/whitespace evasions and
@@ -114,11 +116,10 @@ _APPROVAL_PHRASES = (
 )
 
 _APPROVAL_STEM_RE = re.compile(r"\bapprov")
-# The bare approval stem matches word-bounded ("approve"/"approved" trip;
-# degenerate mid-word runs do not). Precision ruling (Mars, 2026-09-20):
-# four same-evening false-positive discards on PRs about this reviewer's own
-# gate — reviews legitimately quote identifiers like
-# `assemble_approval_verdict` in code formatting.
+# The bare approval stem matches word-bounded ("approve"/"approved"
+# trip; degenerate mid-word runs do not): reviews legitimately quote
+# identifiers like `assemble_approval_verdict` in code formatting, and
+# code-formatted text is quotation, not a verdict.
 
 
 @dataclass(frozen=True)
@@ -204,9 +205,9 @@ def validate_comment(
     if _IMAGE_MD_RE.search(content) or _IMG_TAG_RE.search(content):
         reasons.append("external_media")
 
-    # Mentions carve-out precedent (above): code-formatted text is
-    # quotation, not assertion — the approval scan runs on code-span-stripped
-    # content. A plain-prose "LGTM / safe to merge" still refuses (§5.3).
+    # Mentions carve-out (above): code-formatted text is quotation, not
+    # assertion — the approval scan runs on code-span-stripped content.
+    # A plain-prose "LGTM / safe to merge" still refuses.
     lowered = _INLINE_CODE_RE.sub("", _CODE_BLOCK_RE.sub("", content)).lower()
     if _APPROVAL_STEM_RE.search(lowered) or any(phrase in lowered for phrase in _APPROVAL_PHRASES):
         reasons.append("approval_verdict")

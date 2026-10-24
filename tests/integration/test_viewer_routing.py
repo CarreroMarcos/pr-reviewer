@@ -1,28 +1,25 @@
-"""T053/T054: viewer routing integration — moto fake AWS (HLD §7 Routing Spec).
+"""Viewer routing integration — moto fake AWS (ARCHITECTURE.md §5.3).
 
-Drives the REAL `viewer_handler.handler` with Function-URL v2 events
+Drives the real `viewer_handler.handler` with Function-URL v2 events
 against moto's fake AWS — SSM `/pr-reviewer/replay-token` (SecureString),
 the DynamoDB state table + `pr-runs-index` GSI (state.tf shape), and the
 archives bucket — same discipline as test_fake_aws.py: real handlers,
 real boto3, no live network.
 
-Creator half of the P2 pair: fails against the T051b stub, greens when
-T054 lands the handler.
-
-Pinned routes (the §7 tree, exactly):
+Pinned routes (the §5.3 tree, exactly):
 
 * `/runs/{pr}/{sha}/`          → static shell, unauthenticated;
 * `/static/{file}`             → `^static/[A-Za-z0-9._-]+$` AND explicit
-  dot-segment rejection BEFORE key construction (bot review #3 — the
-  character class alone admits `static/..`);
-* `/api/runs/{pr}/latest`      → bearer + GSI query, body is EXACTLY
+  dot-segment rejection before key construction (the character class
+  alone admits `static/..`);
+* `/api/runs/{pr}/latest`      → bearer + GSI query, body is exactly
   `{run_id, sha, status, pipeline, archive_s3_key}`;
 * `/runs/{pr}/{sha}/{rid}/{f}` → bearer + regex (rid = 32 hex, no
   dashes; f ∈ {events.jsonl, meta.json}) → S3 archive object.
 
-Plus the Gate-39 F4 coupling pin: the handler's SSM literal must equal
-the replay-token ARN path iam.tf grants (drift breaks at runtime as
-500s on every authed route, so it is pinned at test time instead).
+Plus the coupling pin: the handler's SSM literal must equal the
+replay-token ARN path iam.tf grants (drift breaks at runtime as 500s
+on every authed route, so it is pinned at test time instead).
 """
 
 from __future__ import annotations
@@ -66,8 +63,8 @@ def _event(raw_path: str, token: str | None = None, method: str = "GET") -> dict
 @pytest.fixture(scope="module")
 def aws():
     # Lazy client creation inside the handler needs a region at first
-    # call; tests run before any AWS env exists (mars-law clean shell).
-    # Fixture-scoped, not import-time — no process-env leak (bot R2).
+    # call; tests run before any AWS env exists. Fixture-scoped, not
+    # import-time — no process-env leak.
     os.environ.setdefault("AWS_DEFAULT_REGION", REGION)
     with mock_aws():
         ssm = boto3.client("ssm", region_name=REGION)
@@ -115,8 +112,8 @@ def aws():
             ddb.put_item(
                 TableName=TABLE,
                 Item={  # writer-shaped: build_index_item + the worker
-                    # UpdateExpression SET exactly these attrs (Gate-40
-                    # F1 — the fixture mirrors production, never invents)
+                    # UpdateExpression SET exactly these attrs — the
+                    # fixture mirrors production, never invents
                     "pk": {"S": f"run#{run_id}"},
                     "run_id": {"S": run_id},
                     "pr_number": {"N": str(PR)},
@@ -164,8 +161,8 @@ def test_static_file_served(aws):
     "path", ["/static/..", "/static/../x", "/static/.", "/static/%2e%2e/x", "/static/./x"]
 )
 def test_static_rejects_dot_segments_before_key_build(aws, path):
-    # bot review #3: the character class alone admits `static/..` — the
-    # viewer must reject dot segments BEFORE constructing the S3 key.
+    # The character class alone admits `static/..` — the viewer must
+    # reject dot segments before constructing the S3 key.
     assert _call(path)["statusCode"] == 404
 
 
@@ -176,11 +173,10 @@ def test_static_regex_rejects_out_of_class_paths(aws, path):
 
 @pytest.mark.parametrize("code", ["NoSuchKey", "NotFound", "AccessDenied"])
 def test_missing_s3_key_maps_to_404_across_error_semantics(aws, monkeypatch, capsys, code):
-    # Canonical review #1 (PR #167): live S3 without s3:ListBucket
-    # answers GetObject for a MISSING key with AccessDenied
-    # (anti-enumeration); moto returns NoSuchKey, so CI never saw the
-    # branch. All three "absent" codes must map to 404 — the surface
-    # stays {200, 401, 404} (bot R2 discipline).
+    # Live S3 without s3:ListBucket answers GetObject for a missing key
+    # with AccessDenied (anti-enumeration); moto returns NoSuchKey, so
+    # CI cannot see that branch from moto alone. All three "absent"
+    # codes must map to 404 — the surface stays {200, 401, 404}.
     s3 = boto3.client("s3", region_name=REGION)
 
     class _Stub:
@@ -193,13 +189,13 @@ def test_missing_s3_key_maps_to_404_across_error_semantics(aws, monkeypatch, cap
 
     monkeypatch.setattr(viewer_handler, "_client", lambda name: _Stub())
     assert _call("/static/app.css")["statusCode"] == 404
-    # Canonical review #3: the AccessDenied degradation signal is the
-    # point of the branch — pin the log event, and pin that the
-    # unambiguous absent codes stay silent.
+    # The AccessDenied degradation signal is the point of the branch —
+    # pin the log event, and pin that the unambiguous absent codes stay
+    # silent.
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
     if code == "AccessDenied":
-        # T078 (Gate-56 advisory A3): the denied line carries the
-        # requested S3 key — 404-vs-denied diagnosable from CloudWatch.
+        # The denied line carries the requested S3 key —
+        # 404-vs-denied diagnosable from CloudWatch.
         assert events == [
             {"event": "viewer_s3_access_denied", "decision": "404", "key": "static/app.css"}
         ]
@@ -209,9 +205,9 @@ def test_missing_s3_key_maps_to_404_across_error_semantics(aws, monkeypatch, cap
 
 @pytest.mark.parametrize("code", ["SlowDown", "ServiceUnavailable", "ThrottlingException"])
 def test_non_absent_s3_errors_take_the_reraise_branch(aws, monkeypatch, code):
-    # Canonical review #2 (PR #167): the re-raise branch must stay —
-    # non-absent codes (throttling/outage) surface as the controlled
-    # 500 boundary, never as a 404 that masks an outage as "not found".
+    # The re-raise branch must stay — non-absent codes (throttling /
+    # outage) surface as the controlled 500 boundary, never as a 404
+    # that masks an outage as "not found".
     s3 = boto3.client("s3", region_name=REGION)
 
     class _Stub:
@@ -298,7 +294,7 @@ def test_non_get_methods_404(aws):
     assert _call(f"/runs/{PR}/{SHA}/", method="HEAD")["statusCode"] == 404
 
 
-# --- Gate-39 F4 coupling: handler literal ↔ iam.tf grant ------------------
+# --- Coupling: handler literal ↔ iam.tf grant ---
 
 
 def test_ssm_literal_matches_iam_replay_token_grant():
@@ -311,10 +307,10 @@ def test_ssm_literal_matches_iam_replay_token_grant():
         encoding="utf-8"
     )
     arn_path = f"parameter/{m.group(1).lstrip('/')}"
-    # Full coupling chain (bot F6, PR #149): the handler literal must
-    # match the iam.tf LOCAL's value, and viewer.tf's policy must grant
-    # that local — a stray mention in a comment or another role's grant
-    # satisfies nothing.
+    # Full coupling chain: the handler literal must match the iam.tf
+    # local's value, and viewer.tf's policy must grant that local — a
+    # stray mention in a comment or another role's grant satisfies
+    # nothing.
     iam_tf = (Path(__file__).resolve().parents[2] / "terraform" / "iam.tf").read_text(
         encoding="utf-8"
     )
@@ -333,10 +329,10 @@ def test_ssm_literal_matches_iam_replay_token_grant():
 
 
 def test_api_latest_stale_row_without_run_id_never_500s(aws):
-    """Bot F1 (PR #149): DynamoDB reprojects a GSI item only on rewrite,
-    so rows predating the run_id projection (spec #148) lack it in the
-    index until next write. The endpoint degrades to a key subset —
-    never a KeyError 500."""
+    """DynamoDB reprojects a GSI item only on rewrite, so rows
+    predating the run_id projection lack it in the index until next
+    write. The endpoint degrades to a key subset — never a KeyError
+    500."""
     boto3.client("dynamodb", region_name=REGION).put_item(
         TableName=TABLE,
         Item={
@@ -356,7 +352,7 @@ def test_api_latest_stale_row_without_run_id_never_500s(aws):
 
 
 def test_bearer_scheme_case_insensitive(aws):
-    """Bot F5 (PR #149): RFC 7235 — the auth scheme is case-insensitive."""
+    """RFC 7235 — the auth scheme is case-insensitive."""
     headers_event = _event(f"/api/runs/{PR}/latest")
     headers_event["headers"]["authorization"] = f"bearer {TOKEN}"
     r = viewer_handler.handler(headers_event, None)
@@ -364,9 +360,9 @@ def test_bearer_scheme_case_insensitive(aws):
 
 
 def test_capitalized_authorization_header_authenticates(aws):
-    """Gate-40 F2: every real client sends `Authorization` (capitalized);
-    only the scheme case was pinned before. Function URLs preserve the
-    client's header casing — the handler must lower() the NAME too."""
+    """Every real client sends `Authorization` (capitalized); only the
+    scheme case is otherwise pinned. Function URLs preserve the client's
+    header casing — the handler must lower() the name too."""
     headers_event = _event(f"/api/runs/{PR}/latest")
     headers_event["headers"] = {"Authorization": f"Bearer {TOKEN}"}
     r = viewer_handler.handler(headers_event, None)
@@ -374,9 +370,9 @@ def test_capitalized_authorization_header_authenticates(aws):
 
 
 def test_internal_error_boundary_returns_controlled_500(aws, monkeypatch):
-    """Bot F4 (PR #149): an internal failure (SSM outage, IAM misconfig)
-    surfaces as a controlled JSON 500 — never an opaque stack or a
-    provider error body."""
+    """An internal failure (SSM outage, IAM misconfig) surfaces as a
+    controlled JSON 500 — never an opaque stack or a provider error
+    body."""
 
     def boom():
         raise RuntimeError("simulated provider outage")

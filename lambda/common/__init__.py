@@ -1,5 +1,6 @@
-"""Shared contract single source of truth (HLD §7.1).
+"""Shared contract single source of truth.
 
 Security-sensitive helpers (envelope, marker, redaction, validation) are
-implemented exactly once here. Modules land in Phase 2 (T005–T019).
+implemented exactly once here — one implementation is a security
+requirement (ARCHITECTURE.md §2.8).
 """

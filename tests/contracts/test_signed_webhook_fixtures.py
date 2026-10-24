@@ -1,4 +1,4 @@
-"""T025: committed signed-webhook fixtures (HLD §4.4 item 3; US1.AC1–AC4).
+"""Committed signed-webhook fixtures (HLD §4.4 item 3).
 
 Committed fixtures: FIXED secret + canonical payload bytes → FIXED expected
 `X-Hub-Signature-256` values for `opened` / `synchronize` / `ready_for_review` /
@@ -34,10 +34,10 @@ BASE_SHA = "bb" * 20
 
 # Committed vectors: fixed secret + canonical payload → fixed signature.
 EXPECTED_SIGNATURES = {
-    "opened": "sha256=885cdab856d34803ce465ed88753db0aff63366c2df41ef86c518a3f0939777c",  # noqa: E501
-    "synchronize": "sha256=093763eb2003b4ae06b722749c6ae7c548478a3df8d7c869e44e56ae36dbfea6",  # noqa: E501
-    "ready_for_review": "sha256=bfc8029fdad4f8c9ce47a31094601fb6707a31ee763d752f53b5c6bf0694e0e8",  # noqa: E501
-    "reopened": "sha256=7ce8527095e04e41d7c90a53b2b5045216d4c6e430598d24f637281392d00c8d",  # noqa: E501
+    "opened": "sha256=885cdab856d34803ce465ed88753db0aff63366c2df41ef86c518a3f0939777c",  # noqa: E501 (fixed signature vector)
+    "synchronize": "sha256=093763eb2003b4ae06b722749c6ae7c548478a3df8d7c869e44e56ae36dbfea6",  # noqa: E501 (fixed signature vector)
+    "ready_for_review": "sha256=bfc8029fdad4f8c9ce47a31094601fb6707a31ee763d752f53b5c6bf0694e0e8",  # noqa: E501 (fixed signature vector)
+    "reopened": "sha256=7ce8527095e04e41d7c90a53b2b5045216d4c6e430598d24f637281392d00c8d",  # noqa: E501 (fixed signature vector)
 }
 
 GUID_BY_ACTION = {
@@ -160,7 +160,7 @@ def test_vector_reopened_d1():
     assert verify_signature(FIXED_SECRET, raw, EXPECTED_SIGNATURES["reopened"]) is True
 
 
-# --- end-to-end per action (US1.AC1–AC3) ------------------------------------
+# --- end-to-end per action ---
 
 
 def _accepted(action):
@@ -193,7 +193,7 @@ def test_accept_reopened_d1():
     _accepted("reopened")
 
 
-# --- contract cases (US1.AC4; HLD §2.1 response table) -----------------------
+# --- contract cases (ARCH §2.1 response table) ---
 
 
 def test_signed_non_pull_request_event_discarded():
@@ -256,7 +256,7 @@ def test_missing_delivery_header_rejected():
 
 
 def test_ingress_uses_singular_get_parameter():
-    """Carry-forward ⑨: ingress hydrates via singular `get_parameter`
+    """Ingress hydrates via singular `get_parameter`
     (WithDecryption) — never the worker-side batched `get_parameters`."""
     raw = canonical_bytes(make_payload("opened"))
     table, sqs = fresh_doubles()
@@ -269,7 +269,7 @@ def test_ingress_uses_singular_get_parameter():
     assert ssm.calls[0] == {"Name": FIXED_SECRET_NAME, "WithDecryption": True}
 
 
-# --- QA-A: boundary-1 header handling (end-to-end) -----------------------------
+# --- boundary header handling (end-to-end) ---
 
 
 def test_whitespace_padded_signature_rejected_end_to_end():

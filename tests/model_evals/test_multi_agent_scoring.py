@@ -1,9 +1,10 @@
-"""T040 scorer unit tests: synthetic pins, zero capture dependency.
+"""Scorer unit tests: synthetic pins, zero capture dependency.
 
-Every HLD D8 bound is pinned on hand-built data: cosine arms, recall /
-precision verdict bands (including the re-run means), wrongful-kill
-matching (location + cosine + subtle survival), synthesizer fidelity,
-existing floors, INTERIM-vs-full rendering, and effort selection.
+Every ARCHITECTURE.md §5.4 bound is pinned on hand-built data: cosine
+arms, recall / precision verdict bands (including the re-run means),
+wrongful-kill matching (location + cosine + subtle survival),
+synthesizer fidelity, existing floors, interim-vs-full rendering, and
+effort selection.
 """
 
 import math
@@ -23,9 +24,6 @@ def finding(path="a.py", line=10, **overrides):
     item = {"path": path, "line": line}
     item.update(overrides)
     return item
-
-
-# --- cosine + p95 primitives ----------------------------------------------------------------------
 
 
 def test_cosine_orthogonal_identical_degenerate():
@@ -61,9 +59,6 @@ def test_p95_empty_raises():
     raise AssertionError("p95([]) must raise")
 
 
-# --- match rule ------------------------------------------------------------------
-
-
 def test_match_location_arms():
     vectors = {}
     assert mas.finding_matches(finding(line=11), manifest_item(), vectors, None, None)
@@ -87,9 +82,6 @@ def test_match_cosine_arms():
     assert not mas.finding_matches(far, manifest_item(), {}, "c", "m")
 
 
-# --- recall / precision deltas + verdicts ------------------------------------------------
-
-
 def test_recall_delta_defect_weighted():
     multi = {"a": [1, 1, 1], "b": [1, 0, 1]}
     single = {"a": [1, 1, 1], "b": [1, 1, 1]}
@@ -108,8 +100,8 @@ def test_recall_verdict_bands():
     assert mas.recall_verdict(0.02) == "pass"
     assert mas.recall_verdict(-0.05) == "rerun"
     assert mas.recall_verdict(-0.2) == "fail"
-    assert mas.recall_verdict(-0.05, -0.05) == "fail"  # mean -0.05 < 0
-    assert mas.recall_verdict(-0.05, 0.05) == "pass"  # mean 0.0 >= 0
+    assert mas.recall_verdict(-0.05, -0.05) == "fail"
+    assert mas.recall_verdict(-0.05, 0.05) == "pass"
 
 
 def test_precision_verdict_bands():
@@ -117,17 +109,14 @@ def test_precision_verdict_bands():
     assert mas.precision_verdict(0.2) == "pass"
     assert mas.precision_verdict(0.10) == "rerun"
     assert mas.precision_verdict(0.04) == "fail"
-    assert mas.precision_verdict(0.10, 0.10) == "pass"  # mean 0.10 >= 0.08
-    assert mas.precision_verdict(0.10, 0.0) == "fail"  # mean 0.05 < 0.08
+    assert mas.precision_verdict(0.10, 0.10) == "pass"
+    assert mas.precision_verdict(0.10, 0.0) == "fail"
 
 
 def test_precision_delta_means():
     multi = {"a": [1.0, 0.5], "b": [0.5, 0.5]}
     single = {"a": [1.0, 1.0], "b": [0.5, 0.5]}
     assert mas.precision_delta(multi, single) == ((0.75 - 1.0) + (0.5 - 0.5)) / 2
-
-
-# --- wrongful kills -------------------------------------------------------------------------
 
 
 def run_row(case_id="c", run_index=0, killed=(), survived=(), candidates=None):
@@ -217,9 +206,6 @@ def test_subtle_survival_rules():
     assert len(missing["subtle_violations"]) == 1
 
 
-# --- synthesizer fidelity -------------------------------------------------------------------
-
-
 def test_fidelity_exact_echo_clean():
     report = mas.fidelity_report(
         survivors=[{"case_id": "c", "run_index": 0, "finding": cand()}],
@@ -242,9 +228,9 @@ def test_fidelity_dropped_and_invented():
 
 
 def test_fidelity_merged_duplicates_many_to_one():
-    """Gate 22: a synthesizer correctly merging a duplicate pair into one
-    bullet must NOT fail the dropped gate — matching is any-match
-    (many-to-one), per HLD gate 4's "no semantic match" definition and
+    """A synthesizer correctly merging a duplicate pair into one bullet
+    must not fail the dropped gate — matching is any-match (many-to-one),
+    per ARCHITECTURE.md §5.4 gate 4's "no semantic match" definition and
     the location arm's inherent many-to-one nature."""
     report = mas.fidelity_report(
         survivors=[
@@ -254,9 +240,6 @@ def test_fidelity_merged_duplicates_many_to_one():
         comments={("c", 0): "## Findings\n\n- [HIGH] `a.py:11` — Merged dupes. Fix: f.\n"},
     )
     assert (report["dropped"], report["invented"]) == (0, 0)
-
-
-# --- floors ----------------------------------------------------------------------------------
 
 
 def test_floors_clean_and_violated():
@@ -276,9 +259,6 @@ def test_floors_clean_and_violated():
     assert injected["passed"] is False
 
 
-# --- evaluate + effort ------------------------------------------------------------------------
-
-
 def clean_inputs():
     kills = {
         "wrongful_kills": 0,
@@ -293,9 +273,9 @@ def clean_inputs():
 
 
 def test_kill_counters_split_populations():
-    """Bot R2 Fix 4: `kills_checked` counts evaluated killed candidates;
+    """`kills_checked` counts evaluated killed candidates;
     `subtle_checked` counts evaluated subtle manifest findings — one
-    counter no longer serves two populations."""
+    counter does not serve two populations."""
     report = mas.wrongful_kill_report(
         runs=[
             run_row(killed=["k1"], candidates=[with_id("k1", cand(line=11))]),
@@ -390,7 +370,7 @@ def test_select_effort_rule():
 
 
 def test_error_runs_score_as_total_miss():
-    """Bot R1 Fix 5: HLD D8 defines no separate error penalty — an
+    """ARCHITECTURE.md §5.4 defines no separate error penalty — an
     errored run's empty comment scores 0 hits (recall miss) and 0.0
     precision on defect cases through the standard shared scorer, so
     gates 1-2 count the miss mechanically."""
@@ -407,8 +387,8 @@ def test_error_runs_score_as_total_miss():
 
 
 def test_ab_case_symmetry_passes_on_shared_set():
-    """T045 pre-flight: identical recall/precision extras sets return the
-    shared case set for the delta computations."""
+    """Identical recall/precision extras sets return the shared case set
+    for the delta computations."""
     shared = mas.assert_ab_case_symmetry(
         {"a": [1], "b": [0]},
         {"a": [1], "b": [1]},
@@ -419,8 +399,8 @@ def test_ab_case_symmetry_passes_on_shared_set():
 
 
 def test_ab_case_symmetry_fails_on_divergence():
-    """T045 pre-flight: a case present on one side only (here `b` drops
-    out of the precision extras) raises ValueError naming both directions."""
+    """A case present on one side only (here `b` drops out of the
+    precision extras) raises ValueError naming both directions."""
     try:
         mas.assert_ab_case_symmetry(
             {"a": [1], "b": [0]},
@@ -435,9 +415,9 @@ def test_ab_case_symmetry_fails_on_divergence():
 
 
 def test_compute_ab_deltas_enforces_symmetry():
-    """Bot R2 (PR #135): the enforced A/B entry point runs the extras-set
-    symmetry gate before computing either delta — asymmetric inputs raise
-    ValueError; symmetric inputs return both deltas."""
+    """The enforced A/B entry point runs the extras-set symmetry gate
+    before computing either delta — asymmetric inputs raise ValueError;
+    symmetric inputs return both deltas."""
     hits = {"a": [1], "b": [0]}
     prec = {"a": [0.5], "b": [0.5]}
     assert mas.compute_ab_deltas(hits, hits, prec, prec, 2) == {
@@ -459,7 +439,7 @@ def test_compute_ab_deltas_enforces_symmetry():
 
 
 def test_location_regex_range_anchor_tolerance():
-    """T073: range anchors parse at their START line; bare lines unchanged;
+    """Range anchors parse at their start line; bare lines unchanged;
     a trailing dash without end digits is not a location at all."""
     import scoring
 

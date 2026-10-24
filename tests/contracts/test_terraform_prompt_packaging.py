@@ -1,17 +1,15 @@
-"""Worker zip prompt-packaging contract (T068).
+"""Worker zip prompt-packaging contract.
 
-The 2026-09-27 incident: the worker `archive_file` carried exactly one
-`prompts/` file (system_prompt.md) while `_load_fanout_prompts` needs
-the five `_FANOUT_PROMPT_FILES` templates — every Phase-0 shadow
-failed fast with `ConfigError("fanout_prompt", "missing")`
-(`shadow_failed` warning on each review; no LLM cost, single_pass
-unaffected). The bundle is built from lambda/ (`**/*.py` only) plus
-explicit prompt sources, so a prompt present in the repo but absent
-from the zip is silently missing from the deployed artifact. This pin
-forces the packaging to include the whole prompts/ directory via
-fileset, so repo prompts and zip prompts cannot drift, and the
-packaging pattern to actually cover every file the runtime manifest
-requires.
+If the worker `archive_file` carries only one `prompts/` file
+(system_prompt.md) while `_load_fanout_prompts` needs the five
+`_FANOUT_PROMPT_FILES` templates, every Phase-0 shadow fails fast with
+`ConfigError("fanout_prompt", "missing")`. The bundle is built from
+lambda/ (`**/*.py` only) plus explicit prompt sources, so a prompt
+present in the repo but absent from the zip is silently missing from
+the deployed artifact. This pin forces the packaging to include the
+whole prompts/ directory via fileset, so repo prompts and zip prompts
+cannot drift, and the packaging pattern to actually cover every file
+the runtime manifest requires.
 """
 
 import re

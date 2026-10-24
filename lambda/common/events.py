@@ -1,16 +1,16 @@
-"""Multi-agent stage events (HLD-004 §6, D4).
+"""Multi-agent stage events (ARCHITECTURE.md §5.3).
 
-One versioned event schema shared by the replay site (v1 consumer) and a
-future live feed (v2 consumer): every event is `{v: 1, run_id, ts, type,
-...}` where `run_id` is `uuid4().hex` (32 lowercase hex chars, no dashes)
-and `ts` is epoch milliseconds (int). Consumers order by `ts`.
+One versioned event schema shared by the replay site: every event is
+`{v: 1, run_id, ts, type, ...}` where `run_id` is `uuid4().hex` (32
+lowercase hex chars, no dashes) and `ts` is epoch milliseconds (int).
+Consumers order by `ts`.
 
 Typed constructors below are the ONLY way to build events. Keyword-only
-parameters ARE the fixed field sets from the §6 table, so non-fixed content
-(diffs, secrets, raw payloads, LLM bodies) is structurally unemittable —
-there is no parameter that could carry it (`TypeError` on anything else).
-Findings/verified/killed/escalated arrays are carried as opaque JSON lists;
-their closed-schema validation belongs to `common.findings` (HLD §6),
+parameters ARE the fixed field sets, so non-fixed content (diffs,
+secrets, raw payloads, LLM bodies) is structurally unemittable — there
+is no parameter that could carry it (`TypeError` on anything else).
+Findings/verified/killed/escalated arrays are carried as opaque JSON
+lists; their closed-schema validation belongs to `common.findings`,
 not here.
 
 `_FIELD_SETS` is the single source of truth for the per-type field sets:
@@ -41,7 +41,7 @@ CONCURRENCY_SINGLE_PASS_REASONS = frozenset({"mutex_held", "mutex_held_no_budget
 
 _ENVELOPE_KEYS = frozenset({"v", "run_id", "ts", "type"})
 
-# Single source of truth for the §6 fixed field sets (extra keys beyond
+# Single source of truth for the fixed field sets (extra keys beyond
 # the envelope, per event type). Constructors build through `_build` and
 # `to_jsonl` validates against this same table — never duplicated.
 _FIELD_SETS: dict[str, frozenset[str]] = {
@@ -281,7 +281,7 @@ def agent_reasoning(
 ) -> dict[str, Any]:
     """Reasoning excerpt available (raw reasoning truncated at
     `REASONING_MAX_CHARS` by the caller before it reaches this module —
-    there is no summarizer call; see HLD D6)."""
+    there is no summarizer call)."""
     if not isinstance(reasoning_excerpt, str):
         raise EventsError("reasoning_excerpt", "bad_reasoning")
     return _build(
@@ -308,8 +308,7 @@ def agent_completed(
     ts: Any = None,
 ) -> dict[str, Any]:
     """Specialist returned parseable findings. `coordinates_clamped_n`
-    counts coordinates `run_fanout` clamped to post-image (0 when none;
-    HLD-004 D3)."""
+    counts coordinates `run_fanout` clamped to post-image (0 when none)."""
     return _build(
         "agent_completed",
         {
@@ -335,8 +334,8 @@ def agent_retry(
     run_id: Any = None,
     ts: Any = None,
 ) -> dict[str, Any]:
-    """Reserved in the schema; not emitted on the fan-out path in v1
-    (HLD D9 partial-success rules — single-attempt specialists, all retry
+    """Reserved in the schema; not emitted on the fan-out path
+    (ARCHITECTURE.md §5.1: single-attempt specialists, all retry
     ownership stays with the SQS queue)."""
     if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
         raise EventsError("attempt", "bad_attempt")
@@ -394,7 +393,7 @@ def verification_done(
     returned parseable findings (e.g. 2 after one 429/timeout loss) — it
     lets replay/eval attribute recall deltas to partial waves.
     `coordinates_reanchored_n` counts verifier re-anchors to post-image
-    (0 when none; HLD-004 D3)."""
+    (0 when none)."""
     return _build(
         "verification_done",
         {

@@ -1,14 +1,14 @@
-"""Worker-role IAM ↔ dynamodb-usage contract (T067).
+"""Worker-role IAM ↔ dynamodb-usage contract (ARCH §6.1).
 
-The 2026-09-27 incident class: `mutex.release` performs `delete_item`
-on the state table, the worker role never had `dynamodb:DeleteItem`,
-and the gap was invisible to every suite — state-machine tests run an
-in-memory table, so authorization is never exercised. This pin keeps
-the worker role's state-table grant in lockstep with the table
-operations the lambda code actually performs: a call without a grant
-is the crash class (AccessDenied mid-review) and fails loudly; a
-grant outside the conscious map fails loudly; a mapped-but-uncalled
-grant is an allowed, visible residual (see below).
+Why this pin exists: if `mutex.release` performs `delete_item` on the
+state table but the worker role has no `dynamodb:DeleteItem`, the gap
+is invisible to state-machine tests, which run an in-memory table
+where authorization is never exercised. This pin keeps the worker
+role's state-table grant in lockstep with the table operations the
+lambda code actually performs: a call without a grant is the crash
+class (AccessDenied mid-review) and fails loudly; a grant outside the
+conscious map fails loudly; a mapped-but-uncalled grant is an allowed,
+visible residual (see below).
 
 Known blind spots (a tripwire, not a proof): the scan is textual, so
 occurrences inside comments or string literals count as call sites
@@ -22,18 +22,16 @@ in ingress) is allowed as a consciously mapped residual, while a
 grant outside the map fails. The `\\n}` resource anchor assumes no
 column-0 `}` inside the body (terraform fmt output satisfies this);
 a future here-doc would truncate the match, dropping actions, which
-fails the missing-grant test in the safe direction — robust HCL
-block parsing for the contract suite is SPR-155's scope. The
+fails the missing-grant test in the safe direction. The
 action-extraction regex likewise assumes list-form `Action = [...]`
 statements; a string-form Action would be missed (also safe
 direction: toward missing-grant).
 
-S3 surface (T069, second 2026-09-27 gap): the archive contract's two
-puts (worker_handler.py:1900-1901) had no grant AND no ARCHIVE_BUCKET
-env (the `if not bucket` guard then skips silently — no warning), so
-the bucket stayed empty since the T042 deploy. The pin covers the S3
-call map the same way; the env wiring is pinned in
-test_terraform_multi_agent (GLM_ALLOWED_HOSTS pop-row precedent).
+S3 surface: the archive contract's two puts need a grant AND the
+ARCHIVE_BUCKET env (the `if not bucket` guard otherwise skips silently
+— no warning — leaving the bucket empty). The pin covers the S3 call
+map the same way; the env wiring is pinned in
+test_terraform_multi_agent.
 """
 
 import re
@@ -84,7 +82,7 @@ def _worker_table_methods():
     return _worker_call_sites(TABLE_METHODS)
 
 
-# S3 surface (T069): the archive path's two puts need object-level
+# S3 surface: the archive path's two puts need object-level
 # PutObject; a new call site must extend this map AND iam.tf together.
 S3_OPERATION_ACTIONS = {
     "put_object": "s3:PutObject",
@@ -211,7 +209,7 @@ def test_archive_bucket_name_is_consistent_across_surfaces():
     """The env literal (compute.tf), the bucket resource (archives.tf)
     and the IAM resource reference must name the same bucket: literals
     that drift would send the puts somewhere the grant does not cover,
-    or skip silently (the T069 failure mode)."""
+    or skip silently."""
     env = re.search(r'ARCHIVE_BUCKET\s*=\s*"([^"]*)"', COMPUTE_TF)
     assert env is not None, "ARCHIVE_BUCKET env line missing from compute.tf (the T069 wiring)"
     bucket = re.search(r'bucket\s*=\s*"([^"]*)"', ARCHIVES_TF)

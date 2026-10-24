@@ -1,16 +1,18 @@
-"""Structured JSON logger + redaction guard (HLD §5.4, §4.3; FR-026; Constitution III).
+"""Structured JSON logger + redaction guard (ARCHITECTURE.md §6.2, §7;
+Constitution III).
 
-Fixed field set only: every emitted line is one JSON object carrying exactly
-`FIXED_FIELDS` — the HLD §5.4 "Logged" row (IDs, SHAs, durations, token
-usage, status, error class) plus the §4.3 review-metric identifiers
+Fixed field set only: every emitted line is one JSON object carrying
+exactly `FIXED_FIELDS` — the §7 review metrics (IDs, SHAs, durations,
+token usage, status, error class) plus the metric identifiers
 `generation` and `prompt_version` (code identity, charset-restricted —
 off-spec values are dropped with a warning, never raised) and the
 `prompt_sha256` telemetry digest (lowercase hex sha256 of the delivered
-prompt text — hash only, never prompt content) and the §4.3 `stale_discarded` discard
-metric (True when the run discarded superseded/stale work via fencing,
-False otherwise — strict bool, never None, so the metric is always
-queryable) plus the §4.3 `failure_notice_published` D2 metric (`true` /
-`false` / `skipped-stale`; see `common.failure_notice`). `build_event()` takes those fields as
+prompt text — hash only, never prompt content) and the
+`stale_discarded` discard metric (True when the run discarded
+superseded/stale work via fencing, False otherwise — strict bool, never
+None, so the metric is always queryable) plus the
+`failure_notice_published` metric (`true` / `false` / `skipped-stale`;
+see `common.failure_notice`). `build_event()` takes those fields as
 explicit keyword-only parameters, so non-fixed content (Authorization
 headers, PATs, secrets, raw payloads, diffs, LLM request/response bodies) is
 structurally unemittable — there is no parameter that could carry it
@@ -24,19 +26,20 @@ with a typed `RedactionError` — nothing is emitted — when credential-shaped
 or payload-shaped text is detected. `event_from_envelope()` accepts an
 envelope-shaped dict (or `Envelope`) and extracts only the allow-listed IDs;
 hostile extra keys are never read. GitHub-derived fields are
-control-character-stripped before logging (HLD §2.1); control characters in
+control-character-stripped before logging (ARCHITECTURE.md §2.1);
+control characters in
 format-checked free fields are rejected instead — inputs arrive envelope-
 validated, so fail-closed beats silent mutation there.
 
-Ingress status lines (G6-F3) use the separate `INGRESS_FIXED_FIELDS` shape
+Ingress status lines use the separate `INGRESS_FIXED_FIELDS` shape
 (`statusCode` / `decision` / `reason`) via `build_ingress_event()` +
 `emit_ingress_event()` — same guard discipline, no envelope IDs required.
 
 Malformed input raises a typed `LogsError` (a `ValueError`) carrying a
 machine-readable `field` and `reason` — never a bare `Exception`.
 
-Sinks are injected (`emit(sink, event)` takes any `Callable[[str], None]`;
-CloudWatch destinations per HLD §4.3) so tests stay I/O-free.
+Sinks are injected (`emit(sink, event)` takes any `Callable[[str], None]`)
+so tests stay I/O-free.
 
 Pure stdlib, no I/O, no boto3 import.
 """
@@ -74,7 +77,7 @@ FIXED_FIELDS = frozenset(
     }
 )
 
-# Ingress status field set (G6-F3, SPR-62): one structured line per ingress
+# Ingress status field set: one structured line per ingress
 # disposition so the `statusCode = 401` metric filter has signal to match.
 # `statusCode` is the numeric HTTP disposition; `decision` is the gate
 # outcome (`allowed` / `discarded` / `rejected` / `error`); `reason` is a
@@ -87,7 +90,8 @@ INGRESS_DECISIONS = frozenset({"allowed", "discarded", "rejected", "error"})
 
 Sink = Callable[[str], None]
 
-# Identifier formats mirror common.envelope (the shape authority, HLD §2.1);
+# Identifier formats mirror common.envelope (the shape authority,
+# ARCHITECTURE.md §2.1);
 # re-checked here so the logger fails closed before emission.
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
@@ -158,7 +162,8 @@ class RedactionError(ValueError):
 
 
 def assert_clean(text: str, field: str = "output") -> None:
-    """Scan `text` for forbidden content (HLD §5.4; Constitution III).
+    """Scan `text` for forbidden content (ARCHITECTURE.md §6.2;
+    Constitution III).
 
     Raises `RedactionError` on the first credential-shaped or
     payload-shaped match; returns `None` when clean.
@@ -232,7 +237,7 @@ def _clean_status(value: Any) -> str:
 
 
 def _clean_pipeline(value: Any) -> str | None:
-    """T077: the pipeline discriminator on terminal worker lines — None on
+    """The pipeline discriminator on terminal worker lines — None on
     lines that predate routing (error-path emits); a known discriminator
     on publish-path lines (the metric filters key on it)."""
     if value is None:
@@ -258,9 +263,9 @@ def _clean_stale_discarded(value: Any) -> bool:
     return value
 
 
-# HLD §4.3 / research R8: `failure_notice_published` ∈
-# {true, false, skipped-stale} — whether this run published the D2
-# failure-state notice (see `common.failure_notice.NoticeDisposition`).
+# `failure_notice_published` ∈ {true, false, skipped-stale} — whether
+# this run published the failure-state notice (see
+# `common.failure_notice.NoticeDisposition`).
 _FAILURE_NOTICE_VALUES = frozenset({"true", "false", "skipped-stale"})
 
 
@@ -271,7 +276,7 @@ def _clean_failure_notice_published(value: Any) -> str:
 
 
 def _clean_prompt_version(value: Any) -> str | None:
-    """Charset-restricted code-identity field (SPR-62 hardening).
+    """Charset-restricted code-identity field.
 
     Valid values pass through; ANY violation (non-string, empty, overlong,
     charset mismatch, forbidden content) drops the field to `None` and emits
@@ -302,7 +307,7 @@ def _clean_prompt_version(value: Any) -> str | None:
 
 
 def prompt_sha256(prompt: str) -> str:
-    """Lowercase hex sha256 of the DELIVERED prompt text (SPR-62 telemetry).
+    """Lowercase hex sha256 of the DELIVERED prompt text.
 
     Hash only, never text: the digest names which prompt the model saw
     (`PROMPT_VERSION` still describes the code per validate.py) without
@@ -367,7 +372,7 @@ def build_event(
     `prompt_sha256`,
     `False` for `stale_discarded` (runs that did not discard stale work),
     and `"false"` for `failure_notice_published` (runs that published no
-    D2 failure notice).
+    failure notice).
 
     `prompt_version` is code identity (validate.PROMPT_VERSION); off-spec
     values are dropped to `None` with a warning, never raised.
@@ -409,9 +414,8 @@ def event_from_envelope(
 
     Only the allow-listed IDs are extracted; every other key — Authorization
     headers, secrets, raw payloads, diffs, LLM bodies — is never read.
-    Dict input is validated by `common.envelope` (single implementation,
-    HLD §7.1); `EnvelopeError` is mapped to `LogsError` preserving
-    `field`/`reason`.
+    Dict input is validated by `common.envelope` (single implementation);
+    `EnvelopeError` is mapped to `LogsError` preserving `field`/`reason`.
     """
     if isinstance(payload, Envelope):
         envelope = payload
@@ -443,7 +447,7 @@ def build_ingress_event(
     decision: Any,
     reason: Any,
 ) -> dict[str, Any]:
-    """Build a fixed-field ingress status event (G6-F3, SPR-62).
+    """Build a fixed-field ingress status event.
 
     Keyword-only parameters ARE the allow-list (`INGRESS_FIXED_FIELDS`).
     `status_code` is the numeric HTTP disposition ingress returns;

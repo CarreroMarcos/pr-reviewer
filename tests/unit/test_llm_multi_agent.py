@@ -1,4 +1,4 @@
-"""SPR-86 T003: multi-agent `llm.py` contract tests (HLD-004 §9 items 2–6).
+"""T003: multi-agent `llm.py` contract tests (HLD-004 §9 items 2–6).
 
 Payload carries `max_tokens: 16384`; `finish_reason == "length"` raises
 `LlmError("length")`; `thinking_enabled=True` sends
@@ -7,10 +7,6 @@ is extracted onto `ReviewResult`; HTTP 429 with Z.AI code 1302 raises
 `LlmError("rate_limit")`; the review call takes an explicit
 `read_timeout_s` kwarg defaulting to a single `_read_timeout_s()`
 resolution per call, with the socket timeout equal to the passed value.
-
-RED state: none of these behaviors exist yet — collection succeeds but
-the behavior tests fail (unexpected kwargs, missing payload keys,
-`http_429` instead of `rate_limit`, missing `ReviewResult` field).
 """
 
 import json
@@ -231,7 +227,7 @@ def test_read_timeout_s_default_resolved_exactly_once(monkeypatch):
 
 
 def test_read_timeout_s_override_sets_socket_timeout(monkeypatch):
-    """Contender override (T026): the passed value wins over env, and no
+    """Override: the passed value wins over env, and no
     env resolution happens on the override path."""
     monkeypatch.setenv("GLM_READ_TIMEOUT_S", "300")
     calls = []

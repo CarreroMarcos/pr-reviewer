@@ -1,8 +1,8 @@
-"""T041 stub tests: N=4 probe with injected legs (no network, no creds).
+"""Stub tests: N=4 probe with injected legs (no network, no creds).
 
 Pins the evidence-file shape, timestamping, the concurrency fact (4
 simultaneously in-flight legs via a barrier gate), and all-200 vs
-throttled/error recording. The live run (T044 input) is human-operated.
+throttled/error recording. The live run is human-operated.
 """
 
 import datetime
@@ -13,7 +13,7 @@ import probe_concurrency as probe
 
 from common.llm import LlmError
 
-STUB_CREDS = ("https://stub.example.test/v1", "stub-key", "stub-model")  # noqa: S105
+STUB_CREDS = ("https://stub.example.test/v1", "stub-key", "stub-model")  # noqa: S105 (dummy)
 
 
 def ok_stub(**kwargs):

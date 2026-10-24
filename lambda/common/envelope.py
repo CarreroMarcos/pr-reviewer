@@ -1,4 +1,4 @@
-"""SQS envelope schema + validator (contracts/ingress-webhook.md, HLD §2.1).
+"""SQS envelope schema + validator (ARCHITECTURE.md §2.1, §4).
 
 Single source of truth for the envelope contract: the worker treats every
 SQS message as untrusted input and validates it here before any use.

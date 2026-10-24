@@ -1,4 +1,5 @@
-"""T013: config cache + hydration cases, injected clock/ssm (HLD §2.3 item 1, §2.6).
+"""T013: config cache + hydration cases, injected clock/ssm
+(ARCHITECTURE.md §2.3, §2.6).
 
 Cold-start fetch, 30-minute TTL refresh, 401 cache-bust via injected clock;
 endpoint hydration rejects non-HTTPS / non-allow-list hosts. Every rejection
@@ -23,7 +24,7 @@ GLM_API_KEY = "/pr-reviewer/glm-api-key"
 GLM_MODEL = "/pr-reviewer/glm-model"
 GLM_ENDPOINT = "/pr-reviewer/glm-endpoint"
 
-# Worker fetch surface (HLD §2.6) — hard-coded here so the tests verify the
+# Worker fetch surface (ARCHITECTURE.md §2.6) — hard-coded here so the tests verify the
 # module fetches exactly these names (no invented parameters; the webhook
 # secret is ingress-only per §2.6 and must never appear in the batch).
 ALL_NAMES = (GITHUB_TOKEN, GLM_API_KEY, GLM_MODEL, GLM_ENDPOINT)
@@ -144,7 +145,7 @@ def test_401_cache_bust_refetches_immediately():
     provider.get()
     assert len(ssm.calls) == 1
 
-    provider.invalidate()  # 401 path: drop cache (HLD §2.3 item 8)
+    provider.invalidate()  # 401 path: drop cache (ARCHITECTURE.md §2.3)
     ssm.values[GITHUB_TOKEN] = "ghp-rotated-token"
     config = provider.get()  # no clock advance — bust ignores TTL
 
@@ -218,16 +219,15 @@ def test_no_secrets_in_repr_or_errors():
     assert GLM_API_KEY_VALUE not in str(excinfo.value)
 
 
-# --- QA-A red (F2a): subset parameter_names raise typed ConfigError ----------
+# --- subset parameter_names raise typed ConfigError ---------------------------
 
 
 def test_subset_parameter_names_raise_typed_missing():
-    # Given a provider fetching only a subset of the HLD §2.6 worker surface
+    # A provider fetching only a subset of the ARCHITECTURE.md §2.6 worker surface
     ssm = FakeSSM({GITHUB_TOKEN: GITHUB_TOKEN_VALUE})
     provider = ConfigProvider(
         ssm.get_parameters, clock=FakeClock(), parameter_names=(GITHUB_TOKEN,)
     )
-    # When hydrating Then a typed ConfigError, never a bare KeyError
     with pytest.raises(ConfigError) as excinfo:
         provider.get()
     assert excinfo.value.field == "glm_api_key"
@@ -235,14 +235,14 @@ def test_subset_parameter_names_raise_typed_missing():
 
 
 def test_parameter_surface_excludes_webhook_secret():
-    # HLD §2.6: the webhook secret is ingress-only IAM — the worker's
-    # batched GetParameters must never request it (one unauthorized name
-    # denies the whole batch; surfaced live by the T035 acceptance run).
+    # ARCHITECTURE.md §2.6: the webhook secret is ingress-only IAM — the
+    # worker's batched GetParameters must never request it (one unauthorized
+    # name denies the whole batch).
     assert WEBHOOK_SECRET not in PARAMETER_NAMES
     assert WEBHOOK_SECRET not in _FIELD_BY_NAME
 
 
-# --- QA-A: accessor edge cases ------------------------------------------------
+# --- accessor edge cases --------------------------------------------------------
 
 
 def test_whitespace_only_value_typed_empty():
@@ -252,7 +252,7 @@ def test_whitespace_only_value_typed_empty():
 
 
 def test_non_string_value_typed_empty_without_leak():
-    # Given a non-string SSM value Then fail-closed "empty", leaking nothing of the value
+    # Non-string SSM value: fail closed as "empty", leaking nothing of the value.
     values = _values()
     values[GITHUB_TOKEN] = 12345
     provider = _provider(FakeSSM(values), FakeClock())
@@ -264,7 +264,7 @@ def test_non_string_value_typed_empty_without_leak():
 
 
 def test_access_exactly_at_ttl_refetches():
-    # Given a fetch at t0 Then access exactly at the TTL boundary refetches (expiry is >=)
+    # Access exactly at the TTL boundary refetches (expiry is >=).
     ssm = FakeSSM(_values())
     clock = FakeClock()
     provider = _provider(ssm, clock)

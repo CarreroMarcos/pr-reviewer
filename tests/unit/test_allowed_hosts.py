@@ -1,12 +1,10 @@
-"""Audit R3: env-configured GLM allowed hosts threaded into `review_diff`.
+"""Env-configured GLM allowed hosts threaded into `review_diff`.
 
-The thinking portability gate in `common.llm` matched only the hardcoded
-module constant — the worker's env-configured set never reached it (values
-matched live, so no outage; this closes the config↔code drift and Gate-17
-A2). `ConfigProvider.allowed_hosts` (public accessor over the lowercased
-ingest set) is now threaded `_process_record → _make_review → _call_llm →
-review_diff(allowed_hosts=...)`; `None` resolves to `GLM_ALLOWED_HOSTS` so
-unset-env behavior is byte-identical.
+`ConfigProvider.allowed_hosts` (lowercased at ingest) is threaded
+`_process_record → _make_review → _call_llm → review_diff(allowed_hosts=...)`;
+`None` resolves to `GLM_ALLOWED_HOSTS`, so unset-env behavior is unchanged.
+Without threading, the thinking gate would use only the module constant
+and silently ignore the worker's configured hosts.
 """
 
 import json
@@ -184,7 +182,7 @@ def _llm_request(**overrides):
     return seen[0]
 
 
-# --- (b) config accessor: public, ingest-lowercased ---------------------------
+# --- config accessor: public, ingest-lowercased -------------------------------
 
 
 def test_allowed_hosts_accessor_returns_lowercased_env_set():
@@ -201,7 +199,7 @@ def test_allowed_hosts_accessor_defaults_to_empty():
     assert provider.allowed_hosts == frozenset()
 
 
-# --- (a) threading: configured set reaches the gate --------------------------
+# --- threading: configured set reaches the gate ------------------------------
 
 
 def test_worker_configured_set_with_custom_host_sends_thinking():
@@ -224,12 +222,12 @@ def test_review_diff_explicit_set_with_endpoint_sends_thinking():
     assert payload["thinking"] == {"type": "disabled"}
 
 
-# --- (c) default: no env → module constant, behavior unchanged ----------------
+# --- default: no env → module constant ---------------------------------------
 
 
 def test_review_diff_default_param_uses_module_constant():
     """No `allowed_hosts` (and explicit `None`) → module default: GLM host
-    sends thinking, non-GLM host omits it — pre-R3 behavior pinned."""
+    sends thinking, non-GLM host omits it — module-default behavior pinned."""
     assert _llm_request()["thinking"] == {"type": "disabled"}
     assert _llm_request(allowed_hosts=None)["thinking"] == {"type": "disabled"}
     assert "thinking" not in _llm_request(endpoint=ENDPOINT)

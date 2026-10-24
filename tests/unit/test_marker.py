@@ -1,4 +1,4 @@
-"""T007: canonical marker exact-string cases (contracts/canonical-comment.md, HLD §2.8).
+"""T007: canonical marker exact-string cases (ARCHITECTURE.md §2.8).
 
 The marker is assembled by worker code only; the model never emits it. Exact form:
 `<!-- pr-reviewer:canonical:v1:{repo_full_name}#{pr_number} -->`.

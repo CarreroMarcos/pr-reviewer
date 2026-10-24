@@ -1,4 +1,4 @@
-"""SPR-109 T024: mutex contract tests (HLD-004 D9 Concurrency Resolution item 3).
+"""Mutex contract tests.
 
 The application-level distributed mutex strictly serializes multi-agent
 reviews: one row (`pk = "mutex:pr-reviewer-worker"`) carrying
@@ -9,33 +9,28 @@ so a lease becomes stealable only 30s AFTER its deadline:
 holder-friendly, never early); expiry takeover writes the SAME attribute
 shape with a fresh token; refresh at 50% TTL is a conditional write on
 the stored token (mismatch → lost, reported as None — the holder MUST
-stop issuing LLM work, take the degraded path, and never re-assert, a
-worker-side discipline owned by T026/T027); release removes the row
-conditioned on the token; `MUTEX_LEASE_TTL_S = 900` (= worker timeout,
-`terraform/compute.tf:104`).
+stop issuing LLM work, take the degraded path, and never re-assert);
+release removes the row conditioned on the token;
+`MUTEX_LEASE_TTL_S = 900` (= worker timeout).
 
-HLD-reading note (REMOVE semantics): a REMOVE-clause release would leave
-a key-only row that permanently fails the pinned acquire condition
+REMOVE semantics: a REMOVE-clause release would leave a key-only row
+that permanently fails the pinned acquire condition
 (`attribute_not_exists(pk)` false on the surviving key, `lease_until`
 comparison false on the missing attribute) — a silent mutex deadlock.
-"REMOVE" therefore reads as row removal (conditional DeleteItem): only
-the holder can release, the row is gone, the next acquire proceeds, and
-a throttled/lost release recovers via expiry takeover exactly as HLD
-states. The re-acquire-after-release row below pins this; the gate owns
-the reading.
+Release therefore means row removal (conditional DeleteItem): only the
+holder can release, the row is gone, the next acquire proceeds, and a
+throttled/lost release recovers via expiry takeover. The
+re-acquire-after-release row below pins this.
 
 `lease_until` units are a first-class pin: a ×1000 (ms) slip makes every
 lease look unexpired for ~11 days, silently serializing nothing. The
 seconds-scale row fails such an implementation.
 
-Doubles discipline (Gate-11): the in-file table double mirrors the
-`update_item`/`delete_item` port shapes (exact kwarg subset) and
-evaluates EXACTLY the mutex expression strings — anything else raises
-loudly (expression strings ARE the contract, per the `dynamodb_stub`
-precedent). A dedicated double (not the shared stub) keeps this file
-self-contained per the T024 file scope.
-
-RED state: `common.mutex` does not exist — collection errors on import.
+Doubles: the in-file table double mirrors the `update_item`/`delete_item`
+port shapes (exact kwarg subset) and evaluates EXACTLY the mutex
+expression strings — anything else raises loudly (expression strings
+ARE the contract, as in `dynamodb_stub`). A dedicated double (not the
+shared stub) keeps this file self-contained.
 """
 
 import re
@@ -189,7 +184,7 @@ class MutexTable:
 
 
 def _check_alias_map(update_expression, condition_expression, names):
-    """Reserved-word recurrence guard (Gate-15 demand): every `#alias`
+    """Reserved-word recurrence guard: every `#alias`
     referenced by the expressions must arrive with a non-None
     `ExpressionAttributeNames` map carrying the correct mapping —
     unaliased reserved words fail the scan test below, and a dropped map
@@ -230,7 +225,7 @@ def _bare_identifiers(expression):
 
 
 def test_no_bare_reserved_words_in_expressions():
-    """Recurrence guard (Gate-15 demand): `owner`/`token` are DynamoDB
+    """Recurrence guard: `owner`/`token` are DynamoDB
     reserved words — they must ride aliased in every expression string,
     so no bare reserved word may appear. The tripwire covers the AWS
     essentials list including both known offenders."""
@@ -315,7 +310,7 @@ def test_acquire_steal_threshold_is_thirty_seconds_in_the_past():
 
 
 def test_incomplete_row_is_not_stealable():
-    """DynamoDB-faithful edge (bot R1): a row missing `lease_until` —
+    """DynamoDB-faithful edge: a row missing `lease_until` —
     exactly the key-only residue a literal REMOVE-clause release would
     leave — satisfies NEITHER arm (`attribute_not_exists(pk)` is false
     on the surviving key; the comparison against the missing attribute
@@ -360,7 +355,7 @@ def test_refresh_after_release_returns_none():
 
 
 def test_refresh_after_takeover_returns_none_and_preserves_takeover():
-    """Load-bearing T026/T027 interleaving (gate anchor): A holds, the
+    """Load-bearing interleaving: A holds, the
     clock advances past `lease_until + 30`, B takes over with a fresh
     token — A's refresh then reports lost (None) and B's row is
     untouched."""
@@ -376,7 +371,7 @@ def test_refresh_after_takeover_returns_none_and_preserves_takeover():
 def test_failed_refresh_verdict_is_sticky_none():
     """Primitive half of the failed-refresh contract: a lost lease keeps
     reporting lost (idempotent None). The consumer half — stop issuing
-    LLM work, degraded path, never re-assert — is worker-side (T026/T027);
+    LLM work, degraded path, never re-assert — is worker-side;
     this module's duty is an unambiguous verdict, never a silent retry."""
     table = MutexTable()
     lease = acquire(table, owner=GUID_A, now=T)
@@ -454,7 +449,7 @@ def test_invalid_inputs_raise_typed_errors(kwargs, field):
     ],
 )
 def test_release_invalid_inputs_raise_typed_errors(lease, field):
-    """Bot R1 Fix 2: release shares the typed-input discipline — a
+    """Release shares the typed-input discipline — a
     malformed lease raises instead of collapsing into `False` (which
     would conflate "invalid input" with "lease lost")."""
     table = MutexTable()
@@ -473,10 +468,9 @@ def test_release_invalid_inputs_raise_typed_errors(lease, field):
     ],
 )
 def test_refresh_invalid_inputs_raise_typed_errors(lease, field):
-    """Gate-15 Fix 2 (accumulation-rule escalation): refresh shares the
-    guard — `None`/non-Lease raises `bad_lease`, malformed token raises
-    `bad_token`, instead of a raw AttributeError or a silent
-    conditional miss collapsing into `None`."""
+    """Refresh shares the guard — `None`/non-Lease raises `bad_lease`,
+    malformed token raises `bad_token`, instead of a raw AttributeError
+    or a silent conditional miss collapsing into `None`."""
     table = MutexTable()
     with pytest.raises(MutexError) as exc_info:
         refresh(table, lease=lease, now=T)

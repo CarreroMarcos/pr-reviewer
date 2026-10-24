@@ -1,6 +1,7 @@
-"""Review-state codec + conditional-update expression builders (HLD §3.1, §3.3).
+"""Review-state codec + conditional-update expression builders
+(ARCHITECTURE.md §3.1, §3.2).
 
-Field contract (HLD §3.1): stored `status` ∈ {CLAIMED, ACTIVE} — ABSENT is
+Field contract (ARCHITECTURE.md §3.1): stored `status` ∈ {CLAIMED, ACTIVE} — ABSENT is
 modeled by item absence and STALE is derived (`claim_until` < now), neither
 is ever written; `generation` starts at 0 and is monotone non-decreasing per
 key; `head_sha`/`last_seen_sha` are 40-char lowercase hex; `claim_until` is
@@ -9,7 +10,8 @@ epoch seconds; `claim_owner` is the raw delivery GUID (no parsing);
 `updated_at` is ISO-8601 UTC; `pk` is `review:{repo_full_name}#{pr_number}`.
 
 Items are plain dicts of native str/int (boto3 JSON/document-client
-semantics per HLD §2.4 — no attribute-value typing here). Malformed input
+semantics per ARCHITECTURE.md §2.4 — no attribute-value typing here).
+Malformed input
 raises a typed `StateError` (a `ValueError`) carrying a machine-readable
 `field` and `reason`, mirroring `common.envelope.EnvelopeError`.
 
@@ -31,11 +33,10 @@ from typing import Any
 
 STATUSES = frozenset({"CLAIMED", "ACTIVE"})
 
-# HLD D9 (T047): ≥ the multi-agent review budget (gate-1 total 300+240+180+60;
-# defaults live in common.config). Widened from 180, which predated the 240s
-# socket budget. Fixed lease, claim → finalize.
+# ≥ the multi-agent review budget (300+240+180+60; defaults live in
+# common.config). Fixed lease, claim → finalize.
 CLAIM_LEASE_SECONDS = 780
-DELIVERY_TTL_SECONDS = 7 * 24 * 3600  # HLD §2.4 item type 1: delivery TTL 7 days
+DELIVERY_TTL_SECONDS = 7 * 24 * 3600  # ARCH §2.4: delivery TTL 7 days
 
 INT64_MAX = 2**63 - 1
 
@@ -47,9 +48,8 @@ def expression_names(*expressions: str | None) -> dict[str, str] | None:
     """Names map actually referenced by the given update/condition
     expressions; `None` when none are. DynamoDB rejects BOTH extremes:
     declared-but-unused names (`ValidationException … unused … {#st}`) and
-    an empty map (`ExpressionAttributeNames must not be empty`) — both
-    surfaced live by the T035 acceptance run — so callers pass this
-    helper's result straight through."""
+    an empty map (`ExpressionAttributeNames must not be empty`) — so
+    callers pass this helper's result straight through."""
     used = set(re.findall(r"#[A-Za-z0-9_]+", " ".join(e for e in expressions if e)))
     names = {k: v for k, v in EXPRESSION_ATTRIBUTE_NAMES.items() if k in used}
     return names or None
@@ -77,7 +77,7 @@ class StateError(ValueError):
 
 @dataclass(frozen=True)
 class ReviewState:
-    """Validated review-state item — HLD §3.1 field contract."""
+    """Validated review-state item — ARCHITECTURE.md §3.1 field contract."""
 
     pk: str
     status: str
@@ -157,12 +157,12 @@ def _check_updated_at(value: Any) -> None:
 
 
 def review_pk(repo_full_name: str, pr_number: int) -> str:
-    """Build the review-item partition key exactly (HLD §3.1)."""
+    """Build the review-item partition key exactly (ARCHITECTURE.md §3.1)."""
     return f"review:{repo_full_name}#{pr_number}"
 
 
 def delivery_pk(guid: str) -> str:
-    """Build the delivery-item partition key (HLD §2.4 item type 1)."""
+    """Build the delivery-item partition key (ARCHITECTURE.md §2.4)."""
     return f"delivery:{guid}"
 
 
@@ -172,8 +172,8 @@ def delivery_ttl(now: int) -> int:
 
 
 def build_delivery_item(guid: str, now: int) -> dict[str, Any]:
-    """Delivery dedup item shape: pk + 7-day TTL (HLD §2.4 item type 1;
-    table-side `ttl` block in terraform/state.tf; specs data-model.md §1)."""
+    """Delivery dedup item shape: pk + 7-day TTL (ARCHITECTURE.md §2.4,
+    §4; table-side `ttl` block in terraform/state.tf)."""
     return {"pk": delivery_pk(guid), "ttl": delivery_ttl(now)}
 
 
@@ -223,7 +223,8 @@ def from_item(item: Any) -> ReviewState:
 
 
 def is_stale(claim_until: int, now: int) -> bool:
-    """STALE derivation (HLD §3.1): a CLAIMED record whose `claim_until`
+    """STALE derivation (ARCHITECTURE.md §3.1): a CLAIMED record whose
+    `claim_until`
     has passed is treated as stale and re-claimable. Callers must gate on
     CLAIMED first — bare timestamps carry no status."""
     return claim_until < now
@@ -231,7 +232,8 @@ def is_stale(claim_until: int, now: int) -> bool:
 
 def build_establish_first_write(state: ReviewState) -> ExprTriple:
     """Establish (a): first write — unconditional on content, guarded only
-    on record absence (HLD §3.3 step 1a). First write is always CLAIMED:
+    on record absence (ARCHITECTURE.md §3.2 step 1a). First write is
+    always CLAIMED:
     the status is hardcoded, never taken from the argument."""
     if state.status != "CLAIMED":
         raise StateError("status", "bad_status")
@@ -255,7 +257,7 @@ def build_establish_first_write(state: ReviewState) -> ExprTriple:
 
 def build_establish_equality(*, incoming_sha: str, updated_at: str) -> ExprTriple:
     """Establish (b): idempotent re-delivery — the incoming SHA equals the
-    stored `last_seen_sha` (HLD §3.3 step 1b)."""
+    stored `last_seen_sha` (ARCHITECTURE.md §3.2 step 1b)."""
     update = "SET last_seen_sha = :sha, updated_at = :updated_at"
     condition = "last_seen_sha = :sha"
     values: dict[str, Any] = {":sha": incoming_sha, ":updated_at": updated_at}
@@ -271,11 +273,12 @@ def build_establish_confirm(
     updated_at: str,
 ) -> ExprTriple:
     """Establish (c): the caller confirmed out-of-band via a live GitHub
-    head fetch that the incoming SHA is the PR's current head (HLD §3.3
-    step 1c) — `generation` increments. The write is guarded on
-    `generation = :expected_gen` so two concurrent establishes cannot both
-    increment from the same base; the loser re-reads and retries.
-    `REMOVE comment_id` keeps HLD 3.1's invariant — comment_id exists only
+    head fetch that the incoming SHA is the PR's current head
+    (ARCHITECTURE.md §3.2 step 1c) — `generation` increments. The write
+    is guarded on `generation = :expected_gen` so two concurrent
+    establishes cannot both increment from the same base; the loser
+    re-reads and retries. `REMOVE comment_id` keeps the §3.1 invariant
+    — comment_id exists only
     on ACTIVE records, so the ACTIVE -> CLAIMED transition clears it (a
     no-op when the attribute is absent)."""
     next_gen = expected_generation + 1
@@ -305,8 +308,8 @@ def build_claim_expressions(
     claim_until: int,
     now: int,
 ) -> ExprTriple:
-    """Claim (HLD §3.3 step 3): take/refresh the lease. Condition is the
-    HLD wording verbatim."""
+    """Claim (ARCHITECTURE.md §3.2 step 3): take/refresh the lease.
+    Condition is the §3.2 wording verbatim."""
     update = "SET claim_owner = :owner, claim_until = :until"
     condition = (
         "head_sha = :reviewed AND generation = :gen "
@@ -330,14 +333,15 @@ def build_finalize_expressions(
     comment_id: int,
     updated_at: str,
 ) -> ExprTriple:
-    """Finalize (HLD §3.3 step 6): revision only — the lease is not
+    """Finalize (ARCHITECTURE.md §3.2 step 6): revision only — the
+    lease is not
     re-checked. Failure means a newer accepted revision landed concurrently:
     log and reconcile rather than overwrite."""
-    # Lease lifecycle ends AT finalize (HLD §3.2: "held only from claim
-    # through finalize"). Leaving it set kept every same-SHA redelivery —
-    # e.g. a quick reopen, acceptance (k) — DISCARDED_CLAIM_HELD for the
-    # full lease (surfaced live by the T035 acceptance run).
-    # Owner-guarded release (SPR-63): the REMOVE drops claim_owner/claim_until
+    # Lease lifecycle ends AT finalize (ARCHITECTURE.md §3.1: the lease
+    # spans only claim through finalize). Leaving it set keeps every
+    # same-SHA redelivery — e.g. a quick reopen — DISCARDED_CLAIM_HELD
+    # for the full lease.
+    # Owner-guarded release: the REMOVE drops claim_owner/claim_until
     # only while the caller still holds the lease (`claim_owner = :owner`),
     # so a delayed older finalize can neither clear a newer claim's lease
     # nor overwrite its comment. A same-revision lease takeover (expiry +
@@ -367,7 +371,8 @@ def build_persist_expressions(
     comment_id: int,
     updated_at: str,
 ) -> ExprTriple:
-    """Adoption persistence (HLD §3.4, via the §3.3 step-6 finalize
+    """Adoption persistence (ARCHITECTURE.md §3.3, via the §3.2 step-6
+    finalize
     condition): record the adopted/created comment id, guarded on revision
     plus lease holder — the lease itself is untouched, released only by the
     protocol finalize. A persist by a lease loser fails closed (returns
@@ -391,7 +396,8 @@ def build_clear_comment_expressions(
     generation: int,
     dead_comment_id: int,
 ) -> ExprTriple:
-    """Clear a proven-dead `comment_id` (HLD §2.3 item 8 PATCH-404 row).
+    """Clear a proven-dead `comment_id` (ARCHITECTURE.md §2.3
+    PATCH-404 row).
 
     Guarded on the exact dead id at our revision: only the id the worker
     just saw 404 is removed — a concurrently persisted winner id never
@@ -411,7 +417,8 @@ def build_clear_comment_expressions(
 
 
 def build_advance_last_seen_expressions(*, incoming_sha: str, seen_at_read: str) -> ExprTriple:
-    """Superseded-event observation (HLD §3.3 step 1; US3.AC1): record the
+    """Superseded-event observation (ARCHITECTURE.md §3.2 step 1):
+    record the
     most recently observed webhook SHA regardless of acceptance. Advances
     ONLY `last_seen_sha` — head, generation, lease, and comment are
     untouched — guarded on equality with the value the attempt READ

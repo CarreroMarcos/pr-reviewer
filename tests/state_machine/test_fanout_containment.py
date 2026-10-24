@@ -1,4 +1,4 @@
-"""SPR-107 T022: fan-out containment contract tests (HLD-004 §5 wiring pin).
+"""Fan-out containment contract tests.
 
 `FanoutDegraded` is caught INSIDE the review closure around `run_fanout`
 only: the closure runs the single-pass budget gate + the existing
@@ -14,7 +14,7 @@ Single-pass fallback runs emit `review_started`,
 `review_started` / `degraded_to_single_pass` and returns content; it
 never emits `agent_*` / `verification_*`.
 
-Gate-13 forward contracts pinned here:
+Contracts pinned here:
 1. Budget `FanoutDegraded("insufficient_budget", <stage>)` matches stage
    ∈ {"wave", "verifier", "synthesizer"} explicitly; stage failure
    reasons propagate unchanged; an unknown `failed_stage` re-raises loud
@@ -24,32 +24,24 @@ Gate-13 forward contracts pinned here:
 3. Containment is proven at three levels: closure returns content (no
    escape), `run_review` publishes through the degrade, and `handler`
    completes the record with the fallback comment posted.
-4. Production threading (captured-stub rows): real `file_lengths`
-   mapping (hunk-derived via `post_image_lengths`, never None — the
-   bound is the reviewed-span peak; absent-span files are omitted and
-   pass the clamp untouched; the verifier re-anchors per HLD
-   :535-537), `creds.current()` snapshot kwargs,
-   production `prompts/*.md` templates in FIXED specialty order, and a
-   FRESH caller-owned events list per invocation.
-5. Mutex-release ordering: NO surface exists yet (`lambda/common/mutex.py`
-   is T024/T025's) — nothing to pin; release timing stays with the mutex
-   tickets per HLD D9.
+4. Production threading: real `file_lengths` mapping (hunk-derived via
+   `post_image_lengths`, never None — the bound is the reviewed-span
+   peak; absent-span files are omitted and pass the clamp untouched; the
+   verifier re-anchors), `creds.current()` snapshot kwargs, production
+   `prompts/*.md` templates in FIXED specialty order, and a FRESH
+   caller-owned events list per invocation.
 
-Gate-4 terminal row (HLD D9: no budget left even for fallback): the
-closure emits `degraded_no_budget` and re-raises the `FanoutDegraded` —
-the queue owns retries and a redelivery gets a fresh budget. This is the
-ONE documented escape; every degradable failure is contained. T062
-(Gate-14 Finding 1): the escaped terminal-row failure is caught at the
-record boundary (`_process_record`) — `retry_queued` log + D2 TRANSIENT
-notice via the existing failure-lifecycle path — then re-raised
-UNCHANGED for queue redelivery.
+Terminal row (no budget left even for fallback): the closure emits
+`degraded_no_budget` and re-raises the `FanoutDegraded` — the queue owns
+retries and a redelivery gets a fresh budget. This is the ONE documented
+escape; every degradable failure is contained. The escaped terminal-row
+failure is caught at the record boundary (`_process_record`) —
+`retry_queued` log + D2 TRANSIENT notice via the existing
+failure-lifecycle path — then re-raised UNCHANGED for queue redelivery.
 
-Doubles discipline (Gate-11): the `run_fanout` stub mirrors the
-sequencer's requiredness (no defaults on required params); transport
-doubles mirror the `test_worker.py` port shapes.
-
-RED state: `worker_handler` has no fan-out closure symbols —
-collection errors on import.
+Doubles: the `run_fanout` stub mirrors the sequencer's requiredness
+(no defaults on required params); transport doubles mirror the
+`test_worker.py` port shapes.
 """
 
 import json
@@ -241,7 +233,7 @@ class FakeGitHub:
 
 class FanoutStub:
     """Production-faithful `run_fanout` double: required params have NO
-    defaults (a dropped kwarg is a loud TypeError — Gate-11 rule)."""
+    defaults (a dropped kwarg is a loud TypeError)."""
 
     def __init__(self, behavior):
         self.behavior = behavior
@@ -360,7 +352,7 @@ def test_load_fanout_prompts_reads_production_files():
 
 
 def test_load_fanout_prompts_undecodable_is_config_fault(monkeypatch):
-    """Bot R1 Fix 2: a corrupted (non-UTF-8) prompt is the same
+    """A corrupted (non-UTF-8) prompt is the same
     "unreadable prompt" class as a missing file — ConfigError, never an
     empty prompt and never a raw UnicodeDecodeError escape."""
     real_read_text = Path.read_text
@@ -391,7 +383,7 @@ def test_residuals_missing_everywhere_yields_empty(monkeypatch):
 
 
 def test_residuals_present_but_empty_is_authoritative(monkeypatch):
-    """Bot R1 Fix 1: the first layout whose file EXISTS wins — its parse
+    """The first layout whose file EXISTS wins — its parse
     is authoritative even when empty, so the second layout is NOT
     consulted (no fall-through past a successful parse)."""
     calls = []
@@ -433,7 +425,7 @@ def test_closure_threads_production_seams(multi_agent, stubbed_fanout):
     closure = make_closure(events)
     closure(SHA_B, 0)
     call = stub.calls[0]
-    # Forward contract 4, every seam explicit:
+    # Every seam explicit:
     assert call["file_lengths"] == {"src/main.py": 2}  # hunk-derived, never None
     assert isinstance(call["file_lengths"], dict)
     assert call["residuals"] == []  # accepted-residuals file absent in repo
@@ -451,11 +443,11 @@ def test_closure_threads_production_seams(multi_agent, stubbed_fanout):
 
 
 def test_closure_threads_nonempty_file_lengths_to_clamp(multi_agent, stubbed_fanout):
-    """T060 pin: a NON-EMPTY hunk-derived mapping reaches the fan-out
-    path (the clamp's input seam) — the `file_lengths={}` pass-through
-    era is over. The stub stands in for `run_fanout` (which forwards
-    the mapping to `clamp_to_post_image` unchanged), so capture here
-    proves the threading."""
+    """A NON-EMPTY hunk-derived mapping reaches the fan-out path (the
+    clamp's input seam), not a `file_lengths={}` pass-through. The stub
+    stands in for `run_fanout` (which forwards the mapping to
+    `clamp_to_post_image` unchanged), so capture here proves the
+    threading."""
     stub = stubbed_fanout(REVIEW_BODY)
     events = []
     closure = make_closure(events)
@@ -499,7 +491,7 @@ def test_fresh_events_list_per_invocation(multi_agent, stubbed_fanout):
 
 @pytest.mark.parametrize("stage", ["wave", "verifier", "synthesizer"])
 def test_budget_degrade_matches_stage_and_falls_back(multi_agent, stubbed_fanout, stage):
-    """Gate-13 contract 1: insufficient_budget matches each stage
+    """insufficient_budget matches each stage
     explicitly; the degraded event carries (reason, stage) unchanged."""
     stubbed_fanout(FanoutDegraded("insufficient_budget", stage))
     events = []
@@ -531,7 +523,7 @@ def test_stage_failure_reason_propagates_unchanged(multi_agent, stubbed_fanout):
 
 
 def test_unknown_failed_stage_reraises_loud(multi_agent, stubbed_fanout):
-    """ADV-4: an unknown failed_stage is never mislabeled into an event —
+    """An unknown failed_stage is never mislabeled into an event —
     it re-raises with no fallback attempted."""
     stubbed_fanout(FanoutDegraded("boom", "bogus_stage"))
     events = []
@@ -543,7 +535,7 @@ def test_unknown_failed_stage_reraises_loud(multi_agent, stubbed_fanout):
 
 
 def test_terminal_no_budget_emits_event_and_raises(multi_agent, stubbed_fanout):
-    """Gate-4 terminal row: no budget left even for fallback — the closure
+    """No budget left even for fallback — the closure
     emits degraded_no_budget and re-raises; the queue owns the retry with
     a fresh budget on redelivery."""
     stubbed_fanout(FanoutDegraded("insufficient_budget", "wave"))
@@ -559,14 +551,14 @@ def test_terminal_no_budget_emits_event_and_raises(multi_agent, stubbed_fanout):
 
 
 def test_terminal_row_is_retryable_named_case():
-    """T062: the terminal-row budget failure is a NAMED retryable case
+    """The terminal-row budget failure is a NAMED retryable case
     (not an anonymous fall-through) — the queue owns the retry, bounded
     by maxReceiveCount 3."""
     assert is_retryable(FanoutDegraded("insufficient_budget", "wave")) is True
 
 
 def test_terminal_row_notice_trigger_is_transient():
-    """T062: the terminal-row failure rides the existing D2 path as a
+    """The terminal-row failure rides the existing D2 path as a
     TRANSIENT row — RETRYING notice first, FINAL at the last receive."""
     assert _notice_trigger(FanoutDegraded("insufficient_budget", "wave")) is (
         NoticeTrigger.TRANSIENT
@@ -574,7 +566,7 @@ def test_terminal_row_notice_trigger_is_transient():
 
 
 def test_terminal_row_boundary_observability(multi_agent, stubbed_fanout):
-    """T062 (Gate-14 Finding 1): the escaped terminal-row `FanoutDegraded`
+    """The escaped terminal-row `FanoutDegraded`
     at the record boundary produces the `retry_queued` log + D2 notice,
     is re-raised UNCHANGED (same object — redelivery semantics
     identical), and `degraded_no_budget` appears exactly once
@@ -624,11 +616,11 @@ def test_legacy_path_never_attempts_fanout(stubbed_fanout):
 
 
 def test_docs_only_diff_skips_fanout(multi_agent, stubbed_fanout):
-    """T076: MULTI_AGENT=1 + every file docs-shaped routes single-pass —
+    """MULTI_AGENT=1 + every file docs-shaped routes single-pass —
     the fanout stub observes zero calls (wave/verifier/synthesizer LLM
     spend never happens) and the event carries the true disposition:
     concurrency_single_pass/docs_only, never a fabricated degradation
-    (Gate-15/ADV-4: fan-out was not attempted)."""
+    (fan-out was not attempted)."""
     stub = stubbed_fanout(REVIEW_TEXT)
     events = []
     closure = make_closure(events, files=[file_entry("README.md"), file_entry("docs/guide.md")])
@@ -638,7 +630,7 @@ def test_docs_only_diff_skips_fanout(multi_agent, stubbed_fanout):
     (evt,) = events_of_type(events, "concurrency_single_pass")
     assert evt["reason"] == "docs_only"
     assert events_of_type(events, "degraded_to_single_pass") == []
-    # Spec verify letter: NO fanout-stage events anywhere in the chain —
+    # NO fanout-stage events anywhere in the chain —
     # the type set admits only the single-pass routing vocabulary.
     assert {e["type"] for e in events} <= {
         "review_started",
@@ -648,7 +640,7 @@ def test_docs_only_diff_skips_fanout(multi_agent, stubbed_fanout):
 
 
 def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout, caplog):
-    """T076 spec verify letter, end to end: a docs-only diff publishes
+    """End to end: a docs-only diff publishes
     through the full record path with the routing chain
     review_started → concurrency_single_pass(docs_only) → published and
     zero fanout-stage events (agent/wave/verifier/synthesizer types
@@ -675,7 +667,7 @@ def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout, caplog
     )
     assert result == "published"
     (pub,) = [json.loads(x) for x in sink_lines if json.loads(x).get("status") == "published"]
-    # Gate-58 advisory semantics: the docs-only publish resolves
+    # The docs-only publish resolves
     # single_pass and must stay out of the runs_multi_agent metric —
     # the drift traffic term subtracts it via runs_docs_only instead.
     assert pub["pipeline"] == "single_pass"
@@ -688,7 +680,7 @@ def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout, caplog
     (evt,) = events_of_type(events, "concurrency_single_pass")
     assert evt["reason"] == "docs_only"
     assert events_of_type(events, "review_published")
-    # T077 (Gate-58 advisory carrier): the bare term logged at the skip
+    # The bare term logged at the skip
     # path is the sole signal feeding the runs_docs_only metric filter.
     assert any(rec.message == "docs_only fanout_skip=1" for rec in caplog.records), (
         "bare-term docs_only metric signal missing at the skip path"
@@ -696,7 +688,7 @@ def test_docs_only_publishes_via_record_path(multi_agent, stubbed_fanout, caplog
 
 
 def test_docs_only_no_event_without_multi_agent(stubbed_fanout):
-    """T076 (PR #173 r1 LOW): with MULTI_AGENT unset the docs predicate is
+    """With MULTI_AGENT unset the docs predicate is
     irrelevant — the else-branch must NOT emit a spurious
     concurrency_single_pass/docs_only event (there was no fanout decision
     to record)."""
@@ -709,7 +701,7 @@ def test_docs_only_no_event_without_multi_agent(stubbed_fanout):
 
 
 def test_mixed_diff_still_fans_out(multi_agent, stubbed_fanout):
-    """T076 boundary: ONE code file anywhere keeps the full battery —
+    """ONE code file anywhere keeps the full battery —
     the docs predicate never downgrades a mixed diff."""
     stub = stubbed_fanout(REVIEW_TEXT)
     events = []
@@ -721,7 +713,7 @@ def test_mixed_diff_still_fans_out(multi_agent, stubbed_fanout):
 
 
 def test_docs_only_is_false_when_truncated():
-    """T079: the guard executes on the truncated flag itself — a
+    """The guard executes on the truncated flag itself — a
     truncated diff never routes docs-only, whatever the kept set."""
     assert (
         worker_handler._docs_only(
@@ -738,10 +730,10 @@ def test_docs_only_is_false_when_truncated():
 
 
 def test_truncated_mixed_diff_keeps_the_battery(multi_agent, stubbed_fanout):
-    """T079: files is the post-budget kept list — a diff over the caps
+    """files is the post-budget kept list — a diff over the caps
     can keep only prose while dropping code files. Routing must fail
     safe on truncation: the fanout battery runs even though the kept
-    set is docs-only (pre-fix this silently routed single_pass)."""
+    set is docs-only."""
     stub = stubbed_fanout(REVIEW_TEXT)
     events = []
     closure = make_closure(
@@ -763,7 +755,7 @@ def test_truncated_mixed_diff_keeps_the_battery(multi_agent, stubbed_fanout):
 
 
 def test_truncated_docs_only_diff_pays_the_battery(multi_agent, stubbed_fanout):
-    """T079 fail-safe direction: an over-budget docs-only diff still
+    """Fail-safe direction: an over-budget docs-only diff still
     pays the fanout — truncation makes docs-only classification
     unreliable (dropped files are invisible), so the battery runs."""
     stub = stubbed_fanout(REVIEW_TEXT)
@@ -785,10 +777,9 @@ def test_truncated_docs_only_diff_pays_the_battery(multi_agent, stubbed_fanout):
 
 
 def test_replay_footer_on_fanout_published_body(multi_agent, stubbed_fanout, monkeypatch):
-    """T075 wiring (fanout side, publish boundary): the POSTed canonical
+    """Fanout side, publish boundary: the POSTed canonical
     body carries the footer with pr_number + head_sha interpolated —
-    appended after the §5 sanitizer, so the sha survives it (PR #169 r1
-    MEDIUM wiring + r2 sha-redaction find)."""
+    appended after the sanitizer, so the sha survives it."""
     stubbed_fanout(REVIEW_TEXT)
     monkeypatch.setenv("REPLAY_BASE_URL", "https://viewer.example.test")
     github = FakeGitHub()
@@ -811,11 +802,11 @@ def test_replay_footer_on_fanout_published_body(multi_agent, stubbed_fanout, mon
 
 
 def test_publish_log_line_carries_pipeline_multi_agent(multi_agent, stubbed_fanout):
-    """T077: the happy-path publish log line carries the routing
+    """The happy-path publish log line carries the routing
     discriminator from the run's own event chain — multi_agent when the
     chain holds fanout-stage events. The run_fanout stub bypasses the
     specialist chain, so it is pre-seeded with one real fanout-stage
-    event (canonical r3: the single_pass row alone left multi_agent
+    event (the single_pass row alone would leave multi_agent
     resolution unpinned)."""
     stubbed_fanout(REVIEW_TEXT)
     sink_lines = []
@@ -860,7 +851,7 @@ def test_run_review_boundary_never_sees_fanout_degraded(multi_agent, stubbed_fan
 
 
 def test_process_record_fallback_event_chain(multi_agent, stubbed_fanout):
-    """The full fallback run emits the T022 chain in order: closure pair,
+    """The full fallback run emits the chain in order: closure pair,
     worker checkpoints as each stage is reached, publish event."""
     stubbed_fanout(FanoutDegraded("insufficient_budget", "wave"))
     provider = make_provider()
@@ -927,7 +918,7 @@ def test_handler_boundary_contains_degrade(multi_agent, stubbed_fanout):
 
 
 def test_llm_error_still_propagates_for_retry(multi_agent, stubbed_fanout):
-    """Non-fanout faults keep today's boundary behavior: a retryable LLM
+    """Non-fanout faults keep the boundary behavior: a retryable LLM
     error from the fallback path still raises for queue redelivery."""
     stubbed_fanout(FanoutDegraded("insufficient_budget", "wave"))
     events = []

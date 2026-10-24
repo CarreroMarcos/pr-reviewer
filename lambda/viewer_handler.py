@@ -1,7 +1,7 @@
-"""Viewer Lambda — the internet-reachable replay-site surface (HLD §7).
+"""Viewer Lambda — the internet-reachable replay-site surface
+(ARCHITECTURE.md §5.3).
 
-Sits behind the NONE-auth Function URL and routes per the §7 Routing
-Specification:
+Sits behind the NONE-auth Function URL and routes per §5.3:
 
     GET /runs/{pr}/{sha}/                         → static/index.html (unauth shell)
     GET /static/{file}                            → S3 static/{file}   (unauth)
@@ -11,27 +11,26 @@ Specification:
 Security posture (all pinned by tests/integration/test_viewer_routing.py):
 
 * Dot-segment rejection happens BEFORE any S3 key is constructed — the
-  `/static/` character class alone admits `static/..` (bot review #3);
-  every decoded path segment resolving to `.` or `..` is a 404.
+  `/static/` character class alone admits `static/..`; every decoded
+  path segment resolving to `.` or `..` is a 404.
 * Strict allowlist regexes on every route; anything unparsed is 404 —
-  the URL surface is exactly the §7 tree, nothing more.
+  the URL surface is exactly the §5.3 tree, nothing more.
 * Bearer routes compare via `hmac.compare_digest` against the token in
   SSM. The token is read PER INVOCATION (`WithDecryption`) — no cache —
-  so T056's rotation ("new SSM value, no code deploy") is effective on
-  the next request without a recycle. No `kms:Decrypt` is needed: the
+  so rotation ("new SSM value, no code deploy") is effective on the
+  next request without a recycle. No `kms:Decrypt` is needed: the
   parameter is a plain SecureString on the AWS-managed `aws/ssm` key
-  and SSM decrypts server-side (HLD §2.6; DECISIONS 2026-09-28
-  superseded §7's decrypt clause).
-* Served bodies are UNTRUSTED model-controlled data (§7 raw-archive
-  contract): this handler returns bytes verbatim; sanitization is the
-  render boundary (§5, T055's static shell), not the transport's.
+  and SSM decrypts server-side (ARCHITECTURE.md §2.6).
+* Served bodies are UNTRUSTED model-controlled data: this handler
+  returns bytes verbatim; sanitization is the render boundary
+  (ARCHITECTURE.md §5.3, the static shell), not the transport's.
 * Single-origin design (static shell + /api share ONE Function URL
-  origin) — no CORS headers by design (Gate-38 refutation).
+  origin) — no CORS headers by design.
 
 Self-contained by packaging: viewer.zip carries ONLY this module
 (terraform/viewer.tf `archive_file`), so the resource names below are
 pinned here and kept in lockstep with terraform via the routing suite
-(SSM-literal ↔ iam.tf grant coupling, Gate-39 F4).
+(SSM-literal ↔ iam.tf grant coupling).
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ import boto3
 
 STATE_TABLE = "pr-reviewer-state"  # terraform/state.tf aws_dynamodb_table.state
 ARCHIVES_BUCKET = "pr-reviewer-archives"  # terraform/archives.tf aws_s3_bucket.archives
-TOKEN_PARAMETER_NAME = "/pr-reviewer/replay-token"  # noqa: S105 — SSM path, not a credential (house convention, config.py:30)
+TOKEN_PARAMETER_NAME = "/pr-reviewer/replay-token"  # noqa: S105 — SSM path, not a credential
 
 _STATIC_RE = re.compile(r"^static/[A-Za-z0-9._-]+$")
 _SHELL_RE = re.compile(r"^runs/\d+/[0-9a-f]{40}/?$")
@@ -73,7 +72,7 @@ def _client(name: str):
 
 
 def _state_table():
-    """Cached DynamoDB table resource (bot F3, PR #149)."""
+    """Cached DynamoDB table resource."""
     global _table
     if _table is None:
         _table = boto3.resource("dynamodb").Table(STATE_TABLE)
@@ -103,8 +102,8 @@ def _expected_token() -> str:
 
 
 def _authorized(headers: dict) -> bool:
-    """Bearer check: scheme prefix (case-insensitive per RFC 7235 — bot
-    F5), then constant-time token compare."""
+    """Bearer check: scheme prefix (case-insensitive per RFC 7235),
+    then constant-time token compare."""
     raw = None
     for key, value in headers.items():
         if key.lower() == "authorization":
@@ -127,21 +126,18 @@ def _serve_s3(key: str) -> dict:
     except s3.exceptions.ClientError as e:
         # Live S3 without s3:ListBucket answers GetObject for a MISSING
         # key with AccessDenied (anti-enumeration); moto returns
-        # NoSuchKey, so CI only saw the modeled branch (canonical
-        # review #1, PR #167). All three "absent" codes — NoSuchKey,
-        # the listless NotFound variant, and AccessDenied — map to
-        # 404: the surface stays {200, 401, 404} and the 500 path
-        # never fires for absent keys. Error classes ride the boto3
-        # client instance (stdlib+boto3 import contract,
-        # tests/unit/test_runtime_imports.py).
+        # NoSuchKey. All three "absent" codes — NoSuchKey, the listless
+        # NotFound variant, and AccessDenied — map to 404: the surface
+        # stays {200, 401, 404} and the 500 path never fires for absent
+        # keys. Error classes ride the boto3 client instance
+        # (stdlib+boto3 import contract).
         if e.response.get("Error", {}).get("Code") in {"NoSuchKey", "NotFound", "AccessDenied"}:
             if e.response["Error"]["Code"] == "AccessDenied":
                 # Ambiguous absent-vs-denied (no s3:ListBucket → live S3
                 # answers missing keys with AccessDenied). API stays 404,
                 # but the degradation signal is explicit in logs — a role
-                # regression must be grep-able, never silent (canonical
-                # review #2, PR #167). The requested key rides the line
-                # (T078, Gate-56 advisory A3): pure path data the
+                # regression must be grep-able, never silent. The
+                # requested key rides the line: pure path data the
                 # requester already sent — 404-vs-denied is diagnosable
                 # from CloudWatch alone.
                 print(
@@ -160,7 +156,7 @@ def _serve_s3(key: str) -> dict:
         return _response(200, obj["Body"].read().decode("utf-8"), content_type)
     except UnicodeDecodeError:
         # Corrupt/foreign object: treat as absent — the API surface stays
-        # {200, 401, 404} and "unreadable" never leaks a 500 (bot R2).
+        # {200, 401, 404} and "unreadable" never leaks a 500.
         return _not_found()
 
 
@@ -168,15 +164,15 @@ def _serve_latest(pr: int) -> dict:
     result = _state_table().query(
         IndexName="pr-runs-index",
         KeyConditionExpression=boto3.dynamodb.conditions.Key("pr_number").eq(pr),
-        ScanIndexForward=False,  # newest started_ts first (HLD §7 latest-run)
+        ScanIndexForward=False,  # newest started_ts first (ARCH §5.3)
         Limit=1,
     )
     items = result.get("Items", [])
     if not items:
         return _not_found()
-    # Subset semantics (bot F1, PR #149): DynamoDB reprojects a GSI item
-    # only on rewrite, so rows predating the run_id projection (spec
-    # #148) lack it until next write — return what exists, never 500.
+    # Subset semantics: DynamoDB reprojects a GSI item only on rewrite,
+    # so rows predating the run_id projection lack it until next write
+    # — return what exists, never 500.
     item = items[0]
     body = {
         k: item[k] for k in ("run_id", "sha", "status", "pipeline", "archive_s3_key") if k in item
@@ -187,7 +183,7 @@ def _serve_latest(pr: int) -> dict:
 def handler(event: dict, context) -> dict:  # noqa: ARG001 (Lambda signature)
     try:
         return _route(event)
-    except Exception:  # controlled 500 — no internals leak (bot F4/F2)
+    except Exception:  # controlled 500 — no internals leak
         return _response(500, json.dumps({"message": "internal error"}), "application/json")
 
 
@@ -201,7 +197,7 @@ def _route(event: dict) -> dict:
     path = urllib.parse.unquote(event.get("rawPath", "")).lstrip("/")
     segments = [s for s in path.split("/") if s]
     if any(seg in (".", "..") for seg in segments):
-        return _not_found()  # before ANY key construction (bot review #3)
+        return _not_found()  # before ANY key construction
 
     if _STATIC_RE.fullmatch(path):
         return _serve_s3(path)

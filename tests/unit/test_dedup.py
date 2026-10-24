@@ -12,8 +12,8 @@ Drives the REAL `ingress_handler.handler` with injected table/SQS doubles:
   `test_sqs_failure_does_not_mark_processed`
 
 All deterministic: fixed clock (`NOW`), fixed HMAC secret, no network.
-These probe T048's rows (HLD §2.1 steps 5–7; failure mode 4) at the
-ingress boundary; the worker-side convergence half is T047 scope.
+These probe the ARCHITECTURE.md §2.1 dedup/mark steps (failure mode 4)
+at the ingress boundary; worker-side convergence is out of scope here.
 """
 
 import hashlib
@@ -123,7 +123,7 @@ def test_replay_within_window_recognized():
     assert len(sqs.calls) == 1
     (mark,) = table.put_calls
     assert mark["pk"] == delivery_pk(GUID_1)
-    assert mark["ttl"] == NOW + DELIVERY_TTL_SECONDS  # 7-day window (HLD §2.4)
+    assert mark["ttl"] == NOW + DELIVERY_TTL_SECONDS  # 7-day window (ARCH §2.4)
 
     replay, table, sqs = invoke(event, table=table, sqs=sqs)
     assert replay == {"statusCode": 200, "body": ""}

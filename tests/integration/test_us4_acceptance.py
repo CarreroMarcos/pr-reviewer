@@ -1,4 +1,4 @@
-"""T050: US4 live acceptance harness (HLD §7.3 quickstart i; US4.AC2; SC-002).
+"""US4 live acceptance harness (ARCHITECTURE.md §8 criterion i; SC-002).
 
 Live-only test module: forces concurrent workers onto one PR and asserts
 the exactly-one-canonical-comment constitution holds under contention:
@@ -16,27 +16,26 @@ sorted-key JSON of the v1 schema), `send_message`d directly — the
 "duplicate messages" lever of QS-i. No webhook signing: the secret never
 enters this module.
 
-Revision truth (v1 false-pass lesson): `last_seen_sha` is an OBSERVATION
-watermark that superseded deliveries also advance (`_observe_superseded`,
-protocol.py) — it is NOT publish evidence. The comment's owning revision
-is `head_sha`, written by establish-(c) and finalized at publish.
+Revision truth: `last_seen_sha` is an observation watermark that
+superseded deliveries also advance (`_observe_superseded`, protocol.py)
+— it is not publish evidence. The comment's owning revision is
+`head_sha`, written by establish-(c) and finalized at publish.
 Convergence therefore asserts on `head_sha`, never `last_seen_sha`, and
-the test SETTLES first: both injected GUIDs must have a terminal
+the test settles first: both injected GUIDs must have a terminal
 worker-log line before any end-state assertion, so a late loser cannot
 mutate the comment after the asserts pass.
 
-Known edge (observed live, out of scope here): a delivery whose
-establish-fence reads GitHub PR-meta before the ref update propagates is
-superseded-observed, which advances `last_seen_sha` and routes later
-same-SHA deliveries down the (b) equality path (full re-review of the
-stored head, discarded at the post-review fence/claim). Spec-compliant
-(HLD: fence mismatch -> discard); this harness avoids it by injecting
-only after the webhook's establish-(c) is observable (status CLAIMED at
-the pushed head) and fails loudly (convergence budget) if that window is
-itself lost to fence lag.
+Known edge (out of scope here): a delivery whose establish-fence reads
+GitHub PR-meta before the ref update propagates is superseded-observed,
+which advances `last_seen_sha` and routes later same-SHA deliveries
+down the (b) equality path (full re-review of the stored head, discarded
+at the post-review fence/claim). Spec-compliant (fence mismatch ->
+discard); this harness avoids it by injecting only after the webhook's
+establish-(c) is observable (status CLAIMED at the pushed head) and
+fails loudly (convergence budget) if that window is lost to fence lag.
 
-Opt-in gate: the module SKIPS unless ACCEPTANCE_LIVE=1, so the default
-`pytest -q` path stays green without AWS access. The T050 verify is::
+Opt-in gate: the module skips unless ACCEPTANCE_LIVE=1, so the default
+`pytest -q` path stays green without AWS access. The verify is::
 
     ACCEPTANCE_LIVE=1 ACCEPTANCE_PR=<fixture pr number> \\
     uv run --frozen pytest tests/integration/test_us4_acceptance.py \\
@@ -128,9 +127,6 @@ def _live_gate() -> None:
             "harness pushes real commits).",
             pytrace=False,
         )
-
-
-# --- helpers --------------------------------------------------------------
 
 
 def _gh_api(*args: str) -> Any:
@@ -238,8 +234,8 @@ def _guid_terminal(guid: str, since_epoch: float) -> bool:
     discarded_*) for this delivery GUID at/after since_epoch.
 
     Scans a deep stream window fresh on every call — Lambda spreads
-    concurrent containers across streams (the T045 lesson: caching one
-    stream name races the writer container). Identity is matched on PARSED
+    concurrent containers across streams, so caching one stream name races
+    the writer container. Identity is matched on parsed
     fields (delivery_guid plus a published/discarded_* status), not
     substrings, so a line that merely mentions the GUID in another field
     cannot false-positive. The scanned stream/event count is left in

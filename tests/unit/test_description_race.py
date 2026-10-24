@@ -1,4 +1,4 @@
-"""Description-vs-diff race guard (hardening b).
+"""Description-vs-diff race guard.
 
 Drives the production `_make_review` review port: the diff transport serves
 PR meta, the LLM double returns a review containing a description-judging
@@ -111,7 +111,7 @@ class _StatefulDiffTransport:
         self._meta_hits += 1
         if self._meta_hits > 1 and self._fail_refetch:
             raise TimeoutError("meta refetch down")
-        # Review #9 LOW: 401 status (not just exception) must also degrade
+        # 401 status (not just exception) must also degrade
         # without consuming the refresh budget.
         if self._meta_hits > 1 and self._fail_status is not None:
             return HttpResponse(status=self._fail_status, body=b"{}", headers={})
@@ -125,23 +125,18 @@ class _StatefulDiffTransport:
             title, body = TITLE_A, BODY_B
             sha = SHA
         elif self._change_mode == "whitespace":
-            # Review #8 LOW: trailing-newline / spacing-only edit — not a
+            # Trailing-newline / spacing-only edit — not a
             # semantic change, so the guard must not trip.
             title, body = TITLE_A + "\n", BODY_A + "  \n"
             sha = SHA
         elif self._change_mode == "sha_only":
-            # Review #14 LOW: rebase/force-push mid-review — same title/body,
+            # Rebase/force-push mid-review — same title/body,
             # new head SHA. Must NOT trip the guard (sha is not compared).
             title, body = TITLE_A, BODY_A
             sha = SHA + "_rebased"
         elif self._change_mode == "null_body":
-            # Review #15 MEDIUM: GitHub returns null body for empty
-            # descriptions — the guard must not crash, must not trip
-            # (None coerces to "" which matches only if original was empty;
-            # here original BODY_A is non-empty, so None != BODY_A... but
-            # the guard must still not CRASH. Pin the no-crash behavior;
-            # the filter decision on None-vs-string is a product choice.
-            # We pin: no exception, review publishes.
+            # GitHub returns null body for empty descriptions — the guard
+            # must not crash (None coerces to ""); no exception, review publishes.
             title, body = TITLE_A, None
             sha = SHA
         else:
@@ -273,7 +268,7 @@ def test_filter_drops_only_description_findings():
 
 
 def test_filter_drop_path_renders_exact_expected_text():
-    # Review #6 MEDIUM: pin the full rendered output, not just fragments —
+    # Pin the full rendered output, not just fragments —
     # separator blank lines preserved, no sentinel alongside survivors.
     text, dropped = _drop_stale_description_findings(REVIEW_WITH_BOTH)
     assert dropped == 1
@@ -285,7 +280,7 @@ def test_filter_drop_path_renders_exact_expected_text():
 
 
 def test_filter_heading_case_variants_enter_filtering_mode():
-    # Review #6 LOW: the model controls the heading text; variants must
+    # The model controls the heading text; variants must
     # still enter filtering mode or the race guard is bypassed.
     for heading in ("## findings", "## FINDINGS", "## Findings"):
         body = (
@@ -304,7 +299,7 @@ def test_filter_heading_case_variants_enter_filtering_mode():
 
 
 def test_filter_heading_no_space_and_suffix_variants():
-    # Review #8 LOW: `##Findings` (no space) and `## Findings (note)`
+    # `##Findings` (no space) and `## Findings (note)`
     # must still enter filtering mode.
     for heading in ("##Findings", "## Findings (stale)"):
         body = (
@@ -323,9 +318,9 @@ def test_filter_heading_no_space_and_suffix_variants():
 
 
 def test_filter_regex_alternation_branches():
-    # Review #6 LOW: every _DESC_REF_RE alternation branch must drop;
+    # Every _DESC_REF_RE alternation branch must drop;
     # a refactor losing one branch would otherwise go unnoticed.
-    # Review #12 LOW: adds the `describes` verb and bare `the description`.
+    # Includes the `describes` verb and bare `the description`.
     bullets = [
         "- [MEDIUM] The pull request description is stale. Fix: update it.",
         '- [MEDIUM] The pr description claims "one file". Fix: update it.',
@@ -381,7 +376,7 @@ def test_meta_unchanged_passes_through():
 
 
 def test_meta_whitespace_only_change_does_not_trip_guard(caplog):
-    # Review #8 LOW: a trailing-newline / spacing-only edit is not a
+    # A trailing-newline / spacing-only edit is not a
     # semantic change — the guard must pass the text through untouched.
     with caplog.at_level("INFO", logger="worker_handler"):
         content, _ = _run(review_body=REVIEW_WITH_BOTH, changed=True, change_mode="whitespace")
@@ -391,7 +386,7 @@ def test_meta_whitespace_only_change_does_not_trip_guard(caplog):
 
 
 def test_meta_sha_only_change_does_not_trip_guard(caplog):
-    # Review #14 LOW: rebase/force-push mid-review (same title/body, new
+    # Rebase/force-push mid-review (same title/body, new
     # head SHA) must NOT trip the guard — sha is deliberately not compared.
     with caplog.at_level("INFO", logger="worker_handler"):
         content, transport = _run(
@@ -404,7 +399,7 @@ def test_meta_sha_only_change_does_not_trip_guard(caplog):
 
 
 def test_meta_null_body_does_not_crash_guard():
-    # Review #15 MEDIUM: GitHub returns null for empty body — the guard
+    # GitHub returns null for empty body — the guard
     # must not crash. Pin: review publishes (no AttributeError).
     # The filter decision on None-vs-string is pinned as-is: None coerces
     # to "", which differs from BODY_A, so the guard trips and filters.
@@ -417,7 +412,7 @@ def test_meta_null_body_does_not_crash_guard():
 
 
 def test_normalize_ws_none_coerces_to_empty():
-    # Review #15 MEDIUM: _normalize_ws(None) must not raise.
+    # _normalize_ws(None) must not raise.
     from worker_handler import _normalize_ws
 
     assert _normalize_ws(None) == ""
@@ -425,7 +420,7 @@ def test_normalize_ws_none_coerces_to_empty():
 
 
 def test_filter_hash_number_line_is_not_a_heading():
-    # Review #14 MEDIUM: `#5` (no space, CommonMark requires space) is NOT
+    # `#5` (no space, CommonMark requires space) is NOT
     # a heading — it must not exit Findings mode. As a lazy continuation
     # (no blank line), it drops with the bullet block; the critical assert
     # is that CODE_FINDING after it is still scanned (Findings mode held).
@@ -441,7 +436,7 @@ def test_filter_hash_number_line_is_not_a_heading():
 
 
 def test_filter_hash_number_after_blank_does_not_exit_findings():
-    # Review #14 MEDIUM: `#5` after a blank (not a continuation) survives
+    # `#5` after a blank (not a continuation) survives
     # as content and does not exit Findings mode.
     body = (
         "## Findings\n"
@@ -458,7 +453,7 @@ def test_filter_hash_number_after_blank_does_not_exit_findings():
 
 
 def test_normalize_ws_newline_to_space_is_not_a_change():
-    # Review #11 LOW: _normalize_ws joins on split(), so 'a\nb' and 'a b'
+    # _normalize_ws joins on split(), so 'a\nb' and 'a b'
     # normalize identically — a newline→space reflow is not a semantic change.
     from worker_handler import _normalize_ws
 
@@ -466,21 +461,21 @@ def test_normalize_ws_newline_to_space_is_not_a_change():
 
 
 def test_normalize_ws_tab_vs_space_is_not_a_change():
-    # Review #11 LOW: tab-vs-space indentation is whitespace-only.
+    # Tab-vs-space indentation is whitespace-only.
     from worker_handler import _normalize_ws
 
     assert _normalize_ws("\tindented") == _normalize_ws("    indented")
 
 
 def test_normalize_ws_added_word_is_a_change():
-    # Review #11 LOW: a genuinely reflowed body (word added) IS a change.
+    # A genuinely reflowed body (word added) IS a change.
     from worker_handler import _normalize_ws
 
     assert _normalize_ws("line one\nline two") != _normalize_ws("line one\nline two plus")
 
 
 def test_guard_no_findings_section_passes_through_byte_identical():
-    # Review #9 LOW: model text with no Findings heading at all — the
+    # Model text with no Findings heading at all — the
     # filter must not alter it or insert a sentinel.
     body = "## Summary\nAdds input validation.\n\n## Risk Notes\nNone.\n"
     text, dropped = _drop_stale_description_findings(body)
@@ -490,7 +485,7 @@ def test_guard_no_findings_section_passes_through_byte_identical():
 
 
 def test_filter_heading_ends_dropped_loose_span():
-    # Review #9 MEDIUM: a heading after a blank inside a dropped span ends
+    # A heading after a blank inside a dropped span ends
     # the span — the trailing section survives. The emptied Findings
     # section gets the sentinel; Risk Notes is untouched.
     body = "## Findings\n" + DESC_FINDING + "\n\n    indented loose.\n\n## Risk Notes\nNone.\n"
@@ -502,7 +497,7 @@ def test_filter_heading_ends_dropped_loose_span():
 
 
 def test_filter_dropped_block_at_end_of_input_gets_sentinel():
-    # Review #9 MEDIUM: dropped block at end of input — sentinel inserted
+    # Dropped block at end of input — sentinel inserted
     # exactly once, trailing blank handling pinned.
     body = "## Findings\n" + DESC_FINDING + "\n\n"
     text, dropped = _drop_stale_description_findings(body)
@@ -513,7 +508,7 @@ def test_filter_dropped_block_at_end_of_input_gets_sentinel():
 
 
 def test_filter_indented_heading_like_line_is_not_a_section_boundary():
-    # Review #9 LOW: an indented `##` line is a continuation, not a
+    # An indented `##` line is a continuation, not a
     # heading — it must not exit Findings mode mid-section.
     body = (
         "## Findings\n"
@@ -531,7 +526,7 @@ def test_filter_indented_heading_like_line_is_not_a_section_boundary():
 
 
 def test_filter_h3_findings_heading_enters_filtering_mode():
-    # Review #10 LOW: `### Findings` (h3) must enter filtering mode —
+    # `### Findings` (h3) must enter filtering mode —
     # _HEADING_RE matches it, so the findings check must too.
     body = "### Findings\n" + DESC_FINDING + "\n" + CODE_FINDING + "\n"
     text, dropped = _drop_stale_description_findings(body)
@@ -542,7 +537,7 @@ def test_filter_h3_findings_heading_enters_filtering_mode():
 
 
 def test_filter_h1_findings_heading_enters_filtering_mode():
-    # Review #12 LOW: `# Findings` (h1) must also enter filtering mode.
+    # `# Findings` (h1) must also enter filtering mode.
     body = "# Findings\n" + DESC_FINDING + "\n" + CODE_FINDING + "\n"
     text, dropped = _drop_stale_description_findings(body)
     assert dropped == 1
@@ -552,7 +547,7 @@ def test_filter_h1_findings_heading_enters_filtering_mode():
 
 
 def test_filter_heading_inside_balanced_fence_is_content():
-    # Review #12 MEDIUM: a `##` line inside a balanced fence is content,
+    # A `##` line inside a balanced fence is content,
     # not a section boundary — the fence must not be disabled mid-block.
     body = (
         "## Findings\n"
@@ -574,7 +569,7 @@ def test_filter_heading_inside_balanced_fence_is_content():
 
 
 def test_filter_fenced_code_block_passes_through_verbatim():
-    # Review #10 LOW: fenced code inside Findings is not scanned —
+    # Fenced code inside Findings is not scanned —
     # a fenced line matching _BULLET_RE must not be dropped.
     body = (
         "## Findings\n"
@@ -597,7 +592,7 @@ def test_filter_fenced_code_block_passes_through_verbatim():
 
 
 def test_filter_tilde_fence_passes_through_verbatim():
-    # Review #11 LOW: ~~~ fences get the same verbatim treatment as ```.
+    # ~~~ fences get the same verbatim treatment as ```.
     body = (
         "## Findings\n"
         + DESC_FINDING
@@ -615,7 +610,7 @@ def test_filter_tilde_fence_passes_through_verbatim():
 
 
 def test_filter_fence_inside_dropped_span_ends_span():
-    # Review #12 LOW: a fence boundary ends the dropped span — content
+    # A fence boundary ends the dropped span — content
     # after the fence (even indented) survives.
     body = (
         "## Findings\n"
@@ -634,7 +629,7 @@ def test_filter_fence_inside_dropped_span_ends_span():
 
 
 def test_filter_indented_fence_passes_through_verbatim():
-    # Review #13 LOW: fences indented up to 3 spaces (CommonMark) also
+    # Fences indented up to 3 spaces (CommonMark) also
     # toggle — their content must not be scanned as findings.
     body = (
         "## Findings\n"
@@ -654,7 +649,7 @@ def test_filter_indented_fence_passes_through_verbatim():
 
 
 def test_filter_unbalanced_fence_opener_passes_through_to_end():
-    # Review #13 LOW: pin the deliberate design decision — an unbalanced
+    # Pin the deliberate design decision — an unbalanced
     # fence (opener, no closer) keeps in_fence True to end-of-input, so
     # description-judging bullets after it are NOT dropped (fail-open).
     # Corrupting output is worse than a rare model-error bypass.
@@ -665,7 +660,7 @@ def test_filter_unbalanced_fence_opener_passes_through_to_end():
 
 
 def test_filter_orphan_fence_closer_does_not_enable_passthrough():
-    # Review #13 LOW: mirror case — an orphaned closer (no opener) toggles
+    # Mirror case — an orphaned closer (no opener) toggles
     # in_fence ON, so subsequent lines pass through verbatim. Pin it.
     body = "## Findings\n" + DESC_FINDING + "\n```\n" + CODE_FINDING + "\n"
     text, dropped = _drop_stale_description_findings(body)
@@ -677,7 +672,7 @@ def test_filter_orphan_fence_closer_does_not_enable_passthrough():
 
 
 def test_filter_loose_continuation_limited_to_single_blank():
-    # Review #11 LOW: 2+ blank lines end the dropped span — an unrelated
+    # 2+ blank lines end the dropped span — an unrelated
     # indented paragraph after multiple blanks survives.
     body = (
         "## Findings\n"
@@ -694,7 +689,7 @@ def test_filter_loose_continuation_limited_to_single_blank():
 
 
 def test_refetch_non_401_status_degrades_without_refresh(caplog):
-    # Review #10 LOW: non-401 HTTP errors (403, 500) on the re-fetch must
+    # Non-401 HTTP errors (403, 500) on the re-fetch must
     # also degrade gracefully without spending the refresh budget.
     for status in (403, 500):
         with caplog.at_level("WARNING", logger="worker_handler"):
@@ -763,7 +758,7 @@ def test_refetch_never_consumes_401_refresh_budget():
 
 
 def test_refetch_401_status_degrades_without_refresh(caplog):
-    # Review #9 LOW: a 401 STATUS (not just a raised exception) on the
+    # A 401 STATUS (not just a raised exception) on the
     # re-fetch must also degrade gracefully without spending the budget.
     with caplog.at_level("WARNING", logger="worker_handler"):
         with patch.object(worker_handler._Credentials, "refresh_once", Mock()) as mock_refresh:
@@ -789,7 +784,7 @@ def test_fanout_path_drops_description_finding_on_meta_change():
 
 
 def test_fanout_path_unchanged_meta_passes_through():
-    # Review #11 LOW: fanout + unchanged meta — passthrough, no filtering.
+    # Fanout + unchanged meta — passthrough, no filtering.
     content, transport = _run(
         review_body=REVIEW_WITH_BOTH, changed=False, fanout_body=REVIEW_WITH_BOTH
     )
@@ -799,7 +794,7 @@ def test_fanout_path_unchanged_meta_passes_through():
 
 
 def test_fanout_path_refetch_failure_degrades():
-    # Review #11 LOW: fanout + refetch failure — degrade, publish unfiltered.
+    # Fanout + refetch failure — degrade, publish unfiltered.
     with patch.object(worker_handler._Credentials, "refresh_once", Mock()) as mock_refresh:
         content, _ = _run(
             review_body=REVIEW_WITH_BOTH,
@@ -837,8 +832,8 @@ def test_meta_changed_without_description_findings_passes_through():
     assert EMPTY_FINDINGS_SENTINEL not in content
 
 
-# Review #1 follow-ups: block-span accounting, sentinel discipline,
-# log sanitization, and the pinned over-match contract.
+# Block-span accounting, sentinel discipline, log sanitization,
+# and the pinned over-match contract.
 
 
 def test_filter_drops_continuation_lines_with_bullet():
@@ -965,7 +960,7 @@ def test_filter_same_indent_sibling_survives():
 
 
 def test_filter_sanitizes_logged_finding(caplog):
-    # Review #6 LOW: the full [\x00-\x1f] class (ANSI escapes, NUL) must
+    # The full [\x00-\x1f] class (ANSI escapes, NUL) must
     # not reach the log, and the 160-char truncation is pinned.
     injected = (
         '- [MEDIUM] The PR description says "x"\x1b[31mred\x00 ' + "y" * 200 + "\n"

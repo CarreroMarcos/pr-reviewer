@@ -34,7 +34,7 @@ def test_exact_hit_with_severity_agreement() -> None:
 
 def test_line_window_hit_and_severity_mismatch() -> None:
     metrics = score_output("c", _output("- [MEDIUM] `src/app/db.py:16` — SQLi? Fix: x."), _MANIFEST)
-    assert (metrics.hits, metrics.missed) == (1, 0)  # |16-14| <= 2
+    assert (metrics.hits, metrics.missed) == (1, 0)
     assert metrics.severity_agreement == "0/1"
 
 

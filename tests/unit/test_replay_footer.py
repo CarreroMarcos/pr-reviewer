@@ -1,6 +1,6 @@
 """T075: the replay-link footer on the canonical comment.
 
-Contract (spec PR #168): the footer is appended deterministically at
+Contract (PR #168): the footer is appended deterministically at
 publish — code-side, never model-side; omitted entirely when
 `REPLAY_BASE_URL` is unset; exactly-once under update-in-place
 re-publish (a body already carrying the mark is never re-appended).
@@ -37,7 +37,7 @@ def test_footer_exactly_once_on_republish(monkeypatch):
 
 
 def test_quoted_phrase_without_link_does_not_suppress(monkeypatch):
-    """PR #169 r1 LOW: a model-quoted 'Full agent replay' phrase (no link)
+    """PR #169: a model-quoted 'Full agent replay' phrase (no link)
     must not read as an existing footer — idempotency anchors to the
     exact footer link, so the footer still lands exactly once."""
     monkeypatch.setenv("REPLAY_BASE_URL", BASE)
@@ -48,7 +48,7 @@ def test_quoted_phrase_without_link_does_not_suppress(monkeypatch):
 
 
 def test_decoy_link_for_different_run_does_not_suppress(monkeypatch):
-    """PR #169 r2 LOW: only the EXACT footer for this run suppresses —
+    """PR #169: only the EXACT footer for this run suppresses —
     a decoy link (attacker-influenced text) for another pr/sha must not."""
     monkeypatch.setenv("REPLAY_BASE_URL", BASE)
     decoy = (

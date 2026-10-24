@@ -1,4 +1,4 @@
-"""003-T1: review-header pipeline contract.
+"""Review-header pipeline contract.
 
 Drives the production worker `handler` end to end (injected fakes, fixed
 clocks) and pins the canonical-comment header behavior:
@@ -201,7 +201,7 @@ class _BotoShapedAdapter:
         )
 
     def delete_item(self, **kwargs):
-        """HLD-004 D9 mutex-release passthrough (T027 port extension)."""
+        """Mutex-release passthrough."""
         return self._inner.delete_item(
             Key=kwargs["Key"],
             ConditionExpression=kwargs["ConditionExpression"],

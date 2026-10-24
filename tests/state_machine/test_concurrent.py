@@ -1,5 +1,4 @@
-"""T047: concurrent-duplicate probes at the worker boundary (US4.AC2–AC3;
-FR-012; HLD §5.2 replay residual).
+"""Concurrent-duplicate probes at the worker boundary.
 
 Drives the REAL `worker_handler.handler` with a stateful comment-store
 double (GET lists previously POSTed comments, so duplication — not just a
@@ -228,7 +227,7 @@ class Harness:
 
 def _seed_active(table, *, head, gen, comment):
     """Faithful settled state: ACTIVE with comment, NO lease (finalize
-    releases it, HLD §3.2)."""
+    releases it, ARCH §3.1)."""
     table.items[PK] = {
         "pk": PK,
         "status": "ACTIVE",

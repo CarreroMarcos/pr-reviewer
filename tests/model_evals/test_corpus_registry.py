@@ -1,15 +1,12 @@
-"""T037/T038: corpus registry + defect accounting (HLD D8 Corpus pin).
+"""Corpus registry + defect accounting (HLD D8 Corpus pin).
 
-The on-disk CORPUS registry grows 15 → 20 (T037: +3 tests-gap, +2
-subtle-true) → 24 (T038: +4 verifier traps); ground-truth defects go
-13 → 18 with the +5 (one planted defect each) while traps contribute 0.
-The scored vocabulary stays frozen: "13 seeded" always means the
+The on-disk CORPUS registry holds 24 cases (13 scored + 3 tests-gap +
+2 subtle-true + 4 verifier traps + 2 robustness); ground-truth defects
+total 18 (one planted defect per scored/growth case, traps contribute
+0). The scored vocabulary stays frozen: "13 seeded" always means the
 pre-growth scored set (HLD D8) — new classes register in CORPUS for the
 capture/harness surface but never join SEED_SCORING_IDS until a capture
-run pins their outputs (T039/T045).
-
-T038 rows (joint total, trap pool, vetting records, prompt-identity)
-are appended below the T037 interim rows.
+run pins their outputs.
 """
 
 import fixtures
@@ -49,12 +46,11 @@ def _defects(*case_ids):
     return sum(len(_manifest(case_id)["expected_findings"]) for case_id in case_ids)
 
 
-# --- T037 interim: 20 cases / 18 defects --------------------------------------------------------
+# --- Non-trap cohort: 20 cases / 18 defects ---
 
 
 def test_nontrap_cohort_still_20():
-    """T037 interim total, evolved for the joint corpus: the 20 non-trap
-    cases persist unchanged (13 scored + 5 growth + 2 robustness) holding
+    """The 20 non-trap cases (13 scored + 5 growth + 2 robustness) hold
     all 18 defects."""
     nontrap = [cid for cid in fixtures.CORPUS if cid not in fixtures.TRAP_IDS]
     assert len(nontrap) == 20
@@ -102,10 +98,10 @@ def test_new_manifests_wellformed():
 
 
 def test_trap_manifests_wellformed():
-    """Bot R2: the trap manifest schema is pinned, not just its empty
-    findings — exact key set matching `_trap_builder`, single-path
-    changed_paths, the shared forbidden classes, the `trap` marker True,
-    and the ≤60-line budget."""
+    """The trap manifest schema is pinned, not just its empty findings —
+    exact key set matching `_trap_builder`, single-path changed_paths,
+    the shared forbidden classes, the `trap` marker True, and the
+    ≤60-line budget."""
     for case_id in fixtures.TRAP_IDS:
         diff_text, manifest, _meta = fixtures.CORPUS[case_id]()
         assert set(manifest) == {
@@ -125,7 +121,7 @@ def test_trap_manifests_wellformed():
         assert len(diff_text.splitlines()) <= 60
 
 
-# --- T038 joint total: 24 cases / 18 defects; traps add 0 ----------------------------------
+# --- Joint total: 24 cases / 18 defects; traps add 0 ---
 
 
 def test_joint_total_24_18():
@@ -188,9 +184,9 @@ def test_vetting_modes():
 
 
 def test_trap_nonce_absent_from_finding_fields():
-    """HLD §5 boundary-break signal: no trap's diff text or decoy
-    finding fields may carry a `nonce="..."` delimiter (recomputed from
-    the builders, not trusted from the records)."""
+    """Boundary-break signal (ARCHITECTURE.md §5.2): no trap's diff text
+    or decoy finding fields may carry a `nonce="..."` delimiter
+    (recomputed from the builders, not trusted from the records)."""
     import json
 
     for case_id in fixtures.TRAP_IDS:

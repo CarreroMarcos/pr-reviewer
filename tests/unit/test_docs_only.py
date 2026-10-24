@@ -3,8 +3,7 @@
 Every changed file prose-suffixed (.md/.txt/.rst/.mdx, exact case) ⇒
 single-pass; ONE code file anywhere keeps the full battery; empty or
 attribute-less file sets never skip. Path prefixes are deliberately not
-consulted (PR #173 r1: docs/ must never route executable code away from
-the battery).
+consulted (docs/ must never route executable code away from the battery).
 """
 
 from types import SimpleNamespace
@@ -33,7 +32,7 @@ def test_one_code_file_keeps_fanout():
 
 
 def test_code_under_docs_keeps_fanout():
-    """PR #173 r1 MEDIUM: a docs/ path never routes executable code away
+    """PR #173: a docs/ path never routes executable code away
     from the security battery — classification is suffix-only."""
     assert not _docs_only(SimpleNamespace(files=(dfile("docs/examples/x.py"),)))
     assert not _docs_only(SimpleNamespace(files=(dfile("docs/Makefile"),)))
@@ -48,8 +47,7 @@ def test_suffixes_are_exact():
     assert not _docs_only(SimpleNamespace(files=(dfile("notes.md.bak"),)))
     assert _docs_only(SimpleNamespace(files=(dfile("docs.md"),)))
     # Case-sensitive by design — fail-safe direction: an uppercase suffix
-    # fans out (full battery) rather than silently widening the skip
-    # (Gate-58 coverage-2 pin).
+    # fans out (full battery) rather than silently widening the skip.
     assert not _docs_only(SimpleNamespace(files=(dfile("README.MD"),)))
 
 

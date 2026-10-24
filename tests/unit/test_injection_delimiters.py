@@ -1,5 +1,5 @@
-"""SPR-105 T020: prompt-assembly + nonced-delimiter contract tests
-(HLD-004 §5 items 1, 4).
+"""T020: prompt-assembly + nonced-delimiter contract tests
+(ARCHITECTURE.md §5.2).
 
 Stage nonce = `secrets.token_hex(8)` (16 hex chars), fresh per
 model-visible prompt string; specialist prompts carry NO nonce;
@@ -13,9 +13,6 @@ prose, instructions, or structured fields.
 Assembly is pure string mechanics (no stage-signature changes, no
 run_fanout wiring — the homeless assembly ticket owns integration), so
 these tests use miniature templates, not the real prompt files.
-
-RED state: `common.fanout` has no assembly symbol — collection errors
-on import.
 """
 
 import json
@@ -124,10 +121,10 @@ def test_specialist_diff_fenced_verbatim_no_escaping():
     # 4-backtick fence (CommonMark: closing fence >= opening fence) so a
     # diff containing ``` lines cannot close the fence early — the fence
     # length is implementation detail; the contract pins verbatim +
-    # fenced + no escaping/mutation (disclosed with the Gate-12 fix).
+    # fenced + no escaping/mutation.
     fenced = "````\n" + NASTY_DIFF + "\n````"
     assert fenced in prompt
-    # Single-pass substitution (Gate-6(a)): the template slot is gone,
+    # Single-pass substitution: the template slot is gone,
     # but the diff's OWN slot-looking literals survive exactly once.
     assert prompt.count("{{DIFF}}") == 1
     assert prompt.count("{{ACCEPTED_RESIDUALS}}") == 1

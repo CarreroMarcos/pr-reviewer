@@ -1,4 +1,4 @@
-"""SPR-59: offline unit coverage for the US5 harness state discipline.
+"""Offline unit coverage for the US5 harness state discipline.
 
 Loads test_us5_acceptance.py as a side module (env fakes satisfy its
 opt-in gate) and exercises the disk-only machinery plus the redrive

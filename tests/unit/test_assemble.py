@@ -1,12 +1,10 @@
-"""T029: comment assembly contract (HLD §2.3 item 7, §2.7, §2.8; FR-001, FR-004, FR-020).
+"""T029: comment assembly contract (ARCHITECTURE.md §2.3, §2.7, §2.8;
+FR-001, FR-004, FR-020).
 
 Assembly embeds the worker-injected marker (T008) and the `validate()` gate
 verdict (T019) is required before any publish-ready content is returned;
 §2.7 section shape with the empty-findings sentinel
 ("No significant issues found."); invalid content → publish refused.
-
-Red-first: this file imports `common.assemble`, which does not exist yet,
-so collection fails with ModuleNotFoundError until T033 implements it.
 """
 
 from datetime import datetime, timedelta
@@ -36,7 +34,7 @@ _FINDING_B = (
 
 
 def review_body(*, findings=None) -> str:
-    """Model-shaped §2.7 review content (marker never comes from the model)."""
+    """Model-shaped ARCHITECTURE.md §2.7 content (marker never from the model)."""
     if findings is None:
         findings = (_FINDING_A, _FINDING_B)
     findings_block = "\n".join(findings) if findings else "No significant issues found."
@@ -140,7 +138,7 @@ def test_truncated_comment_still_passes_gate():
     assert assemble.TRUNCATION_NOTE in result.content
 
 
-# --- DiffResult.files serialization (Gate 2: sorted-filename order) ----------
+# --- DiffResult.files serialization (sorted-filename order) ------------------
 
 
 def test_render_diff_text_serializes_files_in_sorted_filename_order():
@@ -202,7 +200,7 @@ def test_no_publish_ready_content_returned_on_refusal():
     assert seen[0].verdict.ok is False
 
 
-# --- marker-spoof propagation (boundary 7: no self-referential publish) -------
+# --- marker-spoof propagation (no self-referential publish) -------------------
 
 
 def test_spoofed_model_content_refuses_publication_with_marker_spoofed():
@@ -221,12 +219,10 @@ def test_cross_repo_spoof_in_model_content_refuses_publication():
     assert "marker_spoofed" in exc_info.value.verdict.reasons
 
 
-# --- AssembleError contract (boundary 7; T034 wiring, test-side pin) -----------
-# Per the HLD §2.3 item 8 validation row, assembled-comment refusal is the
-# complete-and-alert (non-retryable) class: `AssembleError` is a `ValueError`
-# carrying the failing verdict — never a transient/queue-retry signal. The
-# worker (T034/T054) owns the wiring; these tests pin the emission side so
-# any reclassification is a conscious diff.
+# --- AssembleError contract ---------------------------------------------------
+# ARCHITECTURE.md §2.3: assembled-comment refusal is complete-and-alert
+# (non-retryable) — `AssembleError` is a `ValueError` carrying the failing
+# verdict, never a transient/queue-retry signal.
 
 
 def test_assemble_error_is_value_error_not_transient():
@@ -256,7 +252,7 @@ def test_whitespace_refusal_is_non_retryable_validation_failure():
     assert "missing_sections" in exc_info.value.verdict.reasons
 
 
-# --- 003-T1 review header ----------------------------------------------------
+# --- review header -----------------------------------------------------------
 # Stamp literals below were computed once via `TZ=America/Los_Angeles date
 # -d @EPOCH "+%b %-d, %-I:%M %p"` and cross-checked against python/zoneinfo.
 
@@ -331,7 +327,7 @@ def test_header_first_review_number_one():
     assert "**Review #1 · updated Jan 15, 9:05 AM PT**" in result.content
 
 
-# --- 003-T2 review payload -----------------------------------------------------
+# --- review payload ------------------------------------------------------------
 
 
 def payload(**kwargs):

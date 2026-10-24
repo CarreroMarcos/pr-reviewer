@@ -1,4 +1,4 @@
-"""T028: LLM chat-completions contract tests (HLD §2.3 item 5, §2.7).
+"""T028: LLM chat-completions contract tests (ARCHITECTURE.md §2.3, §2.7).
 
 Stubbed transport — never network: temperature 0.2 sent, model/endpoint
 from injected config, timeouts connect 2 s / read env-configurable
@@ -164,8 +164,8 @@ def test_temperature_sent_exactly():
 
 def test_thinking_disabled_sent_for_glm_model_on_glm_host():
     # GLM reasoning defaults on (~1.3K tokens, ~45s) and busts the ≤15s
-    # comment bar (HLD §2.2 (b)) — the payload must pin it off for GLM
-    # endpoints (surfaced live by the T035 acceptance run).
+    # latency bar (ARCHITECTURE.md §7) — the payload must pin it off for
+    # GLM endpoints.
     invoke(endpoint="https://api.z.ai/v1/chat/completions")
     _, request = last_request()
     body = json.loads(request["body"])
@@ -173,7 +173,7 @@ def test_thinking_disabled_sent_for_glm_model_on_glm_host():
 
 
 def test_thinking_omitted_for_glm_model_on_non_glm_host():
-    # Portability gate (SPR-62): the `thinking` key is GLM-specific — a GLM
+    # Portability: the `thinking` key is GLM-specific — a GLM
     # model pointed at a non-GLM host must not receive it.
     invoke()
     _, request = last_request()
@@ -400,12 +400,11 @@ def test_module_surface():
     assert issubclass(llm.LlmError, Exception)
 
 
-# --- retryability contract pin (boundary 6; T054/T051 wiring, test-side) --------
-# The client emits the error taxonomy; the queue/worker owns retry. Today
+# --- retryability contract pin --------------------------------------------------
+# The client emits the error taxonomy; the queue/worker owns retry.
 # `bad_endpoint` (config/usage fault) and persistent `invalid_response`
-# surface as `LlmError` exactly like transient faults — T054/T051 own mapping
-# them to NON-retryable. These tests pin CURRENT emission so that flip is a
-# conscious diff. No production-behavior edits here.
+# surface as `LlmError` exactly like transient faults — these tests pin
+# that emission so any reclassification is a conscious diff.
 
 
 def test_empty_api_key_is_bad_endpoint_today():
@@ -518,14 +517,12 @@ def test_close_failure_never_masks_success():
     assert result.content == COMPLETION_TEXT
 
 
-# --- SPR-58: typed invalid_key closure ----------------------------------------
-# Live incident: a trailing-newline API key crashed invisibly (bare
-# ValueError from `http.client.putheader`, whose message embeds the full
-# `Bearer <API KEY>` value) and spun to the DLQ. These pins close that
-# hole: construction faults surface as typed `LlmError("invalid_key")`
-# with no key material in the message, and the escape probe pins the
-# realistic transport-fault inventory (no blanket `except Exception` in
-# product code).
+# --- typed invalid_key closure --------------------------------------------------
+# A trailing-newline API key must not crash as a bare ValueError from
+# `http.client.putheader` — its message embeds the full `Bearer <key>`
+# value, leaking the key. Construction faults surface as typed
+# `LlmError("invalid_key")` with no key material in the message, and the
+# escape probe pins the realistic transport-fault inventory.
 
 
 def _validating_factory(seen=None):
@@ -554,8 +551,8 @@ def _validating_factory(seen=None):
 
 @pytest.mark.parametrize("suffix", ["\n", "\r", "\r\n"])
 def test_newline_suffixed_key_is_invalid_key(suffix):
-    """Trailing-newline key (the live incident) → typed `invalid_key`;
-    the key never appears in the exception message."""
+    """Trailing-newline key → typed `invalid_key`; the key never
+    appears in the exception message."""
     key = API_KEY + suffix
     with pytest.raises(LlmError) as exc_info:
         invoke(api_key=key, _connection_factory=_validating_factory())

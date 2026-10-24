@@ -1,11 +1,10 @@
-"""T043: stale-event paths at the worker boundary (US3.AC1–AC2; FR-014,
-FR-015; HLD §3.3; failure modes 6–7).
+"""Stale-event paths at the worker boundary.
 
 Drives the REAL `worker_handler.handler` with scripted collaborators to pin
 the two stale clauses:
 
 * Clause A — older-SHA event rejected at establish with `last_seen_sha`
-  still recorded (HLD §3.3 step 1: the most recently observed webhook SHA
+  still recorded (ARCH §3.2 step 1: the most recently observed webhook SHA
   is recorded regardless of acceptance):
   `test_superseded_event_records_last_seen_sha`,
   `test_successive_stale_events_keep_recording_latest_observation`
@@ -13,8 +12,7 @@ the two stale clauses:
   GitHub write; a stale event never mutates the canonical comment:
   `test_fence_mismatch_aborts_before_any_github_write`,
   `test_stale_event_leaves_canonical_comment_untouched`
-* Logging (T044 half) — superseded/stale outcomes carry the HLD §4.3
-  `stale_discarded` metric:
+* Logging — superseded/stale outcomes carry the `stale_discarded` metric:
   `test_stale_outcomes_log_stale_discarded`
 
 All tests are deterministic: fixed clock (`NOW`), scripted transports, no
@@ -301,7 +299,7 @@ class FlakyObserveTable:
 
 
 def test_observe_throttle_still_discards_without_review_or_publish():
-    """Gate-3 F3: the observation is best-effort, never correctness. A
+    """The observation is best-effort, never correctness. A
     throttle/transport fault on the advance write warns and discards —
     review stays skipped, nothing is published, no Lambda error, no retry
     (propagating would convert discards into DLQ entries under throttle
@@ -355,10 +353,10 @@ def test_stale_event_leaves_canonical_comment_untouched():
 
 
 def test_injected_sha_ahead_of_api_consistency_discards_via_observation():
-    """Gate-10 advisory carry (fence-lag edge): a forged delivery whose SHA
+    """Fence-lag edge: a forged delivery whose SHA
     was never pushed arrives while the record and the live head agree on
     SHA_B — the injection beats GitHub API consistency, so establish cannot
-    confirm it. HLD-compliant discard as superseded with the observation
+    confirm it. Discard as superseded with the observation
     recorded: `last_seen_sha` advances to the injected SHA, head /
     generation / comment / lease are untouched, review never runs, GitHub
     is never touched, and the `stale_discarded` line is emitted."""
@@ -380,36 +378,32 @@ def test_injected_sha_ahead_of_api_consistency_discards_via_observation():
 
 
 def test_repeat_stale_sha_after_observation():
-    """Gate-3 F2/D2 — stale-repeat cost, pinned as OBSERVED (see below).
+    """Stale-repeat cost, pinned as OBSERVED (see below).
 
     Setup is the faithful settled state: ACTIVE, live head B, NO lease
-    (finalize releases it, HLD §3.2). After stale A is observed
+    (finalize releases it, ARCH §3.1). After stale A is observed
     (`last_seen_sha` = A), a second IDENTICAL A matches the (b) equality
     path (incoming == `last_seen_sha`) — which proceeds with the STORED
     head B — and runs a FULL redundant review + PATCH of the canonical
     comment with fresh B content before finalizing. Nothing is wrong
     content-wise (the comment carries a current-head review; generation
     does not churn), but the cost is a full publish, not a cheap discard:
-    pre-T044 the repeat was a review-free superseded discard, and the T044
-    observation extends (b) hits to repeat-stale events.
+    Without the observation write the repeat would be a review-free
+    superseded discard; the observation extends (b) hits to repeat-stale
+    events.
 
-    LOUD DEVIATION from the H2 brief as specified: it predicted a full
-    review ending in DISCARDED_STALE with no publish ("claim-fails on head
-    mismatch"). That mechanism does not exist — (b) returns the stored
-    head by construction, so the claim cannot fail on head mismatch in a
-    single-threaded run; with no live lease the claim succeeds and the run
-    publishes. (With a live foreign lease the same repeat yields
-    DISCARDED_CLAIM_HELD after one review — also not STALE.) The behavior
-    below is the unmodified code's actual answer; the brief's assertions
-    are not satisfiable without new behavior.
+    Why not DISCARDED_STALE: (b) returns the stored head by construction,
+    so the claim cannot fail on head mismatch in a single-threaded run;
+    with no live lease the claim succeeds and the run publishes. (With a
+    live foreign lease the same repeat yields DISCARDED_CLAIM_HELD after
+    one review — also not STALE.)
 
-    For Mars: gating (b) on `head_sha` as well (incoming must equal BOTH
+    Gating (b) on `head_sha` as well (incoming must equal BOTH
     `last_seen_sha` and the stored head) would restore the cheap superseded
-    discard for repeat-stale while preserving true idempotent redelivery —
-    this finding makes that alternative MORE urgent than Gate 3 assumed.
-    Deliberately NOT implemented here (new behavior, needs its own ticket).
-    Bounded today: exact-repeat stale events are rare, and the queue's
-    maxReceiveCount caps redelivery; reconcile-converged, never wrong."""
+    discard for repeat-stale while preserving true idempotent redelivery;
+    that is new behavior and is NOT implemented here. Bounded today:
+    exact-repeat stale events are rare, and the queue's maxReceiveCount
+    caps redelivery; reconcile-converged, never wrong."""
     table = InMemoryTable()
     github = StatefulGitHub(comments=[{"id": STORED_ID, "body": "review for B " + MARKER}])
     table.items[PK] = {
@@ -438,12 +432,12 @@ def test_repeat_stale_sha_after_observation():
     assert item["comment_id"] == STORED_ID
 
 
-# --- logging (T044 half): the HLD §4.3 stale_discarded metric ---
+# --- logging: the stale_discarded metric ---
 
 
 def test_stale_outcomes_log_stale_discarded():
     """Superseded and fence-stale outcomes both carry `stale_discarded`
-    true in the fixed-field event (HLD §4.3 review metrics)."""
+    true in the fixed-field event."""
     h = Harness(meta=[(200, SHA_B)])
     _seed(h.table, head=SHA_B, gen=3, comment=STORED_ID)
     assert h.run(SHA_A, GUID_B) == {"ok": True, "results": ["discarded_superseded"]}

@@ -1,4 +1,5 @@
-"""T026: ingress gating unit tests (HLD §2.1; US1.AC4; FR-006–FR-008).
+"""T026: ingress gating unit tests (ARCHITECTURE.md §2.1; US1.AC4;
+FR-006–FR-008).
 
 Full-string constant-time HMAC compare, body >1 MiB → 413 pre-decode,
 event-type gate, action allow-list incl. `reopened` / draft skip → 200
@@ -175,7 +176,7 @@ def test_wrong_secret_rejected_end_to_end():
 
 
 def test_every_disposition_logs_structured_status_line(capsys):
-    """G6-F3 (SPR-62): every ingress disposition emits exactly one structured
+    """Every ingress disposition emits exactly one structured
     status line (`statusCode` + `decision` + `reason` via `common.logs`), so
     the 401-spike alarm's filter { $.statusCode = 401 } has signal to match
     and gate decisions are queryable."""
@@ -427,7 +428,7 @@ def test_sqs_failure_returns_500_without_marking():
     assert table.put_calls == []
 
 
-# --- QA-A red (F1): hostile envelope shapes discard with 200, never raise ---
+# --- hostile envelope shapes discard with 200, never raise ---------------------
 
 
 def _signed_hostile_event(payload):
@@ -437,10 +438,9 @@ def _signed_hostile_event(payload):
 
 
 def test_unhashable_action_discarded():
-    # Given an HMAC-valid payload whose action is unhashable (list)
+    # An HMAC-valid payload whose action is unhashable (list)
     payload = make_payload()
     payload["action"] = ["opened"]
-    # When ingress handles it Then 200 discard, nothing enqueued or marked
     table, sqs = FakeTable(), FakeSQS()
     response = handler(
         _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
@@ -451,10 +451,9 @@ def test_unhashable_action_discarded():
 
 
 def test_string_repository_discarded():
-    # Given an HMAC-valid payload with a string where the repository object belongs
+    # An HMAC-valid payload with a string where the repository object belongs
     payload = make_payload()
     payload["repository"] = "evil-string"
-    # When ingress handles it Then 200 discard, nothing enqueued or marked
     table, sqs = FakeTable(), FakeSQS()
     response = handler(
         _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
@@ -465,10 +464,9 @@ def test_string_repository_discarded():
 
 
 def test_string_sender_discarded():
-    # Given an HMAC-valid payload with a string where the sender object belongs
+    # An HMAC-valid payload with a string where the sender object belongs
     payload = make_payload()
     payload["sender"] = "octocat"
-    # When ingress handles it Then 200 discard, nothing enqueued or marked
     table, sqs = FakeTable(), FakeSQS()
     response = handler(
         _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
@@ -479,10 +477,9 @@ def test_string_sender_discarded():
 
 
 def test_string_head_discarded():
-    # Given an HMAC-valid payload with a string where the head object belongs
+    # An HMAC-valid payload with a string where the head object belongs
     payload = make_payload()
     payload["pull_request"]["head"] = HEAD_SHA
-    # When ingress handles it Then 200 discard, nothing enqueued or marked
     table, sqs = FakeTable(), FakeSQS()
     response = handler(
         _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
@@ -493,10 +490,9 @@ def test_string_head_discarded():
 
 
 def test_list_base_discarded():
-    # Given an HMAC-valid payload with a list where the base object belongs
+    # An HMAC-valid payload with a list where the base object belongs
     payload = make_payload()
     payload["pull_request"]["base"] = [BASE_SHA]
-    # When ingress handles it Then 200 discard, nothing enqueued or marked
     table, sqs = FakeTable(), FakeSQS()
     response = handler(
         _signed_hostile_event(payload), None, _table=table, _sqs=sqs, _secret=FIXED_SECRET
@@ -506,41 +502,41 @@ def test_list_base_discarded():
     assert table.put_calls == []
 
 
-# --- QA-A: header handling ---------------------------------------------------
+# --- header handling ---------------------------------------------------
 
 
 def test_get_header_rejects_non_dict_headers():
-    # Given a non-dict headers shape Then lookup yields nothing
+    # A non-dict headers shape — lookup yields nothing
     assert get_header(["X-GitHub-Event"], "x-github-event") is None
     assert get_header(None, "x-github-event") is None
 
 
 def test_get_header_rejects_non_string_value():
-    # Given a numeric header value Then lookup yields nothing (→ 401 downstream)
+    # A numeric header value — lookup yields nothing (→ 401 downstream)
     assert get_header({"X-GitHub-Event": 123}, "x-github-event") is None
 
 
 def test_non_string_signature_rejected():
-    # Given non-string signature shapes Then verification fails closed
+    # Non-string signature shapes — verification fails closed
     raw = raw_of(make_payload())
     assert verify_signature(FIXED_SECRET, raw, 12345) is False
     assert verify_signature(FIXED_SECRET, raw, ["sha256=" + "0" * 64]) is False
 
 
 def test_empty_hex_suffix_rejected():
-    # Given a bare prefix with no hex Then verification fails closed
+    # A bare prefix with no hex — verification fails closed
     assert verify_signature(FIXED_SECRET, raw_of(make_payload()), "sha256=") is False
 
 
 def test_whitespace_padded_signature_rejected():
-    # Given a valid signature padded with whitespace Then it fails closed:
+    # A valid signature padded with whitespace — it fails closed:
     # the gate never strips — exact full-string match or 401.
     raw = raw_of(make_payload())
     assert verify_signature(FIXED_SECRET, raw, " " + sign(raw) + " ") is False
 
 
 def test_bytes_secret_verifies():
-    # Given a bytes webhook secret Then the bytes path verifies a matching signature
+    # A bytes webhook secret — the bytes path verifies a matching signature
     import hashlib
     import hmac as hmac_module
 
@@ -550,17 +546,16 @@ def test_bytes_secret_verifies():
     assert verify_signature(b"other-key", raw, expected) is False
 
 
-# --- QA-A: body normalization ------------------------------------------------
+# --- body normalization ------------------------------------------------
 
 
 def test_non_string_body_treated_as_empty():
-    # Given a non-string wire body Then normalization yields empty bytes (→ 401, never crash)
+    # A non-string wire body — normalization yields empty bytes (→ 401, never crash)
     assert normalize_body({"body": 12345, "headers": {}}) == b""
 
 
 def test_non_numeric_content_length_ignored():
-    # Given garbage Content-Length with a valid signed delivery
-    # When ingress handles it Then the wire gate decides: 202 accepted
+    # Garbage Content-Length with a valid signed delivery
     raw = raw_of(make_payload())
     event = make_event(raw, sign(raw), headers_extra={"Content-Length": "not-a-number"})
     response, _, sqs = invoke(event)
@@ -569,7 +564,7 @@ def test_non_numeric_content_length_ignored():
 
 
 def test_content_length_within_bound_proceeds():
-    # Given an honest Content-Length under the cap Then the delivery proceeds
+    # An honest Content-Length under the cap — the delivery proceeds
     raw = raw_of(make_payload())
     event = make_event(raw, sign(raw), headers_extra={"Content-Length": str(len(raw))})
     response, _, sqs = invoke(event)
@@ -578,7 +573,7 @@ def test_content_length_within_bound_proceeds():
 
 
 def test_valid_base64_body_accepted():
-    # Given a base64-flagged delivery of valid signed bytes Then 202 with one enqueue
+    # A base64-flagged delivery of valid signed bytes — 202 with one enqueue
     import base64 as base64_module
 
     raw = raw_of(make_payload())
@@ -592,7 +587,7 @@ def test_valid_base64_body_accepted():
 
 
 def test_invalid_base64_body_rejected_as_unauthenticated():
-    # Given undecodable wire bytes Then authenticity is unestablishable → 401, nothing touched
+    # Undecodable wire bytes — authenticity is unestablishable → 401, nothing touched
     event = make_event(b"!!!-not-base64-!!!", "sha256=" + "0" * 64)
     event["isBase64Encoded"] = True
     table, sqs = FakeTable(), FakeSQS()
@@ -602,25 +597,25 @@ def test_invalid_base64_body_rejected_as_unauthenticated():
     assert sqs.calls == []
 
 
-# --- QA-A: envelope-body extraction ------------------------------------------
+# --- envelope-body extraction ------------------------------------------
 
 
 def test_non_object_payload_yields_no_envelope():
-    # Given non-dict payload shapes Then no envelope (→ 200 downstream)
+    # Non-dict payload shapes — no envelope (→ 200 downstream)
     assert build_envelope_body(["opened"], GUID_NEW) is None
     assert build_envelope_body("opened", GUID_NEW) is None
     assert build_envelope_body(None, GUID_NEW) is None
 
 
 def test_envelope_invalid_payload_yields_no_envelope():
-    # Given a well-shaped dict that fails envelope validation (no repository)
+    # A well-shaped dict that fails envelope validation (no repository)
     # Then no envelope (→ 200 downstream)
     payload = make_payload()
     del payload["repository"]
     assert build_envelope_body(payload, GUID_NEW) is None
 
 
-# --- QA-A: secret cache (cold fetch, warm hit, TTL, reset) -------------------
+# --- secret cache (cold fetch, warm hit, TTL, reset) -------------------
 
 
 class FakeSecretSSM:
@@ -636,7 +631,7 @@ class FakeSecretSSM:
 
 
 def test_webhook_secret_cached_warm_within_ttl():
-    # Given a cold fetch at t0 Then access inside 30 minutes reuses it without refetch
+    # A cold fetch at t0 — access inside 30 minutes reuses it without refetch
     reset_secret_cache()
     try:
         ssm = FakeSecretSSM(FIXED_SECRET)
@@ -648,7 +643,7 @@ def test_webhook_secret_cached_warm_within_ttl():
 
 
 def test_webhook_secret_refetched_at_ttl_boundary():
-    # Given a cold fetch at t0 Then access exactly at the TTL refetches (expiry is >=)
+    # A cold fetch at t0 — access exactly at the TTL refetches (expiry is >=)
     reset_secret_cache()
     try:
         ssm = FakeSecretSSM(FIXED_SECRET)
@@ -660,7 +655,7 @@ def test_webhook_secret_refetched_at_ttl_boundary():
 
 
 def test_reset_secret_cache_drops_warm_value():
-    # Given a warm cache Then reset forces the next access to fetch again
+    # A warm cache — reset forces the next access to fetch again
     reset_secret_cache()
     try:
         ssm = FakeSecretSSM(FIXED_SECRET)
@@ -672,7 +667,7 @@ def test_reset_secret_cache_drops_warm_value():
         reset_secret_cache()
 
 
-# --- QA-A: downstream failure mapping ----------------------------------------
+# --- downstream failure mapping ----------------------------------------
 
 
 class ExplodingSSM:
@@ -681,7 +676,7 @@ class ExplodingSSM:
 
 
 def test_ssm_failure_returns_500():
-    # Given an SSM outage during secret hydration Then 500, nothing enqueued or marked
+    # An SSM outage during secret hydration — 500, nothing enqueued or marked
     raw = raw_of(make_payload())
     table, sqs = FakeTable(), FakeSQS()
     response = handler(
@@ -710,7 +705,7 @@ class ExplodingTable(FakeTable):
 
 
 def test_dedup_read_failure_returns_500():
-    # Given a DynamoDB outage on the dedup read Then 500, nothing enqueued
+    # A DynamoDB outage on the dedup read — 500, nothing enqueued
     raw = raw_of(make_payload())
     table, sqs = ExplodingTable(fail_get=True), FakeSQS()
     response = handler(
@@ -721,7 +716,7 @@ def test_dedup_read_failure_returns_500():
 
 
 def test_mark_processed_failure_returns_500():
-    # Given enqueue succeeded but the mark fails Then 500 (delivery retries later)
+    # Enqueue succeeded but the mark fails — 500 (delivery retries later)
     raw = raw_of(make_payload())
     table, sqs = ExplodingTable(fail_put=True), FakeSQS()
     response = handler(
@@ -732,7 +727,7 @@ def test_mark_processed_failure_returns_500():
     assert f"delivery:{GUID_NEW}" not in table.items
 
 
-# --- QA-A: production wiring (zero-injection path, boto3 doubled) ------------
+# --- production wiring (zero-injection path, boto3 doubled) ------------
 
 
 def _production_wiring(monkeypatch, secret=FIXED_SECRET, fail_ssm=False):
@@ -759,7 +754,7 @@ def _production_wiring(monkeypatch, secret=FIXED_SECRET, fail_ssm=False):
 
 
 def test_production_wiring_accepts_signed_delivery(monkeypatch):
-    # Given zero injections (the deployed path) Then SSM→HMAC→dedup→SQS→mark yields 202
+    # Zero injections (the deployed path) — SSM→HMAC→dedup→SQS→mark yields 202
     reset_secret_cache()
     try:
         ssm, table, sqs = _production_wiring(monkeypatch)
@@ -774,7 +769,7 @@ def test_production_wiring_accepts_signed_delivery(monkeypatch):
 
 
 def test_production_ssm_outage_returns_500(monkeypatch):
-    # Given zero injections with SSM down Then 500 before any state touch
+    # Zero injections with SSM down — 500 before any state touch
     reset_secret_cache()
     try:
         _, table, sqs = _production_wiring(monkeypatch, fail_ssm=True)
@@ -788,7 +783,7 @@ def test_production_ssm_outage_returns_500(monkeypatch):
 
 
 def test_injected_table_with_doubled_sqs_client(monkeypatch):
-    # Given an injected table but no SQS client Then the lazy SQS wiring fills the gap → 202
+    # An injected table but no SQS client — the lazy SQS wiring fills the gap → 202
     import boto3
 
     sqs = FakeSQS()
@@ -800,7 +795,7 @@ def test_injected_table_with_doubled_sqs_client(monkeypatch):
 
 
 def test_injected_sqs_with_doubled_table_resource(monkeypatch):
-    # Given an injected SQS client but no table Then the lazy table wiring fills the gap → 202
+    # An injected SQS client but no table — the lazy table wiring fills the gap → 202
     import boto3
 
     table = FakeTable()

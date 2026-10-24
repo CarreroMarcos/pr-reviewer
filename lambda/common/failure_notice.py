@@ -1,65 +1,61 @@
-"""Failure-state notice (FR-028 **[D2]**; contracts/canonical-comment.md).
+"""Failure-state notice (ARCHITECTURE.md §4, form 2).
 
 When a review permanently fails, the canonical comment carries a
 system-generated failure state for the affected revision instead of
 silently remaining stale. This module owns assembly + fenced publication
 of that notice; NOTHING else (no worker wiring, no log emission, no SQS
-attribute extraction — those are T054 scope, see boundaries below).
+attribute extraction — those belong to the worker).
 
-Content contract (canonical-comment.md content form 2):
+Content contract (§4 form 2):
 
 * Fixed template, system-generated — never model output, never
   repository-derived text. The reviewed head SHA is the ONLY variable.
 * Canonical marker injected first, exactly as with review content.
-* FR-020 relationship: the notice does NOT route through
-  `common.assemble.build_comment` — that gate mandates the §2.7 section
-  shape (`## Summary`/`## Findings`/`## Risk Notes`), which the fixed
-  template has no business carrying. The D2 contract defines the notice's
-  own gate instead: marker present + fixed template + strict input
-  validation here + the prohibition list pinned in contract tests. The
-  template is a fixed string, so prohibitions hold by construction.
+* The notice does NOT route through `common.assemble.build_comment` —
+  that gate mandates the §2.7 section shape (`## Summary`/`## Findings`/
+  `## Risk Notes`), which the fixed template has no business carrying.
+  The notice has its own gate instead: marker present + fixed template
+  + strict input validation here + the prohibition list pinned in
+  contract tests. The template is a fixed string, so prohibitions hold
+  by construction.
 
-Publication (HLD §3.3 fenced path): `publish_failure_notice` runs the
-shared `common.protocol.run_review` executor — establish → review (which
-returns the fixed notice content; no LLM) → claim → live-head fence →
-publish → conditional finalize — with the publish callback delegated to
-`common.reconcile` (adopt + PATCH the surviving marker comment, or
-creation-lease POST when none exists, with re-check). No new executor
-logic, no new state fields (R6), no new permissions.
+Publication (ARCHITECTURE.md §3.2 fenced path): `publish_failure_notice`
+runs the shared `common.protocol.run_review` executor — establish →
+review (which returns the fixed notice content; no LLM) → claim →
+live-head fence → publish → conditional finalize — with the publish
+callback delegated to `common.reconcile` (adopt + PATCH the surviving
+marker comment, or creation-lease POST when none exists, with re-check).
+No new executor logic, no new state fields, no new permissions.
 
-Trigger mapping (`should_publish_notice` + `notice_phase`): pure functions
-over the D2 contract table. Transient/LLM-unusable rows publish at the
-FIRST queue attempt (`receive_count <= 1` — an instant, friendly
+Trigger mapping (`should_publish_notice` + `notice_phase`): pure
+functions over the §4 trigger table. Transient/LLM-unusable rows publish
+at the FIRST queue attempt (`receive_count <= 1` — an instant
 "retrying" notice so the failure is never silent) and again — replacing
-the first notice in place via the shared-marker PATCH path — at the FINAL
-attempt (`receive_count >= max_receive_count`, default 3 —
+the first notice in place via the shared-marker PATCH path — at the
+FINAL attempt (`receive_count >= max_receive_count`, default 3 —
 `maxReceiveCount`, mirrored by `worker_handler._MAX_RECEIVE_COUNT` and
-pinned to terraform/messaging.tf by tests/contracts/
-test_terraform_contract.py; tolerate above after redrive). Intermediate
-attempts (1 < count < max) post NOTHING — the first notice stays
-untouched (post-once). Permanent rows (assemble-invalid, LLM-401,
-invalid-key) publish the FINAL notice immediately — no retry will happen,
-so the final wording is the honest one. GitHub-401 / lost-access /
+pinned to terraform by contract tests; tolerate above after redrive).
+Intermediate attempts (1 < count < max) post NOTHING — the first notice
+stays untouched. Permanent rows (assemble-invalid, LLM-401, invalid-key)
+publish the FINAL notice immediately — no retry will happen, so the
+final wording is the honest one. GitHub-401 / lost-access /
 invalid-envelope / superseded / stale / duplicate / non-failures skip.
-Parsing `int(Attributes["ApproximateReceiveCount"])` out of the SQS
-record is worker (T054) scope — these functions take the parsed ints.
+Parsing the SQS receive-count attribute is worker scope — these
+functions take the parsed ints.
 
 Success clearing: no dedicated delete/edit step exists or is needed —
 the notice comment carries the same canonical marker and its id is
-persisted by `reconcile`, so the success-path publish (`_make_publish`)
-PATCHes that same comment with the review content, replacing the notice
-in place. A stale "retrying" notice therefore cannot survive a
-successful publish; tests/unit/test_error_classification.py pins the
-full first-failure → intermediate → final → success sequence.
+persisted by `reconcile`, so the success-path publish PATCHes that same
+comment with the review content, replacing the notice in place. A stale
+"retrying" notice therefore cannot survive a successful publish.
 
-Disposition boundary: `publish_failure_notice` RETURNS the HLD §4.3 /
-research-R8 `failure_notice_published` value (`NoticeDisposition`:
-`true` / `false` / `skipped-stale`). Emitting it into `logs.py`
-FIXED_FIELDS is T054 scope — this module never imports logging
-infrastructure. Mapping: PUBLISHED (+FINALIZE_CONFLICT — the notice
-landed) → `true`; superseded/stale (incl. fence mismatch: stale revision
-never published, FR-028 currency check) → `skipped-stale`; claim-held or
-any publish fault → `false`.
+Disposition boundary: `publish_failure_notice` RETURNS the
+`failure_notice_published` value (`NoticeDisposition`: `true` / `false`
+/ `skipped-stale`). Emitting it into `logs.py` FIXED_FIELDS is worker
+scope — this module never imports logging infrastructure. Mapping:
+PUBLISHED (+FINALIZE_CONFLICT — the notice landed) → `true`;
+superseded/stale (incl. fence mismatch: a stale revision is never
+published) → `skipped-stale`; claim-held or any publish fault → `false`.
 
 Best-effort rule: notice publication never masks the alert/DLQ flow it
 accompanies — any fault from the injected ports is caught and yields
@@ -101,9 +97,9 @@ _MAX_REPO_LENGTH = 128
 _MAX_PR_NUMBER = 10**9
 _MAX_ATTEMPTS = 99
 
-# SQS redrive budget default (HLD §2.2, terraform/messaging.tf
-# `maxReceiveCount = 3`); the worker mirrors it and the contract test
-# pins terraform == worker == this default.
+# SQS redrive budget default (ARCHITECTURE.md §2.2: `maxReceiveCount
+# = 3`); the worker mirrors it and the contract test pins terraform
+# == worker == this default.
 DEFAULT_MAX_RECEIVE_COUNT = 3
 
 
@@ -128,15 +124,14 @@ class NoticeError(ValueError):
 
 
 class NoticeTrigger(StrEnum):
-    """D2 trigger-table rows (contracts/canonical-comment.md): which HLD
-    §2.3 item 8 conditions publish a failure notice."""
+    """Trigger-table rows (ARCHITECTURE.md §4): which §2.3 conditions
+    publish a failure notice."""
 
     TRANSIENT = "transient"  # provider/LLM/throttle/5xx, queue-retried
     LLM_UNUSABLE = "llm_unusable"  # timeout/429/5xx/invalid output, retried
     ASSEMBLE_INVALID = "assemble_invalid"  # structural validation failure
     LLM_401 = "llm_401"  # LLM auth after the single re-fetch
-    # LLM request-construction fault — D2 trigger-table row
-    # (specs/001-pr-reviewer/contracts/canonical-comment.md).
+    # LLM request-construction fault.
     INVALID_KEY = "invalid_key"
     GITHUB_401 = "github_401"  # GitHub auth after the single re-fetch
     LIST_FORBIDDEN = "list_forbidden"  # 403/404 on list/GET (lost access)
@@ -148,8 +143,8 @@ class NoticeTrigger(StrEnum):
 
 
 class NoticeDisposition(StrEnum):
-    """HLD §4.3 `failure_notice_published` values (research R8). The worker
-    logs the `.value`; the enum keeps producers honest."""
+    """`failure_notice_published` values. The worker logs the `.value`;
+    the enum keeps producers honest."""
 
     PUBLISHED_TRUE = "true"
     PUBLISHED_FALSE = "false"
@@ -203,7 +198,7 @@ def build_failure_notice(
     attempts: int = 1,
 ) -> str:
     """Assemble the canonical failure-notice content: worker-injected
-    marker, then the fixed D2 template with exactly the head SHA
+    marker, then the fixed template with exactly the head SHA
     (and, for the final phase, the attempts count) interpolated. Inputs
     are validated strictly (`NoticeError`) — the template variables must
     be beyond reproach. `attempts` is ignored for the retrying phase (no
@@ -230,7 +225,7 @@ def should_publish_notice(
     receive_count: int = 0,
     max_receive_count: int = DEFAULT_MAX_RECEIVE_COUNT,
 ) -> bool:
-    """D2 trigger mapping (contracts/canonical-comment.md table).
+    """Trigger mapping (ARCHITECTURE.md §4 table).
 
     Transient rows publish at the FIRST attempt (instant retrying notice
     — failures are never silent) and at the FINAL attempt
@@ -290,7 +285,8 @@ def publish_failure_notice(
     phase: NoticePhase = NoticePhase.FINAL,
     attempts: int = 1,
 ) -> NoticeResult:
-    """Publish the failure notice through the fenced protocol (HLD §3.3).
+    """Publish the failure notice through the fenced protocol
+    (ARCHITECTURE.md §3.2).
 
     `review` returns the fixed notice content (no model call) and accepts
     the established `(head_sha, generation)` pair only for port-signature
@@ -355,6 +351,6 @@ def publish_failure_notice(
         OutcomeKind.DISCARDED_SUPERSEDED,
         OutcomeKind.DISCARDED_STALE,
     ):
-        # Stale revision: FR-028 currency check — never published.
+        # Stale revision: currency check — never published.
         return NoticeResult(NoticeDisposition.SKIPPED_STALE)
     return NoticeResult(NoticeDisposition.PUBLISHED_FALSE)

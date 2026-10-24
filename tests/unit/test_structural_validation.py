@@ -1,8 +1,8 @@
-"""T017: structural validation gate contract (HLD §2.3 item 7, §2.7; FR-020, FR-025).
+"""T017: structural validation gate contract (ARCHITECTURE.md §2.3, §2.7;
+FR-020, FR-025).
 
-Red-first contract for `common.validate`: the gate accepts a valid §2.7-shaped
+Contract for `common.validate`: the gate accepts a valid §2.7-shaped
 comment and rejects each prohibited class with a machine-readable reason code.
-Fails with ModuleNotFoundError until T019 implements `common.validate`.
 """
 
 from pathlib import Path
@@ -34,7 +34,7 @@ def make_valid(
     pr: int = PR,
     findings: tuple[str, ...] | None = None,
 ) -> str:
-    """Build a §2.7-shaped comment carrying the worker-injected marker."""
+    """Build an ARCHITECTURE.md §2.7-shaped comment with the worker marker."""
     if findings is None:
         findings = (_FINDING_A, _FINDING_B)
     findings_block = "\n".join(findings) if findings else "No significant issues found."
@@ -188,7 +188,7 @@ def test_reject_prompt_canary():
 
 
 def test_prompt_canary_and_version_sync_with_system_prompt():
-    # SPR-61: the gate constants must match the live prompt file — a rotated
+    # The gate constants must match the live prompt file — a rotated
     # canary or bumped version that misses either side silently disables
     # the leakage tripwire or the version contract.
     prompt = (
@@ -199,8 +199,8 @@ def test_prompt_canary_and_version_sync_with_system_prompt():
 
 
 def test_prompt_version_v3_carries_enriched_input():
-    # 003-T2: the v3 prompt names title/description + prior comment as
-    # adversarial input; the canary and prohibitions are byte-untouched.
+    # The v3 prompt names title/description + prior comment as
+    # adversarial input; the canary and prohibitions are unchanged.
     prompt = (
         Path(__file__).resolve().parent.parent.parent / "prompts" / "system_prompt.md"
     ).read_text(encoding="utf-8")
@@ -247,8 +247,8 @@ def test_reject_approval_merge_verdicts(snippet):
 
 def test_approval_vocabulary_in_code_formatting_is_not_a_verdict():
     """Quoted identifiers inside code spans/fences are vocabulary under
-    review, not merge verdicts (mentions carve-out precedent, Mars ruling
-    2026-09-20 after four same-evening false-positive discards)."""
+    review, not merge verdicts — treating them as verdicts would discard
+    valid reviews over quoted code."""
     snippet = (
         "Gate change: `assemble_approval_verdict` is the tripwire class.\n\n"
         "```text\nlgtm et al.\n```"
@@ -258,14 +258,14 @@ def test_approval_vocabulary_in_code_formatting_is_not_a_verdict():
 
 
 def test_approval_stem_in_plain_prose_still_refuses():
-    """The stem still trips outside code formatting (control-plane posture
-    §5.3 unchanged by the precision fix)."""
+    """The stem still trips outside code formatting: repository content
+    must not establish approval (ARCHITECTURE.md §6.2)."""
     verdict = check(make_valid() + "\nThe workflow auto-approves dependency bumps.\n")
     assert verdict.ok is False
     assert "approval_verdict" in verdict.reasons
 
 
-# --- marker spoofing (boundary 7: model output is untrusted, §9) ---------------
+# --- marker spoofing (model output is untrusted, §9) ------------------------------
 # The worker injects exactly one canonical marker at assembly; any further
 # marker-shaped string is model-emitted spoof and must refuse publication so
 # a published comment can never be self-referential.
@@ -319,7 +319,7 @@ def test_reject_spoof_inside_fenced_code_block():
     assert "marker_spoofed" in verdict.reasons
 
 
-# --- verdict-object integrity (boundary 7) ------------------------------------
+# --- verdict-object integrity ---------------------------------------------------
 # Reasons are a closed machine-readable vocabulary: hostile bodies must never
 # leak input substrings into the verdict, and the verdict is immutable.
 
@@ -374,4 +374,4 @@ def test_verdict_is_immutable():
     verdict = check(make_valid())
     assert verdict.ok is True
     with pytest.raises(dataclasses.FrozenInstanceError):
-        verdict.ok = False  # type: ignore[misc]
+        verdict.ok = False  # type: ignore[misc] (frozen-instance probe)
