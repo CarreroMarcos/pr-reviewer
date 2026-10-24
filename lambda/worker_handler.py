@@ -1710,7 +1710,14 @@ def _make_publish(
         # inside the sanitizer the 40-hex sha reads as a payload token.
         # label_fn runs at publish time, when the run's stage events are
         # complete — pipeline + model describe the review just shipped.
-        label = label_fn() if label_fn is not None else None
+        # Provenance is cosmetic: a label failure (credential re-fetch,
+        # unexpected event shape) must never fail the publication itself,
+        # so it degrades to the previous unlabeled footer.
+        try:
+            label = label_fn() if label_fn is not None else None
+        except Exception:
+            logger.warning("replay_footer_label_failed: publishing unlabeled")
+            label = None
         content = _with_replay_footer(
             content, pr_number=pr_number, sha=envelope.head_sha, label=label
         )
