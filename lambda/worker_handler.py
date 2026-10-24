@@ -557,7 +557,42 @@ def _drop_stale_description_findings(model_text: str) -> tuple[str, int]:
     return "\n".join(out), dropped
 
 
-def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
+def _run_label(events: list[dict[str, Any]], model: str) -> str:
+    """Footer label for a run: pipeline display + configured model.
+
+    The pipeline comes from the run's own events
+    (`archive.resolve_pipeline`): fan-out stage events mean multi-agent,
+    anything else is single-pass. A degraded run keeps its multi-agent
+    origin visible — the label says so rather than silently claiming a
+    single-pass review. `model` is the configured model id (the same id
+    every stage calls with), not a served-weights snapshot.
+    """
+    pipeline = archive_mod.resolve_pipeline(events)
+    degraded = any(
+        isinstance(event, dict) and event.get("type") == "degraded_to_single_pass"
+        for event in events
+    )
+    if pipeline == "multi_agent":
+        display = "multi-agent → degraded to single-pass" if degraded else "multi-agent"
+    else:
+        display = "single-pass"
+    return f"{display} · {model}"
+
+
+def _label_fn_for(events: list[dict[str, Any]], creds: _Credentials) -> Callable[[], str]:
+    """Build the publish-time footer-label closure for a record.
+
+    Late-bound on purpose: the event list is read when the label is
+    computed at publish, not when the closure is built — stage events
+    recorded after wiring still count. The model comes from the live
+    credential snapshot at that same moment, so a mid-run refresh is
+    reflected too. Kept as a named seam (rather than an inline lambda
+    in `_process_record`) so the production wiring is directly testable.
+    """
+    return lambda: _run_label(events, creds.current().glm_model)
+
+
+def _with_replay_footer(content: str, *, pr_number: int, sha: str, label: str | None = None) -> str:
     """Deterministic replay-link footer on the published canonical
     body — code-side, never model-side (the synthesizer prompt and output
     contract are untouched). Omitted entirely when `REPLAY_BASE_URL` is
@@ -567,7 +602,9 @@ def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
     footers). The URL targets the unauth shell + bearer-gated artifacts
     (ARCHITECTURE.md §5.3); the base never appears as a committed literal
     — it rides the worker env from the viewer Function URL resource
-    (terraform contract pin)."""
+    (terraform contract pin). `label`, when given, renders after the link
+    as run provenance (pipeline + model); the exactly-once anchor is the
+    link alone, so label text never affects de-duplication."""
     base = replay_base_url()
     # Idempotency anchors to the EXACT footer link for THIS run: a
     # model-quoted phrase or a decoy link for a different run cannot
@@ -576,11 +613,10 @@ def _with_replay_footer(content: str, *, pr_number: int, sha: str) -> str:
     footer_link = f"[{REPLAY_FOOTER_MARK}]({base}/runs/{pr_number}/{sha}/)"
     if not base or footer_link in content:
         return content
-    return (
-        content
-        + f"\n\n---\n🔬 {footer_link}"
-        + " — agent DAG, per-agent reasoning, and checkpoints for this review.\n"
-    )
+    description = "agent DAG, per-agent reasoning, and checkpoints for this review."
+    if label:
+        description = f"{label} · {description}"
+    return content + f"\n\n---\n🔬 {footer_link} — {description}\n"
 
 
 _MAX_VISIBILITY_TIMEOUT = 12 * 3600
@@ -1587,6 +1623,7 @@ def _make_publish(
     owner: str,
     clock: Clock,
     github_transport: Callable[..., tuple[int, bytes]],
+    label_fn: Callable[[], str] | None = None,
 ) -> Callable[[str], int]:
     """Protocol `publish` port (constitution IV — exactly one canonical
     comment; ARCHITECTURE.md §2.3 + §3.3): consults the STORED
@@ -1684,7 +1721,19 @@ def _make_publish(
         # The footer rides AFTER the sanitizer — it is code-side
         # decoration (the sha is public PR metadata, not model output);
         # inside the sanitizer the 40-hex sha reads as a payload token.
-        content = _with_replay_footer(content, pr_number=pr_number, sha=envelope.head_sha)
+        # label_fn runs at publish time, when the run's stage events are
+        # complete — pipeline + model describe the review just shipped.
+        # Provenance is cosmetic: a label failure (credential re-fetch,
+        # unexpected event shape) must never fail the publication itself,
+        # so it degrades to the previous unlabeled footer.
+        try:
+            label = label_fn() if label_fn is not None else None
+        except Exception:
+            logger.warning("replay_footer_label_failed: publishing unlabeled")
+            label = None
+        content = _with_replay_footer(
+            content, pr_number=pr_number, sha=envelope.head_sha, label=label
+        )
         item = table.get_item(pk) or {}
         comment_id = item.get("comment_id")
         if isinstance(comment_id, bool):
@@ -1995,6 +2044,7 @@ def _process_record(
             owner=envelope.delivery_guid,
             clock=clock,
             github_transport=github_transport,
+            label_fn=_label_fn_for(record_events, creds),
         )
 
         def _evented_fence() -> str:

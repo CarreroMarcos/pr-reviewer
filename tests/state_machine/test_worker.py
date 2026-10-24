@@ -362,7 +362,9 @@ def test_replay_footer_on_published_comment(monkeypatch):
     """Single-pass wiring: the POSTed canonical body carries the
     replay footer with pr_number + head_sha interpolated — the
     publish-boundary wiring is pinned end-to-end, not just the helper
-    in isolation."""
+    in isolation. The label assertion pins the production path too:
+    `_process_record` → `_label_fn_for` → footer, so an omitted or
+    miswired label_fn fails here rather than shipping unlabeled."""
     monkeypatch.setenv("REPLAY_BASE_URL", "https://viewer.example.test")
     h = Harness(meta=[(200, SHA_B)])
     assert h.run(envelope(sha=SHA_B)) == {"ok": True, "results": ["published"]}
@@ -370,6 +372,7 @@ def test_replay_footer_on_published_comment(monkeypatch):
     assert (
         f"🔬 [Full agent replay](https://viewer.example.test/runs/{PR_NUMBER}/{SHA_B}/)" in posted
     )
+    assert "— single-pass · glm-5.3-flash · agent DAG" in posted
 
 
 def test_replay_footer_absent_when_env_unset(monkeypatch):
