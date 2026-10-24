@@ -335,10 +335,34 @@ def test_render_reorders_177_shape_low_low_medium():
     puts the MEDIUM first; the LOWs keep location order."""
     merged = dedupe_findings(
         [
-            sv(cid="c:0", severity="LOW", path="lambda/worker.py", line=427, title="Fence closer info string"),
-            sv(cid="c:1", severity="LOW", path="lambda/worker.py", line=468, title="Nested bullets uncounted"),
-            sv(cid="c:2", severity="MEDIUM", path="terraform/obs.tf", line=23, title="Alarms decommissioned"),
-            sv(cid="c:3", severity="LOW", path="tests/test_race.py", line=640, title="Branch untested"),
+            sv(
+                cid="c:0",
+                severity="LOW",
+                path="lambda/worker.py",
+                line=427,
+                title="Fence closer info string",
+            ),
+            sv(
+                cid="c:1",
+                severity="LOW",
+                path="lambda/worker.py",
+                line=468,
+                title="Nested bullets uncounted",
+            ),
+            sv(
+                cid="c:2",
+                severity="MEDIUM",
+                path="terraform/obs.tf",
+                line=23,
+                title="Alarms decommissioned",
+            ),
+            sv(
+                cid="c:3",
+                severity="LOW",
+                path="tests/test_race.py",
+                line=640,
+                title="Branch untested",
+            ),
         ],
         [],
     )
