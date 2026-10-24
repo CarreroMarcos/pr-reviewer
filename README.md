@@ -8,7 +8,7 @@ A small serverless bot that reviews your pull requests for you. No servers to ru
 
 ![The bot's canonical review comment on PR #177](docs/assets/canonical-review.png)
 
-*The bot's canonical review on [PR #177](https://github.com/CarreroMarcos/pr-reviewer/pull/177) — a real pull request, reviewed by the same bot this repo ships. One comment, updated in place on every push, with a full agent replay linked in the footer.*
+*The bot's canonical review on [PR #177](https://github.com/CarreroMarcos/pr-reviewer/pull/177) — a real pull request, reviewed by the same bot this repo ships. One comment, updated in place on every push, with a full agent replay linked in the footer. (Image rendered from the comment's live markdown source.)*
 
 ---
 
@@ -16,9 +16,11 @@ A small serverless bot that reviews your pull requests for you. No servers to ru
 
 - **177 pull requests** in this repo's history — the bot reviews its own PRs, one canonical review comment per PR, updated in place.
 - **220 commits** on main.
-- **About 3× more tests than code.** 32,205 lines of tests against 10,172 lines of runtime Python.
+- **Over 3× more tests than code.** 32,205 lines of tests against 10,172 lines of runtime Python.
 - **A 15-case pinned model-eval corpus** (13 scored defect cases + 2 robustness probes) the pipeline is scored against in CI.
 - **$0/mo** — the whole thing fits inside the AWS free tier.
+
+*Counts are a snapshot from Oct 23, 2026 and drift as the repo grows — the ratios are the point, not the exact figures.*
 
 ---
 
@@ -123,7 +125,7 @@ Everything runs on AWS, and only when there's work to do. Nothing idles in the b
 
 ## What's next
 
-Planned work is all review quality: inline comments anchored to the exact lines they're about, GitHub App tokens so repos can install the bot without sharing a personal token, and whole-file context so reviewers see the code around a diff, not just the diff itself.
+Planned work is all review quality: inline comments anchored to the exact lines they're about, GitHub App tokens so repos can install the bot without sharing a personal token, and whole-file context so reviewers see the code around a diff, not just the diff itself. The maintained roadmap lives in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
