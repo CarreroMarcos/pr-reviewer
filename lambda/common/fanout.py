@@ -1178,11 +1178,22 @@ def render_findings_section(merged: list[dict[str, Any]]) -> str:
     Empty input renders the
     single-pass sentinel sentence (the scorer skips it: zero findings,
     zero unparsable).
+
+    Publication order (2026-10-23): severity descending (HIGH, MEDIUM,
+    LOW). The sort is stable and keyed on severity rank alone, so ties
+    keep the input order — which for every production caller is
+    `dedupe_findings`' location-major order (path, then line), giving
+    severity-major with a location tiebreak. Unknown severities rank
+    0 (`_severity_rank`) and render after every known severity, in
+    their original relative order. This reorders ONLY the rendered
+    bullets: `merged` itself (the event/eval-truth list) keeps
+    dedupe's location-major order and is not mutated.
     """
     if not merged:
         return "## Findings\n\nNo significant issues found.\n"
+    ordered = sorted(merged, key=lambda item: -_severity_rank(item["severity"]))
     lines = ["## Findings", ""]
-    for item in merged:
+    for item in ordered:
         marker = "[Requires Verification] " if item.get("escalated") else ""
         lines.append(
             f"- [{item['severity']}] `{item['file_path']}:{item['line_start']}`"
