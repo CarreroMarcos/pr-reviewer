@@ -29,4 +29,16 @@ Runtime is Python 3.12 stdlib + `boto3` only. Runtime deps: boto3 only; pair any
 - CI must be green before merge; `terraform apply` stays human-only (`tf-*` tags trigger it, with explicit owner approval).
 - Doc authority: ARCHITECTURE.md owns current behavior, DECISIONS.md owns why/history (append-only), OPERATIONS.md owns procedure — disagreements are questions, never silent edits.
 
-The full prior agent instructions (Jira loop, Oracle review gate, delivery policies) remain in git history — see the pre-2026-10-23 history of this file.
+## PR review loop
+
+Pull requests in this repo are reviewed by the reviewer this repo ships. The review arrives as a single canonical comment on the PR (HTML marker `pr-reviewer:canonical`), updated in place on every push. It does not use the GitHub Reviews API — read the PR's issue comments, not its reviews endpoint.
+
+Any agent working a PR here runs this loop:
+
+1. After every push, wait about 2 minutes, then re-read the canonical comment.
+2. Disposition every finding: fix it, or state explicitly why it is accepted. Undispositioned findings mean the PR is not merge-ready.
+3. A repeated finding is not a confirmed finding — a reviewer can quote stale file text. Verify each repeat against the current branch head before acting on it.
+4. Do not re-litigate findings already dispositioned in an earlier round.
+5. Freeze rule: when the finding count holds stable across two consecutive rounds, stop fixing and carry what remains forward as explicit, named residuals.
+
+The review is advisory; CI gates the merge.
