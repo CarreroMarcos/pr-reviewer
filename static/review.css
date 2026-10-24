@@ -59,17 +59,6 @@ body {
 }
 .run-meta strong { color: var(--paper); font-weight: 600; }
 
-.session { display: flex; align-items: center; gap: 0.6rem; margin-left: auto; }
-.session-state {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--amber);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.15rem 0.7rem;
-}
-.session-state.open { color: var(--signal); }
-
 /* --- page ------------------------------------------------------ */
 .page {
   max-width: 1060px;
@@ -118,7 +107,7 @@ h2 { font-size: 1.2rem; }
   color: var(--paper);
 }
 
-/* --- login ----------------------------------------------------- */
+/* --- load form ------------------------------------------------- */
 .field-row { display: grid; grid-template-columns: 1fr 2fr; gap: 0.8rem; }
 .field { display: grid; gap: 0.35rem; margin-bottom: 0.8rem; font-size: 0.85rem; color: var(--fog); }
 input {

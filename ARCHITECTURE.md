@@ -171,7 +171,6 @@ Table `pr-reviewer-state`, partition key `pk`, PROVISIONED 20/20 + GSI `pr-runs-
 | `/pr-reviewer/glm-api-key` | SecureString | Worker-only IAM |
 | `/pr-reviewer/glm-model` | String | `glm-5.3-flash` |
 | `/pr-reviewer/glm-endpoint` | String | HTTPS scheme + host allow-list enforced at hydration |
-| `/pr-reviewer/replay-token` | SecureString | Viewer bearer token (§6.5); read per invocation, no cache |
 
 Terraform defines IAM read policies only — no `aws_ssm_parameter` resources; no plaintext in state. SecureStrings use the AWS-managed `aws/ssm` KMS key; SSM decrypts server-side via `WithDecryption`, so no direct `kms:Decrypt` grants are needed. **Rotation:** update SSM first, revoke the old credential last; warm containers converge within the 30-min TTL or via 401-triggered re-fetch. Webhook-secret rotation 401s deliveries up to 30 min — rotate in a maintenance window, recover via 3-day redelivery. Compromise: revoke at provider → overwrite SSM → force cache-bust (redeploy) → verify 401-recovery → inspect the 7-day log groups.
 
@@ -254,7 +253,7 @@ Stage boundaries use per-stage cryptographically nonced delimiters (each nonce a
 
 Every run streams structured events (`events.jsonl`, `{v, run_id, ts, type, ...}` — `agent_started`/`agent_completed`/`verification_done`/`review_synthesized`/`degraded_to_single_pass`/`concurrency_single_pass`/`review_published` etc.) and a `meta.json` header to `s3://pr-reviewer-archives/runs/{pr}/{sha}/{run_id}/` (90-day lifecycle expiry on `runs/`). A best-effort DynamoDB index row (GSI `pr-runs-index`: partition `pr_number`, sort `started_ts`, INCLUDE projection incl. `run_id`) is written after finalize for the latest-run query. Findings coordinates are 1-based **post-image** lines; out-of-range specialist coordinates are clamped-and-flagged; the verifier re-anchors to the post-image.
 
-The **viewer** Lambda sits behind a Function URL (`authorization_type = "NONE"`; enforcement in the handler). Routes: `/runs/{pr}/{sha}/` (shell, unauth), `/static/{file}` (dot-segments rejected), `/api/runs/{pr}/latest` (bearer), `/runs/{pr}/{sha}/{run_id}/{file}` (bearer, `run_id` = 32 hex); everything else 404. Bearer token compared with `hmac.compare_digest` against the SSM SecureString (read per invocation — rotation needs no deploy). Archived event content is model-controlled and passes the same sanitization before render. Missing S3 keys map to 404 across error semantics (live S3 anti-enumeration returns `AccessDenied`, not `NoSuchKey`). IAM: `s3:GetObject` on `runs/*` and `static/*`, `dynamodb:Query` on the GSI, `ssm:GetParameter` on the replay token — no `kms:Decrypt`. Operations: OPERATIONS.md §4–§5.
+The **viewer** Lambda sits behind a Function URL (`authorization_type = "NONE"`). All routes are public: `/runs/{pr}/{sha}/` (shell), `/static/{file}` (dot-segments rejected), `/api/runs/{pr}/latest`, `/runs/{pr}/{sha}/{run_id}/{file}` (`run_id` = 32 hex); everything else 404. Archived event content is model-controlled and passes the same sanitization before render. Missing S3 keys map to 404 across error semantics (live S3 anti-enumeration returns `AccessDenied`, not `NoSuchKey`). IAM: `s3:GetObject` on `runs/*` and `static/*`, `dynamodb:Query` on the GSI — no SSM access. Operations: OPERATIONS.md §5.
 
 ### 5.4 Evaluation Gates (quality is a model dependency)
 
@@ -292,7 +291,6 @@ OPERATOR ROLE: sqs:StartMessageMoveTask, ReceiveMessage, DeleteMessage,
                — named in the source queue's redrive allow policy
 
 VIEWER ROLE:   s3:GetObject (runs/*, static/*); dynamodb:Query (GSI);
-               ssm:GetParameter (replay-token ARN — no kms:Decrypt)
 ```
 
 Bootstrap OIDC trust stack (HCP plan/apply roles, exact sub pins — applied once locally, never HCP-managed) lives in `bootstrap/main.tf`.

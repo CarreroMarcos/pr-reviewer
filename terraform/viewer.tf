@@ -1,9 +1,9 @@
 # Viewer: the internet-reachable replay-site surface (HLD §7 Phase 2;
 # Function URL posture per the Oct-2025 hardening). T051b lands the
 # Lambda + NONE-auth Function URL + BOTH permission statements; T052
-# lands the role's read-only policy (S3 runs/static, DynamoDB index,
-# SSM token — no kms:Decrypt, §2.6 mechanics per the Mars ruling
-# 2026-09-28). The handler source arrives with T054 — the never-apply
+# lands the role's read-only policy (S3 runs/static, DynamoDB index —
+# the replay surface is public, so no SSM token grant remains). The
+# handler source arrives with T054 — the never-apply
 # law keeps this surface validate-only until the T056 deploy tag, so
 # the archive_file source below intentionally does not resolve until
 # then.
@@ -29,11 +29,10 @@ resource "aws_iam_role" "viewer" {
 }
 
 # Viewer read policy (T052, HLD §7 Viewer IAM): the replay surface is
-# strictly read-only. No kms:Decrypt — the token is a plain SecureString
-# on the AWS-managed aws/ssm key and SSM decrypts server-side via
-# WithDecryption (HLD §2.6, iam.tf note #6); §7's earlier decrypt clause
-# is superseded (Mars ruling 2026-09-28, DECISIONS), and the contract
-# tests pin its absence so it cannot silently return.
+# strictly read-only — S3 runs/static + the DynamoDB index query. No
+# SSM access: the handler reads no parameters since the replay surface
+# went public (the 2026-09-28 token grant and its kms:Decrypt pin were
+# removed with it).
 resource "aws_iam_role_policy" "viewer" {
   name = "pr-reviewer-viewer-read"
   role = aws_iam_role.viewer.id
@@ -53,15 +52,6 @@ resource "aws_iam_role_policy" "viewer" {
         Effect   = "Allow"
         Action   = ["dynamodb:Query"]
         Resource = ["${aws_dynamodb_table.state.arn}/index/pr-runs-index"]
-      },
-      {
-        Effect = "Allow"
-        Action = ["ssm:GetParameter"]
-        # Singular read per HLD §5.1 discipline (iam.tf note #5): the
-        # T054 handler reads GetParameter + WithDecryption only. If it
-        # ever adopts batched GetParameters/ByPath, the grant grows in
-        # the same change.
-        Resource = [local.ssm_parameter_arn.replay_token]
       },
       {
         # T056 fix-loop r1: runtime logging (house pattern = iam.tf
@@ -100,7 +90,7 @@ resource "aws_lambda_function" "viewer" {
   filename         = data.archive_file.viewer.output_path
   source_code_hash = data.archive_file.viewer.output_base64sha256
 
-  # Static replay + token-gated API reads: sub-second S3/SSM work, no
+  # Static replay + public API reads: sub-second S3/DynamoDB work, no
   # LLM. 256 MB is the SPR-60 baseline sizing; nothing here needs a
   # full vCPU.
   timeout     = 30

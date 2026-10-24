@@ -1,33 +1,27 @@
 """Viewer routing integration — moto fake AWS (ARCHITECTURE.md §5.3).
 
 Drives the real `viewer_handler.handler` with Function-URL v2 events
-against moto's fake AWS — SSM `/pr-reviewer/replay-token` (SecureString),
-the DynamoDB state table + `pr-runs-index` GSI (state.tf shape), and the
-archives bucket — same discipline as test_fake_aws.py: real handlers,
-real boto3, no live network.
+against moto's fake AWS — the DynamoDB state table + `pr-runs-index`
+GSI (state.tf shape), and the archives bucket — same discipline as
+test_fake_aws.py: real handlers, real boto3, no live network.
 
-Pinned routes (the §5.3 tree, exactly):
+Pinned routes (the §5.3 tree, exactly) — every route public, no
+credentials anywhere:
 
-* `/runs/{pr}/{sha}/`          → static shell, unauthenticated;
+* `/runs/{pr}/{sha}/`          → static shell;
 * `/static/{file}`             → `^static/[A-Za-z0-9._-]+$` AND explicit
   dot-segment rejection before key construction (the character class
   alone admits `static/..`);
-* `/api/runs/{pr}/latest`      → bearer + GSI query, body is exactly
+* `/api/runs/{pr}/latest`      → GSI query, body is exactly
   `{run_id, sha, status, pipeline, archive_s3_key}`;
-* `/runs/{pr}/{sha}/{rid}/{f}` → bearer + regex (rid = 32 hex, no
+* `/runs/{pr}/{sha}/{rid}/{f}` → regex (rid = 32 hex, no
   dashes; f ∈ {events.jsonl, meta.json}) → S3 archive object.
-
-Plus the coupling pin: the handler's SSM literal must equal the
-replay-token ARN path iam.tf grants (drift breaks at runtime as 500s
-on every authed route, so it is pinned at test time instead).
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
-from pathlib import Path
 
 import boto3
 import pytest
@@ -38,23 +32,19 @@ import viewer_handler  # noqa: E402
 REGION = "us-west-2"
 TABLE = "pr-reviewer-state"
 BUCKET = "pr-reviewer-archives"
-TOKEN = "view-token-0123456789abcdef"  # noqa: S105 — moto fixture value, not a credential
 SHA = "a" * 40
 RUN_ID = "b" * 32
 RUN_ID_OLDER = "c" * 32
 PR = 123
 
 
-def _event(raw_path: str, token: str | None = None, method: str = "GET") -> dict:
-    headers: dict[str, str] = {}
-    if token is not None:
-        headers["authorization"] = f"Bearer {token}"
+def _event(raw_path: str, method: str = "GET") -> dict:
     return {
         "version": "2.0",
         "routeKey": "$default",
         "rawPath": raw_path,
         "rawQueryString": "",
-        "headers": headers,
+        "headers": {},
         "requestContext": {"http": {"method": method, "sourceIp": "203.0.113.7"}},
         "isBase64Encoded": False,
     }
@@ -67,8 +57,6 @@ def aws():
     # import-time — no process-env leak.
     os.environ.setdefault("AWS_DEFAULT_REGION", REGION)
     with mock_aws():
-        ssm = boto3.client("ssm", region_name=REGION)
-        ssm.put_parameter(Name="/pr-reviewer/replay-token", Type="SecureString", Value=TOKEN)
         ddb = boto3.client("dynamodb", region_name=REGION)
         ddb.create_table(
             TableName=TABLE,
@@ -137,8 +125,8 @@ def aws():
         yield
 
 
-def _call(raw_path: str, token: str | None = None, method: str = "GET") -> dict:
-    return viewer_handler.handler(_event(raw_path, token, method), None)
+def _call(raw_path: str, method: str = "GET") -> dict:
+    return viewer_handler.handler(_event(raw_path, method), None)
 
 
 # --- shell + static (unauthenticated) ------------------------------------
@@ -176,7 +164,7 @@ def test_missing_s3_key_maps_to_404_across_error_semantics(aws, monkeypatch, cap
     # Live S3 without s3:ListBucket answers GetObject for a missing key
     # with AccessDenied (anti-enumeration); moto returns NoSuchKey, so
     # CI cannot see that branch from moto alone. All three "absent"
-    # codes must map to 404 — the surface stays {200, 401, 404}.
+    # codes must map to 404 — the surface stays {200, 404}.
     s3 = boto3.client("s3", region_name=REGION)
 
     class _Stub:
@@ -220,21 +208,18 @@ def test_non_absent_s3_errors_take_the_reraise_branch(aws, monkeypatch, code):
     assert _call("/static/app.css")["statusCode"] == 500
 
 
-# --- /api/runs/{pr}/latest (bearer + GSI) --------------------------------
+# --- /api/runs/{pr}/latest (public GSI) --------------------------------
 
 
-def test_api_latest_requires_bearer(aws):
-    assert _call(f"/api/runs/{PR}/latest")["statusCode"] == 401
-
-
-def test_api_latest_rejects_wrong_token(aws):
-    assert (
-        _call(f"/api/runs/{PR}/latest", token="wrong-token")["statusCode"] == 401  # noqa: S106
-    )
+def test_api_latest_served_public(aws):
+    """No credentials: the latest-run lookup serves without any token."""
+    r = _call(f"/api/runs/{PR}/latest")
+    assert r["statusCode"] == 200
+    assert json.loads(r["body"])["run_id"] == RUN_ID
 
 
 def test_api_latest_returns_latest_run_exact_shape(aws):
-    r = _call(f"/api/runs/{PR}/latest", token=TOKEN)
+    r = _call(f"/api/runs/{PR}/latest")
     assert r["statusCode"] == 200
     body = json.loads(r["body"])
     assert set(body) == {"run_id", "sha", "status", "pipeline", "archive_s3_key"}
@@ -244,24 +229,20 @@ def test_api_latest_returns_latest_run_exact_shape(aws):
 
 
 def test_api_latest_unknown_pr_404(aws):
-    assert _call("/api/runs/456/latest", token=TOKEN)["statusCode"] == 404
+    assert _call("/api/runs/456/latest")["statusCode"] == 404
 
 
-# --- archive objects (bearer + strict regex) -----------------------------
-
-
-def test_archive_requires_bearer(aws):
-    assert _call(f"/runs/{PR}/{SHA}/{RUN_ID}/events.jsonl")["statusCode"] == 401
+# --- archive objects (public, strict regex) -----------------------------
 
 
 def test_archive_events_jsonl_served(aws):
-    r = _call(f"/runs/{PR}/{SHA}/{RUN_ID}/events.jsonl", token=TOKEN)
+    r = _call(f"/runs/{PR}/{SHA}/{RUN_ID}/events.jsonl")
     assert r["statusCode"] == 200
     assert r["body"] == '{"e":1}\n'
 
 
 def test_archive_meta_json_served(aws):
-    r = _call(f"/runs/{PR}/{SHA}/{RUN_ID}/meta.json", token=TOKEN)
+    r = _call(f"/runs/{PR}/{SHA}/{RUN_ID}/meta.json")
     assert r["statusCode"] == 200
     assert r["body"] == '{"m":1}'
 
@@ -278,7 +259,7 @@ def test_archive_meta_json_served(aws):
     ],
 )
 def test_archive_regex_rejects_malformed(aws, path):
-    assert _call(path, token=TOKEN)["statusCode"] == 404
+    assert _call(path)["statusCode"] == 404
 
 
 # --- unparsed surfaces ----------------------------------------------------
@@ -290,42 +271,8 @@ def test_unknown_routes_404(aws, path):
 
 
 def test_non_get_methods_404(aws):
-    assert _call(f"/api/runs/{PR}/latest", token=TOKEN, method="POST")["statusCode"] == 404
+    assert _call(f"/api/runs/{PR}/latest", method="POST")["statusCode"] == 404
     assert _call(f"/runs/{PR}/{SHA}/", method="HEAD")["statusCode"] == 404
-
-
-# --- Coupling: handler literal ↔ iam.tf grant ---
-
-
-def test_ssm_literal_matches_iam_replay_token_grant():
-    handler_src = (Path(__file__).resolve().parents[2] / "lambda" / "viewer_handler.py").read_text(
-        encoding="utf-8"
-    )
-    m = re.search(r'TOKEN_PARAMETER_NAME\s*=\s*"([^"]+)"', handler_src)
-    assert m is not None, "viewer_handler TOKEN_PARAMETER_NAME literal not found"
-    iam_src = (Path(__file__).resolve().parents[2] / "terraform" / "viewer.tf").read_text(
-        encoding="utf-8"
-    )
-    arn_path = f"parameter/{m.group(1).lstrip('/')}"
-    # Full coupling chain: the handler literal must match the iam.tf
-    # local's value, and viewer.tf's policy must grant that local — a
-    # stray mention in a comment or another role's grant satisfies
-    # nothing.
-    iam_tf = (Path(__file__).resolve().parents[2] / "terraform" / "iam.tf").read_text(
-        encoding="utf-8"
-    )
-    local_def = re.search(r'replay_token\s*=\s*"([^"]*:parameter/[^"]+)"', iam_tf)
-    assert local_def is not None, "iam.tf ssm_parameter_arn.replay_token local not found"
-    assert local_def.group(1).endswith(arn_path), (
-        f"iam.tf local {local_def.group(1)!r} does not end with the handler "
-        f"path {arn_path!r} — drift would 500 every authed route (Gate-39 F4)"
-    )
-    policy = re.search(r'resource "aws_iam_role_policy" "viewer" \{(.*?)\n\}', iam_src, re.DOTALL)
-    assert policy is not None, "aws_iam_role_policy.viewer not found in viewer.tf"
-    assert "local.ssm_parameter_arn.replay_token" in policy.group(1), (
-        "viewer.tf policy does not grant local.ssm_parameter_arn.replay_token "
-        "— handler/iam drift would 500 every authed route (Gate-39 F4)"
-    )
 
 
 def test_api_latest_stale_row_without_run_id_never_500s(aws):
@@ -344,40 +291,22 @@ def test_api_latest_stale_row_without_run_id_never_500s(aws):
             "pipeline": {"S": "single_pass"},
         },  # no run_id, no archive_s3_key — pre-projection row shape
     )
-    r = _call("/api/runs/789/latest", token=TOKEN)
+    r = _call("/api/runs/789/latest")
     assert r["statusCode"] == 200
     body = json.loads(r["body"])
     assert "run_id" not in body
     assert body["sha"] == "e" * 40
 
 
-def test_bearer_scheme_case_insensitive(aws):
-    """RFC 7235 — the auth scheme is case-insensitive."""
-    headers_event = _event(f"/api/runs/{PR}/latest")
-    headers_event["headers"]["authorization"] = f"bearer {TOKEN}"
-    r = viewer_handler.handler(headers_event, None)
-    assert r["statusCode"] == 200
-
-
-def test_capitalized_authorization_header_authenticates(aws):
-    """Every real client sends `Authorization` (capitalized); only the
-    scheme case is otherwise pinned. Function URLs preserve the client's
-    header casing — the handler must lower() the name too."""
-    headers_event = _event(f"/api/runs/{PR}/latest")
-    headers_event["headers"] = {"Authorization": f"Bearer {TOKEN}"}
-    r = viewer_handler.handler(headers_event, None)
-    assert r["statusCode"] == 200
-
-
 def test_internal_error_boundary_returns_controlled_500(aws, monkeypatch):
-    """An internal failure (SSM outage, IAM misconfig) surfaces as a
+    """An internal failure (DynamoDB outage, IAM misconfig) surfaces as a
     controlled JSON 500 — never an opaque stack or a provider error
     body."""
 
     def boom():
         raise RuntimeError("simulated provider outage")
 
-    monkeypatch.setattr(viewer_handler, "_expected_token", boom)
-    r = _call(f"/api/runs/{PR}/latest", token=TOKEN)
+    monkeypatch.setattr(viewer_handler, "_state_table", boom)
+    r = _call(f"/api/runs/{PR}/latest")
     assert r["statusCode"] == 500
     assert json.loads(r["body"]) == {"message": "internal error"}

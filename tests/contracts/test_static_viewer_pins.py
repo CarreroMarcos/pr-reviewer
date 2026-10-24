@@ -5,8 +5,8 @@ is the render boundary for model-controlled archive bytes:
 every reasoning excerpt, finding field, and raw archive byte passes
 through the JS three-phase span-preserving sanitizer (mirroring
 lambda/common/sanitize.py) and reaches the DOM via textContent-backed
-nodes only. The replay token lives in sessionStorage and rides fetch
-headers — never the URL, never localStorage. No third-party assets.
+nodes only. The replay surface is public: fetches carry no credentials
+and no client-side token storage exists. No third-party assets.
 
 These are source-level pins (same pattern as
 tests/model_evals/test_corpus_registry.py): they read the shipped
@@ -164,7 +164,7 @@ def test_specialty_prototype_safe_and_stage_null_guarded():
 
 def test_boot_autoload_shares_form_validation():
     """The query-param auto-load must pass the same PR/SHA validator as
-    the login form — one shared gate, so a crafted link cannot smuggle
+    the load form — one shared gate, so a crafted link cannot smuggle
     path characters into the /api request."""
     assert re.search(r"function prError\(pr\)", JS), "shared PR validator missing"
     assert re.search(r"function shaError\(sha\)", JS), "shared SHA validator missing"
@@ -186,19 +186,6 @@ def test_finding_line_number_guarded():
     dash — model-controlled line text never renders as a bare value."""
     assert 'typeof item.line_start === "number"' in JS, "line_start type guard missing"
     assert '(lineNo === null ? "—"' in JS, "non-numeric lines must degrade to a dash"
-
-
-def test_token_hygiene_sessionstorage_only():
-    """Token in sessionStorage ONLY: set/get/remove present, localStorage
-    absent, Bearer attached via fetch headers — never the URL."""
-    assert "localStorage" not in JS, "localStorage is forbidden for the replay token"
-    for op in ("sessionStorage.getItem", "sessionStorage.setItem", "sessionStorage.removeItem"):
-        assert op in JS, f"{op} missing — token lifecycle must stay in sessionStorage"
-    assert "Authorization" in JS and "Bearer" in JS, "Bearer header missing"
-    assert re.search(r"fetch\(.*headers", JS, re.DOTALL), (
-        "fetch must carry headers (the Bearer token)"
-    )
-    assert "token=" not in JS and "?token" not in JS, "token must never appear in a URL"
 
 
 def test_reasoning_excerpt_guarded_render():

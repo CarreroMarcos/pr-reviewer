@@ -20,21 +20,16 @@
     <span class="meta-item">status <strong id="meta-status">—</strong></span>
     <span class="meta-item">pipeline <strong id="meta-pipeline">—</strong></span>
   </div>
-  <div class="session">
-    <span id="session-state" class="session-state">locked</span>
-    <button id="logout-btn" type="button" hidden>Log out</button>
-  </div>
 </header>
 
 <main class="page">
   <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
 
-  <section id="login-panel" class="panel login" aria-labelledby="login-heading">
-    <h1 id="login-heading">Review replay</h1>
-    <p class="lede">One login unlocks this review. The token lives in this tab&rsquo;s
-      <span class="mono">sessionStorage</span> only — it never touches the URL,
-      and it vanishes when the tab closes.</p>
-    <form id="login-form">
+  <section id="load-panel" class="panel" aria-labelledby="load-heading">
+    <h1 id="load-heading">Review replay</h1>
+    <p class="lede">Every review is public. Paste a pull request number and head
+      SHA, or follow a replay link from a review comment.</p>
+    <form id="load-form">
       <div class="field-row">
         <label class="field">Pull request
           <input id="in-pr" name="pr" inputmode="numeric" autocomplete="off" placeholder="123">
@@ -44,11 +39,7 @@
                  class="mono" placeholder="40 hex chars">
         </label>
       </div>
-      <label class="field">Replay token
-        <input id="in-token" name="token" type="password" autocomplete="current-password"
-               placeholder="paste the replay token">
-      </label>
-      <button type="submit" class="primary">Unlock review</button>
+      <button type="submit" class="primary">Load review</button>
     </form>
   </section>
 

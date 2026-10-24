@@ -5,15 +5,12 @@
  * fields, raw archive bytes) passes through sanitizeMarkdown() and is
  * rendered with textContent-backed DOM nodes only. There is intentionally
  * no markup-parsing sink anywhere in this file (the contract test names
- * the forbidden list) — that absence is the XSS boundary, because sessionStorage
- * is readable by any script on this origin.
+ * the forbidden list) — that absence is the XSS boundary.
  *
- * Auth rule: the replay token lives in sessionStorage under TOKEN_KEY and
- * is attached as an Authorization: Bearer header on fetch calls. It is
- * never placed in a URL, never written to persistent client storage.
+ * Access rule: the replay surface is public — the viewer serves run
+ * archives to any caller, so fetches carry no credentials. The reviewed
+ * repo is public and the archives hold nothing beyond it.
  */
-
-var TOKEN_KEY = "pr-reviewer.replay-token";
 /* HLD §7 archive key contract, mirrored from the viewer Lambda's
  * _ARCHIVE_RE: runs/{pr}/{sha}/{run_id}/events.jsonl with numeric PR,
  * 40-hex SHA, 32-hex run id. Anchored: no dot-segments, no query or
@@ -277,33 +274,11 @@ function renderModelMarkdown(container, text) {
   }
 }
 
-/* --- auth + fetch --------------------------------------------------- */
-
-function getToken() {
-  return window.sessionStorage.getItem(TOKEN_KEY);
-}
-
-function setToken(token) {
-  window.sessionStorage.setItem(TOKEN_KEY, token);
-}
-
-function clearToken() {
-  window.sessionStorage.removeItem(TOKEN_KEY);
-}
-
-function authHeaders() {
-  return { Authorization: "Bearer " + getToken() };
-}
-
-function fetchAuthed(path) {
-  return window.fetch(path, { headers: authHeaders() });
-}
-
 /* --- page state ----------------------------------------------------- */
 
 function routeParams() {
   // Production path /runs/{pr}/{sha}/; local dev falls back to query
-  // params or the manual inputs. The token itself never appears in any URL.
+  // params or the manual inputs.
   var pathMatch = window.location.pathname.match(/^\/runs\/(\d+)\/([0-9a-f]{40})\/?$/);
   if (pathMatch !== null) {
     return { pr: pathMatch[1], sha: pathMatch[2] };
@@ -750,12 +725,7 @@ function archivePaths(pr, sha, latest) {
 
 function loadReview(pr, sha) {
   clearNotice();
-  return fetchAuthed("/api/runs/" + pr + "/latest").then(function (resp) {
-    if (resp.status === 401) {
-      clearToken();
-      syncSession();
-      throw new Error("Token rejected (401) — paste the current replay token.");
-    }
+  return window.fetch("/api/runs/" + pr + "/latest").then(function (resp) {
     if (resp.status === 404) {
       throw new Error("No runs recorded for PR " + pr + " yet.");
     }
@@ -778,16 +748,11 @@ function loadReview(pr, sha) {
       throw new Error("Latest-run response carries no archive location.");
     }
     return window.Promise.all([
-      fetchAuthed(paths.eventsPath),
-      fetchAuthed(paths.metaPath)
+      window.fetch(paths.eventsPath),
+      window.fetch(paths.metaPath)
     ]).then(function (pair) {
       var eventsResp = pair[0];
       var metaResp = pair[1];
-      if (eventsResp.status === 401 || metaResp.status === 401) {
-        clearToken();
-        syncSession();
-        throw new Error("Token rejected (401) — paste the current replay token.");
-      }
       return window.Promise.all([
         eventsResp.ok ? eventsResp.text() : "",
         metaResp.ok ? metaResp.text() : ""
@@ -837,13 +802,6 @@ function shaError(sha) {
   return /^[0-9a-f]{40}$/.test(sha || "") ? null : "Enter the 40-character head SHA.";
 }
 
-function syncSession() {
-  var authed = getToken() !== null;
-  document.getElementById("session-state").textContent = authed ? "unlocked" : "locked";
-  document.getElementById("session-state").classList.toggle("open", authed);
-  document.getElementById("logout-btn").hidden = !authed;
-}
-
 function boot() {
   var params = routeParams();
   if (params.pr !== null && params.pr !== undefined) {
@@ -870,22 +828,10 @@ function boot() {
     document.getElementById("tab-meta").setAttribute("aria-selected", "true");
   };
 
-  document.getElementById("logout-btn").onclick = function () {
-    stopReplay();
-    clearToken();
-    currentSteps = [];
-    syncSession();
-    document.getElementById("review").hidden = true;
-    document.getElementById("run-meta").hidden = true;
-    document.getElementById("in-token").value = "";
-    notice("Logged out — the tab token was discarded.");
-  };
-
-  document.getElementById("login-form").onsubmit = function (ev) {
+  document.getElementById("load-form").onsubmit = function (ev) {
     ev.preventDefault();
     var pr = document.getElementById("in-pr").value.trim();
     var sha = document.getElementById("in-sha").value.trim().toLowerCase();
-    var token = document.getElementById("in-token").value;
     var prErr = prError(pr);
     if (prErr !== null) {
       notice(prErr);
@@ -896,22 +842,14 @@ function boot() {
       notice(shaErr);
       return;
     }
-    if (token === "") {
-      notice("Paste the replay token.");
-      return;
-    }
-    setToken(token);
-    document.getElementById("in-token").value = "";
-    syncSession();
     loadReview(pr, sha);
   };
 
-  syncSession();
   var autoSha = typeof params.sha === "string" ? params.sha.toLowerCase() : params.sha;
-  if (getToken() !== null && prError(params.pr) === null && shaError(autoSha) === null) {
+  if (prError(params.pr) === null && shaError(autoSha) === null) {
     loadReview(params.pr, autoSha);
-  } else if (getToken() !== null && (params.pr || params.sha)) {
-    notice("That link's PR or SHA looks incomplete — check the fields and unlock again.");
+  } else if (params.pr || params.sha) {
+    notice("That link's PR or SHA looks incomplete — check the fields.");
   }
 }
 
