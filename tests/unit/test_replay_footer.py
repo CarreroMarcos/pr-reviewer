@@ -11,7 +11,13 @@ from types import SimpleNamespace
 
 from common import config
 from common.envelope import Envelope
-from worker_handler import REPLAY_FOOTER_MARK, _make_publish, _run_label, _with_replay_footer
+from worker_handler import (
+    REPLAY_FOOTER_MARK,
+    _label_fn_for,
+    _make_publish,
+    _run_label,
+    _with_replay_footer,
+)
 
 BODY = "## Summary\n\nLooks good.\n\n## Findings\n\n- one finding (file.py:12)"
 BASE = "https://viewer.example.lambda-url.us-west-2.on.aws"
@@ -81,6 +87,27 @@ def test_run_label_degraded_flag_ignored_when_pipeline_single_pass(monkeypatch):
         _run_label([{"type": "degraded_to_single_pass"}], "glm-5.3-flash")
         == "single-pass · glm-5.3-flash"
     )
+
+
+def test_label_fn_for_is_late_bound_on_events_and_model():
+    """The production wiring seam: the closure reads the event list and
+    the credential snapshot when called (publish time), not when built.
+
+    Pins the exact properties a hand-rolled publish test cannot: the
+    argument order into `_run_label`, the `glm_model` attribute, and
+    that events recorded after wiring still count.
+    """
+    events: list = []
+    creds = SimpleNamespace(
+        current=lambda: SimpleNamespace(glm_model="glm-x"),
+        refresh_once=lambda: False,
+    )
+    label_fn = _label_fn_for(events, creds)
+    assert label_fn() == "single-pass · glm-x"
+    events.append({"type": "agent_started"})
+    assert label_fn() == "multi-agent · glm-x"
+    events.append({"type": "degraded_to_single_pass"})
+    assert label_fn() == "multi-agent → degraded to single-pass · glm-x"
 
 
 def _publish_fixture(monkeypatch, label_fn):

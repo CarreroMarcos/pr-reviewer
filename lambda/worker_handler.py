@@ -579,6 +579,19 @@ def _run_label(events: list[dict[str, Any]], model: str) -> str:
     return f"{display} · {model}"
 
 
+def _label_fn_for(events: list[dict[str, Any]], creds: _Credentials) -> Callable[[], str]:
+    """Build the publish-time footer-label closure for a record.
+
+    Late-bound on purpose: the event list is read when the label is
+    computed at publish, not when the closure is built — stage events
+    recorded after wiring still count. The model comes from the live
+    credential snapshot at that same moment, so a mid-run refresh is
+    reflected too. Kept as a named seam (rather than an inline lambda
+    in `_process_record`) so the production wiring is directly testable.
+    """
+    return lambda: _run_label(events, creds.current().glm_model)
+
+
 def _with_replay_footer(content: str, *, pr_number: int, sha: str, label: str | None = None) -> str:
     """Deterministic replay-link footer on the published canonical
     body — code-side, never model-side (the synthesizer prompt and output
@@ -2031,7 +2044,7 @@ def _process_record(
             owner=envelope.delivery_guid,
             clock=clock,
             github_transport=github_transport,
-            label_fn=lambda: _run_label(record_events, creds.current().glm_model),
+            label_fn=_label_fn_for(record_events, creds),
         )
 
         def _evented_fence() -> str:
