@@ -187,6 +187,21 @@ def test_publish_label_failure_degrades_to_unlabeled_footer(monkeypatch):
     assert "glm-5.3-flash" not in shipped
 
 
+def test_footer_label_change_does_not_break_exactly_once(monkeypatch):
+    """The exactly-once anchor is the link alone, not the labeled line:
+    a re-publish whose pipeline/model label changed must still be
+    suppressed, never stack a second footer."""
+    monkeypatch.setenv("REPLAY_BASE_URL", BASE)
+    once = _with_replay_footer(BODY, pr_number=167, sha=SHA, label="single-pass · glm-5.3-flash")
+    again = _with_replay_footer(
+        once,
+        pr_number=167,
+        sha=SHA,
+        label="multi-agent → degraded to single-pass · other-model",
+    )
+    assert again == once
+
+
 def test_footer_omitted_when_env_unset(monkeypatch):
     monkeypatch.delenv("REPLAY_BASE_URL", raising=False)
     assert _with_replay_footer(BODY, pr_number=167, sha=SHA) == BODY
