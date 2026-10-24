@@ -17,10 +17,9 @@ multi-agent infrastructure surface:
   three-way cross-check against `common.config` defaults;
 * viewer role read policy (`aws_iam_role_policy.viewer`): `s3:GetObject`
   on the archives bucket's `runs/*` + `static/*`, `dynamodb:Query`
-  scoped to the `pr-runs-index` GSI ARN, `ssm:GetParameter` on the
-  replay-token ARN, and NO `kms:Decrypt` anywhere — SecureStrings are
-  decrypted server-side by SSM (ARCH §6.1 viewer role; ARCH §5.3 viewer
-  IAM).
+  scoped to the `pr-runs-index` GSI ARN, and NO `ssm:GetParameter` or
+  `kms:Decrypt` anywhere — the replay surface is public, so the viewer
+  reads no parameters (ARCH §6.1 viewer role; ARCH §5.3 viewer IAM).
 """
 
 import re
@@ -32,7 +31,6 @@ COMPUTE_TF = (TERRAFORM_DIR / "compute.tf").read_text(encoding="utf-8")
 OBSERVABILITY_TF = (TERRAFORM_DIR / "observability.tf").read_text(encoding="utf-8")
 VARIABLES_TF = (TERRAFORM_DIR / "variables.tf").read_text(encoding="utf-8")
 VIEWER_TF = (TERRAFORM_DIR / "viewer.tf").read_text(encoding="utf-8")
-IAM_TF = (TERRAFORM_DIR / "iam.tf").read_text(encoding="utf-8")
 
 # The 12 multi-agent vars, with their defaults except MULTI_AGENT
 # (deployed "1"; the code default stays 0). All quoted — Lambda env
@@ -347,10 +345,11 @@ def test_contention_term_couples_emission_and_filter():
 
 # --- viewer role read policy (ARCH §6.1) ---
 #
-# No `kms:Decrypt`: SecureStrings ride the AWS-managed `aws/ssm` key
-# and SSM decrypts server-side via WithDecryption, so no per-key grant
-# is needed. The absence pin below is the enforcement: a decrypt grant
-# cannot silently return.
+# No SSM access at all: the replay surface is public, so the viewer
+# reads no parameters — and no `kms:Decrypt` either, since that grant
+# only ever existed for the retired replay-token parameter. The
+# absence pin below is the enforcement: neither grant can silently
+# return.
 
 
 def _viewer_policy_block() -> str:
@@ -383,21 +382,16 @@ def test_viewer_role_policy_dynamodb_query_gsi_only():
     )
 
 
-def test_viewer_role_policy_ssm_token_and_no_kms_decrypt():
-    """ssm:GetParameter on the replay-token ARN (the local map in iam.tf
-    pins the parameter path) and NO kms:Decrypt anywhere in the viewer
-    surface — SecureStrings need no per-key grant."""
+def test_viewer_role_policy_no_ssm_access():
+    """No ssm:GetParameter and no kms:Decrypt in the viewer policy —
+    the public replay surface reads no parameters, so the retired
+    replay-token grant (and its decrypt pin) must not come back."""
     block = _viewer_policy_block()
-    assert '"ssm:GetParameter"' in block, "no ssm:GetParameter statement"
-    assert re.search(r"local\.ssm_parameter_arn\.replay_token", block), (
-        "ssm:GetParameter not scoped to the replay-token ARN local"
-    )
-    assert "parameter/pr-reviewer/replay-token" in IAM_TF, (
-        "iam.tf locals map does not pin the replay-token parameter path"
-    )
+    assert '"ssm:GetParameter"' not in block, "viewer must not read SSM parameters"
     assert "kms:Decrypt" not in block, "superseded kms:Decrypt grant present in policy"
     viewer_code = re.sub(r"(?m)^\s*(?:#|//).*$", "", VIEWER_TF)
     assert "kms:Decrypt" not in viewer_code, "kms:Decrypt granted in viewer.tf code"
+    assert "ssm:GetParameter" not in viewer_code, "ssm:GetParameter granted in viewer.tf code"
 
 
 def test_no_kms_actions_anywhere_in_terraform():

@@ -246,7 +246,7 @@ A tracked script would add a top-level `tools/` directory entry beyond the exist
 
 ## 5. Replay site operations
 
-The replay site is the `pr-reviewer-viewer` Lambda behind a Function URL. It serves per-review replay pages from archived runs. This section covers the three operational surfaces the deploy owns: the bearer token, the static assets, and the logs.
+The replay site is the `pr-reviewer-viewer` Lambda behind a Function URL. It serves per-review replay pages from archived runs. This section covers the two operational surfaces the deploy owns: the static assets and the logs. All replay routes are public — the reviewed repo is public and the archives hold nothing beyond it (published findings, agent reasoning, run metadata).
 
 ### Endpoint
 
@@ -256,29 +256,9 @@ aws lambda get-function-url-config \
   --query FunctionUrl --output text
 ```
 
-Every canonical review comment ends with a `[🔬 Full agent replay]` footer linking `<endpoint>/runs/{pr}/{sha}/` for that exact run (the worker resolves the base from its `REPLAY_BASE_URL` env — set in compute.tf from the viewer Function URL, never committed). The page shell is unauthenticated; artifacts behind the bearer token (below).
+Every canonical review comment ends with a `[🔬 Full agent replay]` footer linking `<endpoint>/runs/{pr}/{sha}/` for that exact run (the worker resolves the base from its `REPLAY_BASE_URL` env — set in compute.tf from the viewer Function URL, never committed), followed by the run's pipeline and configured model (e.g. `multi-agent · glm-5.3-flash`).
 
-The live URL is distributed out of band with the bearer token (the endpoint is public-by-design but not committed to the repo — defense-in-depth against low-cost reconnaissance).
-
-Auth model (ARCHITECTURE.md §6.5): the URL itself is `authorization_type = "NONE"` — enforcement happens in the handler. Static shell/assets and dot-segment rejections are unauthenticated; `/api/runs/{pr}/latest` and run artifacts compare `Authorization: Bearer` against the SSM token via `hmac.compare_digest`. The token is read from SSM **per invocation** with `WithDecryption` — no cache — so rotation needs no code deploy.
-
-Routes (all others → 404): `/runs/{pr}/{sha}/` (shell, unauth), `/static/{file}`, `/api/runs/{pr}/latest` (bearer), `/runs/{pr}/{sha}/{run_id}/{file}` (bearer, `run_id` = 32 hex).
-
-### Token provisioning & rotation
-
-The token lives in SSM as a SecureString. Provision (once) or rotate (any time) with:
-
-```bash
-aws ssm put-parameter \
-  --name /pr-reviewer/replay-token \
-  --type SecureString \
-  --value '<new-token>' \
-  --overwrite   # omit on first provisioning
-```
-
-- Never commit or echo the token value; hand it to operators out of band.
-- Rotation = new value at the same name; the next viewer invocation picks it up (no deploy, no restart). Old tokens die immediately.
-- The viewer IAM role reads exactly this one parameter (`ssm:GetParameter`, no `kms:Decrypt` — SecureStrings ride the AWS-managed `aws/ssm` key, DECISIONS 2026-09-28).
+Routes (all others → 404, all public): `/runs/{pr}/{sha}/` (shell), `/static/{file}`, `/api/runs/{pr}/latest`, `/runs/{pr}/{sha}/{run_id}/{file}` (`run_id` = 32 hex).
 
 ### Static asset sync
 
@@ -292,4 +272,4 @@ Logs: `/aws/lambda/pr-reviewer-viewer` (7-day retention).
 
 ### Missing-key behavior (live-verified 2026-09-30)
 
-Without `s3:ListBucket`, live S3 answers GetObject for a **missing** key with `AccessDenied` (anti-enumeration); `moto` returns `NoSuchKey`, so CI originally never saw the branch and the first deploy returned 500 there. The handler now maps `NoSuchKey`, `NotFound`, and `AccessDenied` to 404 — the API surface stays {200, 401, 404} — and a contract test pins all three codes via a stubbed `ClientError`. Deployed behavior follows the handler zip baked at apply time; re-apply after any handler change.
+Without `s3:ListBucket`, live S3 answers GetObject for a **missing** key with `AccessDenied` (anti-enumeration); `moto` returns `NoSuchKey`, so CI originally never saw the branch and the first deploy returned 500 there. The handler now maps `NoSuchKey`, `NotFound`, and `AccessDenied` to 404 — the API surface stays {200, 404} — and a contract test pins all three codes via a stubbed `ClientError`. Deployed behavior follows the handler zip baked at apply time; re-apply after any handler change.

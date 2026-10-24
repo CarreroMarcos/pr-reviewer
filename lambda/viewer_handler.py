@@ -1,26 +1,23 @@
 """Viewer Lambda — the internet-reachable replay-site surface
 (ARCHITECTURE.md §5.3).
 
-Sits behind the NONE-auth Function URL and routes per §5.3:
+Sits behind the NONE-auth Function URL and routes per §5.3 — every
+route is public (the reviewed repo is public, and the archived runs
+carry nothing beyond it: published findings, agent reasoning, and run
+metadata — no credentials, no non-public input):
 
-    GET /runs/{pr}/{sha}/                         → static/index.html (unauth shell)
-    GET /static/{file}                            → S3 static/{file}   (unauth)
-    GET /api/runs/{pr}/latest   (Bearer)          → GSI pr-runs-index query
-    GET /runs/{pr}/{sha}/{rid}/{file} (Bearer)    → S3 archive object
+    GET /runs/{pr}/{sha}/                         → static/index.html
+    GET /static/{file}                            → S3 static/{file}
+    GET /api/runs/{pr}/latest                     → GSI pr-runs-index query
+    GET /runs/{pr}/{sha}/{rid}/{file}             → S3 archive object
 
 Security posture (all pinned by tests/integration/test_viewer_routing.py):
 
 * Dot-segment rejection happens BEFORE any S3 key is constructed — the
   `/static/` character class alone admits `static/..`; every decoded
   path segment resolving to `.` or `..` is a 404.
-* Strict allowlist regexes on every route; anything unparsed is 404 —
-  the URL surface is exactly the §5.3 tree, nothing more.
-* Bearer routes compare via `hmac.compare_digest` against the token in
-  SSM. The token is read PER INVOCATION (`WithDecryption`) — no cache —
-  so rotation ("new SSM value, no code deploy") is effective on the
-  next request without a recycle. No `kms:Decrypt` is needed: the
-  parameter is a plain SecureString on the AWS-managed `aws/ssm` key
-  and SSM decrypts server-side (ARCHITECTURE.md §2.6).
+* Strict allowlist regexes on every route; anything unparsed is 404 — the
+  URL surface is exactly the §5.3 tree, nothing more.
 * Served bodies are UNTRUSTED model-controlled data: this handler
   returns bytes verbatim; sanitization is the render boundary
   (ARCHITECTURE.md §5.3, the static shell), not the transport's.
@@ -28,14 +25,11 @@ Security posture (all pinned by tests/integration/test_viewer_routing.py):
   origin) — no CORS headers by design.
 
 Self-contained by packaging: viewer.zip carries ONLY this module
-(terraform/viewer.tf `archive_file`), so the resource names below are
-pinned here and kept in lockstep with terraform via the routing suite
-(SSM-literal ↔ iam.tf grant coupling).
+(terraform/viewer.tf `archive_file`).
 """
 
 from __future__ import annotations
 
-import hmac
 import json
 import re
 import urllib.parse
@@ -44,7 +38,6 @@ import boto3
 
 STATE_TABLE = "pr-reviewer-state"  # terraform/state.tf aws_dynamodb_table.state
 ARCHIVES_BUCKET = "pr-reviewer-archives"  # terraform/archives.tf aws_s3_bucket.archives
-TOKEN_PARAMETER_NAME = "/pr-reviewer/replay-token"  # noqa: S105 — SSM path, not a credential
 
 _STATIC_RE = re.compile(r"^static/[A-Za-z0-9._-]+$")
 _SHELL_RE = re.compile(r"^runs/\d+/[0-9a-f]{40}/?$")
@@ -92,31 +85,6 @@ def _not_found() -> dict:
     return _response(404, json.dumps({"message": "not found"}), "application/json")
 
 
-def _unauthorized() -> dict:
-    return _response(401, json.dumps({"message": "unauthorized"}), "application/json")
-
-
-def _expected_token() -> str:
-    param = _client("ssm").get_parameter(Name=TOKEN_PARAMETER_NAME, WithDecryption=True)
-    return param["Parameter"]["Value"]
-
-
-def _authorized(headers: dict) -> bool:
-    """Bearer check: scheme prefix (case-insensitive per RFC 7235),
-    then constant-time token compare."""
-    raw = None
-    for key, value in headers.items():
-        if key.lower() == "authorization":
-            raw = value
-            break
-    if not raw:
-        return False
-    parts = raw.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return False
-    return hmac.compare_digest(parts[1], _expected_token())
-
-
 def _serve_s3(key: str) -> dict:
     ext = key.rsplit(".", 1)[-1].lower()
     content_type = _CONTENT_TYPES.get(f".{ext}", "application/octet-stream")
@@ -128,7 +96,7 @@ def _serve_s3(key: str) -> dict:
         # key with AccessDenied (anti-enumeration); moto returns
         # NoSuchKey. All three "absent" codes — NoSuchKey, the listless
         # NotFound variant, and AccessDenied — map to 404: the surface
-        # stays {200, 401, 404} and the 500 path never fires for absent
+        # stays {200, 404} and the 500 path never fires for absent
         # keys. Error classes ride the boto3 client instance
         # (stdlib+boto3 import contract).
         if e.response.get("Error", {}).get("Code") in {"NoSuchKey", "NotFound", "AccessDenied"}:
@@ -156,7 +124,7 @@ def _serve_s3(key: str) -> dict:
         return _response(200, obj["Body"].read().decode("utf-8"), content_type)
     except UnicodeDecodeError:
         # Corrupt/foreign object: treat as absent — the API surface stays
-        # {200, 401, 404} and "unreadable" never leaks a 500.
+        # {200, 404} and "unreadable" never leaks a 500.
         return _not_found()
 
 
@@ -207,13 +175,9 @@ def _route(event: dict) -> dict:
 
     latest = _LATEST_RE.fullmatch(path)
     if latest:
-        if not _authorized(event.get("headers", {}) or {}):
-            return _unauthorized()
         return _serve_latest(int(latest.group(1)))
 
     if _ARCHIVE_RE.fullmatch(path):
-        if not _authorized(event.get("headers", {}) or {}):
-            return _unauthorized()
         return _serve_s3(path)
 
     return _not_found()

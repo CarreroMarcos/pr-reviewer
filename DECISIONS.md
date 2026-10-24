@@ -260,3 +260,12 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 
 **Consequences:** Re-reviews cleanly prune fixed defects and resist mid-review description edits. Infrastructure maintains $0 steady-state spend under Free Tier limits. Runbooks and HLD aligned with the zero-metric-alarm observability posture.
 **Current truth:** `prompts/system_prompt.md`, `lambda/worker_handler.py`, `terraform/observability.tf`, `ARCHITECTURE.md`.
+
+## 2026-10-24 — Replay viewer goes public: bearer gate removed
+
+**Context:** The replay viewer gated its data routes (`/api/runs/{pr}/latest`, `/runs/{pr}/{sha}/{run_id}/{file}`) behind a shared bearer token pasted into the shell, while the shell itself was unauthenticated and the footer link to it sat on a public comment. That made every replay link a dead end for anyone without the token — including the portfolio/demo viewers the front-door work targets. The question was whether the gate protected anything real.
+
+**Decision (Mars ruling, 2026-10-24):** Remove the gate. All viewer routes are public. The archived runs carry nothing beyond the public repo: published findings, agent reasoning, and run metadata — no credentials, no non-public input — and the prompts the runs used already live in the repo's `prompts/` directory. The handler, the shell's token UI, the viewer IAM `ssm:GetParameter` grant, and the `ssm_parameter_arn.replay_token` local all go away with it; the manually provisioned SSM parameter itself is orphaned (delete it out of band or leave it — nothing reads it). Residual risks accepted explicitly: anyone can enumerate latest runs per PR number (previously needed the token; run ids stay 32-hex unguessable for direct archive URLs), and unauthenticated Lambda/S3/DynamoDB reads are open to abuse on the bill — bounded by the 90-day archive lifecycle and the read-only surface. If the repo ever goes private, or a run ever reviews non-public input, the gate must come back first.
+
+**Consequences:** Footer replay links work for any viewer with no token step. `viewer_handler.py` keeps its dot-segment rejection, route allowlists, and render-boundary sanitization — those were never token-dependent. Re-gating means re-adding the two route checks plus a token store; it is not a one-line flip, by design (no dead auth code left behind).
+**Current truth:** `lambda/viewer_handler.py`, `static/review.js`, `terraform/viewer.tf`, `ARCHITECTURE.md` §5.3.
