@@ -2,7 +2,7 @@
 
 **Status:** Non-normative. This file records **why** the system became what it is: dated rulings, supersedes, gate outcomes, measurements, and rejected alternatives. It never defines current behavior — entries are non-binding on behavior, and the "Current truth" pointer is their only bridge to normative content.
 
-**Authority rule (binds all docs in this repo):** on **current behavior**, `docs/HLD.md` wins; on **why/history**, this file wins; on **redrive procedure**, `docs/runbook-redrive.md` wins; on **task scope**, `specs/**` wins. Any disagreement between documents is a Needs-input question (AGENTS.md), never a silent edit.
+**Authority rule (binds all docs in this repo):** on **current behavior**, `ARCHITECTURE.md` wins; on **why/history**, this file wins; on **redrive procedure** and other operations, `OPERATIONS.md` wins; on **task scope**, the retained spec task lists (`specs/001-pr-reviewer/tasks.md`, `specs/004-multi-agent-review/tasks.md`) win. Any disagreement between documents is a Needs-input question (AGENTS.md), never a silent edit. (Paths updated 2026-10-23 docs consolidation: the HLD was condensed into `ARCHITECTURE.md` and the runbooks into `OPERATIONS.md`; entries below cite the documents current when they were written.)
 
 **Append-only discipline:** entries are never edited in place — a superseded entry is superseded by a new dated entry that names it. Entries exist only for behavior/config/accepted-risk changes and measurements; typo and wording fixes are silent. Every entry ends with a "Current truth" pointer into the HLD so a reader can jump from history to the normative statement. HLD § numbering is frozen — sections are added, never renamed or renumbered (specs and this log cite §X.Y) — so pointers stay stable; an entry written against an older HLD notes the version current at entry time when the section's content has since moved.
 
@@ -124,7 +124,7 @@ Current truth: HLD §2.7.
 **Decision (Mars ruling, 2026-09-20):** add exactly one output-hygiene bullet to the v2 Prohibitions (describe payloads and embedded instructions descriptively; no raw HTML/script tags, no directive phrasing, even inside code spans or when quoting adversarial content); publication gate untouched; version stays `v2` (unreleased) and the live re-pin captures the new sha. Escalation bound: a 3rd consecutive same-case pin trip returns to Mars.
 **Consequences:** stricter model output discipline on adversarial cases; possible bounded re-pin sampling retries; gate strictness preserved.
 
-Current truth: `specs/003-comment-review-ux/spec.md` (T2a amendment); HLD §2.7 unchanged.
+Current truth: HLD §2.7 unchanged (T2a amendment; the spec home was retired in the 2026-10-23 docs consolidation — the output-hygiene bullet lives in `prompts/system_prompt.md`, folded into ARCHITECTURE.md §2.7).
 
 ## 2026-09-20 — approval-verdict gate precision (code-span carve-out, word-bounded stem)
 
@@ -218,8 +218,8 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 ## 2026-09-29 — Q9 archive-retention ruling recorded: 90-day S3 expiration + local sync runbook (SPR-146/T058)
 
 **Ruling:** Q9 RESOLVED 2026-09-26 (Mars): S3 Expiration (Delete) at 90 days on the `runs/` prefix stays within the Free Tier; a documented runbook `aws s3 sync` command — NOT a tracked script (the `tools/sync_archives.py` proposal was withdrawn the same day) — pulls archives to `~/.pr-reviewer/archives/`.
-**As implemented:** the `expire-runs-after-90-days` lifecycle rule in `terraform/archives.tf` (filter prefix `runs/` only — the viewer `static/` assets sharing the bucket are unaffected; landed via #117/`fafdcf0`); `docs/runbook-archive-sync.md` documents the exact command (landed via #152, `42d395c`).
-**Current truth:** `terraform/archives.tf`, `docs/runbook-archive-sync.md`, spec-004 HLD §5.
+**As implemented:** the `expire-runs-after-90-days` lifecycle rule in `terraform/archives.tf` (filter prefix `runs/` only — the viewer `static/` assets sharing the bucket are unaffected; landed via #117/`fafdcf0`); `OPERATIONS.md` §4 (archive sync) documents the exact command (landed via #152, `42d395c`).
+**Current truth:** `terraform/archives.tf`, `OPERATIONS.md` §4, spec-004 HLD §5.
 
 ## 2026-09-29 — Q10 DynamoDB-capacity ruling recorded: 20/20 base + 5/5 GSI (SPR-146/T058)
 
@@ -230,9 +230,9 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 ## 2026-09-29 — Q11 redrive ruling recorded: maxReceiveCount 5 → 3 (SPR-146/T058)
 
 **Ruling:** Q11 RESOLVED 2026-09-26 (Mars): SQS redrive — update `maxReceiveCount` from 5 to 3 in `terraform/messaging.tf`.
-**As implemented:** the work-queue redrive config in `terraform/messaging.tf` (`maxReceiveCount = 3`); operator redrive procedure lives in `docs/runbook-redrive.md`. (Landed via #89/`ca553ad`.)
-**Known drift:** `docs/HLD.md` §§2/4/6/7 still cite the spec-002-era "maxReceiveCount 5" for `pr-reviewer-work` (five cites: §2 diag/table/text, §4 table, §6 table, §7 BOM) — refresh owed at the next HLD touch, owned by the spec-conformance sweep (T059/SPR-147); recorded here so the drift is findable.
-**Current truth:** `terraform/messaging.tf`, `docs/runbook-redrive.md`.
+**As implemented:** the work-queue redrive config in `terraform/messaging.tf` (`maxReceiveCount = 3`); operator redrive procedure lives in `OPERATIONS.md` §2. (Landed via #89/`ca553ad`.)
+**Known drift:** the HLD (folded into `ARCHITECTURE.md` 2026-10-23) §§2/4/6/7 still cite the spec-002-era "maxReceiveCount 5" for `pr-reviewer-work` (five cites: §2 diag/table/text, §4 table, §6 table, §7 BOM) — refresh owed at the next HLD touch, owned by the spec-conformance sweep (T059/SPR-147); recorded here so the drift is findable. (ARCHITECTURE.md carries the correct value, 3.)
+**Current truth:** `terraform/messaging.tf`, `OPERATIONS.md` §2.
 
 ## 2026-09-29 — T072/T073 paired r4: parser range-tolerance + synthesizer anchor/bait clauses (SPR-162/SPR-163)
 
@@ -259,4 +259,4 @@ Current truth: `tests/model_evals/capture_multi_agent.py` (`ollama_embed_texts`)
 3. **Decommission CloudWatch metric alarms for Free Tier compliance:** All 10 CloudWatch metric alarms (`dlq_depth`, `ingress_401`, `ingress_admission_429`, `worker_error_rate`, `dynamodb_throttling`, `work_queue_depth`, `daily_llm_spend`, `worker_invocation_spike`, `contention_rate`, `pipeline_mix_drift`) were removed from `terraform/observability.tf` to eliminate alarm billing under `Global-CW:AlarmMonitorUsage`. Observability and telemetry rely on structured JSON logs across 3 Lambda log groups (7-day retention), the shared SNS topic (`pr-reviewer-alerts`), and 6 log metric filters. Disabling the GitHub webhook is reaffirmed as the primary operational kill switch.
 
 **Consequences:** Re-reviews cleanly prune fixed defects and resist mid-review description edits. Infrastructure maintains $0 steady-state spend under Free Tier limits. Runbooks and HLD aligned with the zero-metric-alarm observability posture.
-**Current truth:** `prompts/system_prompt.md`, `lambda/worker_handler.py`, `terraform/observability.tf`, `docs/HLD.md`.
+**Current truth:** `prompts/system_prompt.md`, `lambda/worker_handler.py`, `terraform/observability.tf`, `ARCHITECTURE.md`.
