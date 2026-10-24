@@ -4,6 +4,33 @@ A small serverless bot that reviews your pull requests for you. No servers to ru
 
 ---
 
+## See it work
+
+![The bot's canonical review comment on PR #177](docs/assets/canonical-review.png)
+
+*The bot's canonical review on [PR #177](https://github.com/CarreroMarcos/pr-reviewer/pull/177) — a real pull request, reviewed by the same bot this repo ships. One comment, updated in place on every push, with a full agent replay linked in the footer.*
+
+---
+
+## By the numbers (as of Oct 2026)
+
+- **177 pull requests** in this repo's history — the bot reviews its own PRs, one canonical review comment per PR, updated in place.
+- **220 commits** on main.
+- **About 3× more tests than code.** 32,205 lines of tests against 10,172 lines of runtime Python.
+- **A 15-case pinned model-eval corpus** (13 scored defect cases + 2 robustness probes) the pipeline is scored against in CI.
+- **$0/mo** — the whole thing fits inside the AWS free tier.
+
+---
+
+## Start here in 2 minutes
+
+1. This README — what the bot does and how it works.
+2. [`ARCHITECTURE.md`](ARCHITECTURE.md) — the design, including the fencing protocol that keeps one comment per PR safe.
+3. [`DECISIONS.md`](DECISIONS.md) — why it is built this way.
+4. [PR #177](https://github.com/CarreroMarcos/pr-reviewer/pull/177) — a real review from the bot, agent replay linked in the footer.
+
+---
+
 ## Why this exists
 
 Waiting on a first review slows everything down. Most review bots don't help much. They post a new comment on every push. They need servers that cost money and need care. And when pushes come fast, an old review can overwrite a new one.
@@ -85,10 +112,18 @@ Everything runs on AWS, and only when there's work to do. Nothing idles in the b
 
 - [`lambda/`](lambda/) — the code: `ingress_handler.py`, `worker_handler.py`, `viewer_handler.py`, shared helpers in `lambda/common/`.
 - [`terraform/`](terraform/) — all AWS setup as code: Lambdas, queue, database, storage, roles.
-- [`specs/`](specs/) — what the bot should do: `001-pr-reviewer` (the base bot), `004-multi-agent-review` (the panel).
-- [`docs/`](docs/) — design docs (start with `HLD.md`), runbooks, team process.
 - [`prompts/`](prompts/) — the instructions we give the AI reviewer.
 - [`tests/`](tests/) — unit, state-machine, contract, model-eval, and integration tests.
+- `README.md` — this file.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — how the system is designed: components, data flow, and the fencing protocol.
+- [`DECISIONS.md`](DECISIONS.md) — why it is built this way, decision by decision.
+- [`OPERATIONS.md`](OPERATIONS.md) — running it day to day: deploys, kill switch, redrive.
+
+---
+
+## What's next
+
+Planned work is all review quality: inline comments anchored to the exact lines they're about, GitHub App tokens so repos can install the bot without sharing a personal token, and whole-file context so reviewers see the code around a diff, not just the diff itself.
 
 ---
 
