@@ -291,7 +291,99 @@ def test_rendered_section_parses_clean():
     assert _HEAD_RE.search(section) is not None
     found, unparsable = parseable_bullets(section)
     assert unparsable == 0
-    assert found == [("a.py", 10, "HIGH"), ("a.py", 11, "MEDIUM"), ("b.py", 3, "HIGH")]
+    # CONTRACT CHANGE (2026-10-23): rendered bullets are severity-major
+    # (HIGH → MEDIUM → LOW, location tiebreak), NOT location-major as
+    # this assertion originally pinned. See the ordering tests below.
+    assert found == [("a.py", 10, "HIGH"), ("b.py", 3, "HIGH"), ("a.py", 11, "MEDIUM")]
+
+
+# --- render ordering (2026-10-23: severity-major publication order) ---
+
+
+def _rendered_locations(items):
+    found, unparsable = parseable_bullets(render_findings_section(items))
+    assert unparsable == 0
+    return found
+
+
+def test_render_orders_severity_desc_with_location_tiebreak():
+    """Mixed severities across files (fed in dedupe's location-major
+    order) render HIGH first, then MEDIUM, then LOW; within a severity
+    the location order (path, then line) is kept."""
+    merged = dedupe_findings(
+        [
+            sv(cid="c:0", severity="LOW", path="a.py", line=5, title="Low in a"),
+            sv(cid="c:1", severity="HIGH", path="b.py", line=3, title="High in b"),
+            sv(cid="c:2", severity="MEDIUM", path="a.py", line=40, title="Med in a"),
+            sv(cid="c:3", severity="HIGH", path="a.py", line=30, title="High in a"),
+            sv(cid="c:4", severity="LOW", path="z.py", line=1, title="Low in z"),
+        ],
+        [],
+    )
+    assert _rendered_locations(merged) == [
+        ("a.py", 30, "HIGH"),
+        ("b.py", 3, "HIGH"),
+        ("a.py", 40, "MEDIUM"),
+        ("a.py", 5, "LOW"),
+        ("z.py", 1, "LOW"),
+    ]
+
+
+def test_render_reorders_177_shape_low_low_medium():
+    """The observed PR #177 shape: location order put a MEDIUM third,
+    after two LOWs in an earlier-sorting file. Severity-major render
+    puts the MEDIUM first; the LOWs keep location order."""
+    merged = dedupe_findings(
+        [
+            sv(cid="c:0", severity="LOW", path="lambda/worker.py", line=427, title="Fence closer info string"),
+            sv(cid="c:1", severity="LOW", path="lambda/worker.py", line=468, title="Nested bullets uncounted"),
+            sv(cid="c:2", severity="MEDIUM", path="terraform/obs.tf", line=23, title="Alarms decommissioned"),
+            sv(cid="c:3", severity="LOW", path="tests/test_race.py", line=640, title="Branch untested"),
+        ],
+        [],
+    )
+    assert _rendered_locations(merged) == [
+        ("terraform/obs.tf", 23, "MEDIUM"),
+        ("lambda/worker.py", 427, "LOW"),
+        ("lambda/worker.py", 468, "LOW"),
+        ("tests/test_race.py", 640, "LOW"),
+    ]
+
+
+def test_render_unknown_severity_after_known_stable():
+    """Unknown severities (verifier passthrough) render after LOW,
+    keeping their input relative order; known order is unaffected.
+    Rendered directly (not via dedupe) to cover arbitrary input."""
+    items = [
+        sv(cid="c:0", severity="CRITICAL", path="a.py", line=3, title="Unknown one"),
+        sv(cid="c:1", severity="LOW", path="a.py", line=2, title="Known low"),
+        sv(cid="c:2", severity="WEIRD", path="a.py", line=1, title="Unknown two"),
+        sv(cid="c:3", severity="HIGH", path="a.py", line=4, title="Known high"),
+    ]
+    section = render_findings_section(items)
+    titles = [line.split("— ", 1)[1] for line in section.splitlines() if line.startswith("- ")]
+    assert titles == [
+        "Known high. d Fix: f.",
+        "Known low. d Fix: f.",
+        "Unknown one. d Fix: f.",
+        "Unknown two. d Fix: f.",
+    ]
+
+
+def test_render_does_not_mutate_or_reorder_merged():
+    """The merged list is event/eval truth in dedupe's location-major
+    order; rendering must not mutate it (order or contents)."""
+    merged = dedupe_findings(
+        [
+            sv(cid="c:0", severity="LOW", path="a.py", line=5, title="Low in a"),
+            sv(cid="c:1", severity="HIGH", path="b.py", line=3, title="High in b"),
+        ],
+        [],
+    )
+    before = [dict(m) for m in merged]
+    render_findings_section(merged)
+    assert merged == before
+    assert [m["candidate_id"] for m in merged] == ["c:0", "c:1"]
 
 
 # --- stage: run_synthesizer --------------------------------------
