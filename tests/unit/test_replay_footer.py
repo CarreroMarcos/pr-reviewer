@@ -7,7 +7,7 @@ re-publish (a body already carrying the mark is never re-appended).
 """
 
 from common import config
-from worker_handler import REPLAY_FOOTER_MARK, _with_replay_footer
+from worker_handler import REPLAY_FOOTER_MARK, _run_label, _with_replay_footer
 
 BODY = "## Summary\n\nLooks good.\n\n## Findings\n\n- one finding (file.py:12)"
 BASE = "https://viewer.example.lambda-url.us-west-2.on.aws"
@@ -22,6 +22,44 @@ def test_footer_appended_when_env_set(monkeypatch):
     # env trailing slash stripped — exactly one `/runs/...` segment shape
     assert f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)" in out
     assert out.rstrip().endswith("checkpoints for this review.")
+
+
+def test_footer_label_rendered_after_link(monkeypatch):
+    monkeypatch.setenv("REPLAY_BASE_URL", BASE)
+    out = _with_replay_footer(BODY, pr_number=167, sha=SHA, label="multi-agent · glm-5.3-flash")
+    link = f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)"
+    assert f"{link} — multi-agent · glm-5.3-flash · agent DAG" in out
+    assert out.count(REPLAY_FOOTER_MARK) == 1
+
+
+def test_footer_label_does_not_break_exactly_once(monkeypatch):
+    """The exactly-once anchor is the link alone: a re-publish of a body
+    whose footer already carries a label must not stack a second footer."""
+    monkeypatch.setenv("REPLAY_BASE_URL", BASE)
+    once = _with_replay_footer(BODY, pr_number=167, sha=SHA, label="single-pass · glm-5.3-flash")
+    twice = _with_replay_footer(once, pr_number=167, sha=SHA, label="single-pass · glm-5.3-flash")
+    assert twice == once
+
+
+def test_run_label_single_pass():
+    assert _run_label([], "glm-5.3-flash") == "single-pass · glm-5.3-flash"
+    assert (
+        _run_label([{"type": "concurrency_single_pass"}], "glm-5.3-flash")
+        == "single-pass · glm-5.3-flash"
+    )
+
+
+def test_run_label_multi_agent():
+    events = [{"type": "agent_started"}, {"type": "review_synthesized"}]
+    assert _run_label(events, "glm-5.3-flash") == "multi-agent · glm-5.3-flash"
+
+
+def test_run_label_degraded_keeps_origin_visible():
+    events = [{"type": "agent_started"}, {"type": "degraded_to_single_pass"}]
+    assert (
+        _run_label(events, "glm-5.3-flash")
+        == "multi-agent → degraded to single-pass · glm-5.3-flash"
+    )
 
 
 def test_footer_omitted_when_env_unset(monkeypatch):
