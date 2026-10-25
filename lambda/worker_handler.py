@@ -600,14 +600,21 @@ def _is_model_footer_line(line: str) -> bool:
     reproduce a footer-like block with a hallucinated URL and an
     invented label (seen live: a raw-parens URL to `/runs/{pr}/re-review`
     labeled `re-review · glm-5.3-flash`). A line only counts when it
-    IS a footer line — starting with the 🔬 mark plus the footer text,
-    or the bare markdown footer link — so a finding that merely
-    mentions the replay never matches.
+    IS a footer-shaped line: the bare markdown footer link, or the 🔬
+    mark immediately followed by the footer text (bare or bracketed)
+    plus a link — so prose that merely mentions the replay never
+    matches, even when it starts with 🔬 (e.g. `🔬 Evidence: see the
+    Full agent replay run ...`) or brackets the mark without linking.
     """
     stripped = line.strip()
     if stripped.startswith(f"[{REPLAY_FOOTER_MARK}]"):
-        return True
-    return stripped.startswith("🔬") and REPLAY_FOOTER_MARK in stripped
+        return "](" in stripped
+    if not stripped.startswith("🔬"):
+        return False
+    rest = stripped[1:].strip()
+    if not (rest.startswith(REPLAY_FOOTER_MARK) or rest.startswith(f"[{REPLAY_FOOTER_MARK}]")):
+        return False
+    return "http://" in stripped or "https://" in stripped or "](" in stripped
 
 
 def _strip_model_footers(content: str) -> str:

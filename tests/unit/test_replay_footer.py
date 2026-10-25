@@ -281,6 +281,38 @@ def test_strip_model_footer_markdown_link_form():
     assert out.startswith(BODY)
 
 
+def test_strip_model_footer_bare_link_form():
+    """The bare-link branch needs its own case: a footer link with no
+    leading 🔬 (the exact code-footer markdown shape, minus the emoji)
+    must strip — the emoji-prefixed cases above never exercise it."""
+    bare = (
+        BODY
+        + "\n\n[Full agent replay](https://viewer.example.test/runs/998/"
+        + "c" * 40
+        + "/) — re-review · glm-5.3-flash\n"
+    )
+    out = _strip_model_footers(bare)
+    assert "viewer.example.test" not in out
+    assert "re-review" not in out
+    assert out.rstrip() == BODY
+
+
+def test_strip_separator_pop_is_only_immediately_preceding():
+    """The `---` pop fires only for a separator directly before the
+    footer line: a body-internal `---` with prose after it survives,
+    a `---` separated from the footer by a blank line survives, and
+    only the `---` directly before the footer goes with it."""
+    body = "A\n\n---\n\nprose\n\n---\n\n" + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    # blank-separated separator preserved, body-internal one preserved
+    assert out.count("\n---\n") == 2
+    body2 = BODY + "\n\n---\n\nprose\n\n---\n" + FAKE_FOOTER_RAW + "\n"
+    out2 = _strip_model_footers(body2)
+    assert FAKE_FOOTER_RAW not in out2
+    assert out2.count("---") == 1  # only the body-internal separator left
+
+
 def test_strip_preserves_fenced_footer_quote():
     """A footer line inside a fenced block is documentation, not a
     footer — the strip never touches fenced content."""
@@ -288,14 +320,26 @@ def test_strip_preserves_fenced_footer_quote():
     assert _strip_model_footers(quoted) == quoted
 
 
+def test_strip_preserves_tilde_fenced_footer_quote():
+    """The `~~~` fence delimiter gets the same protection as backticks
+    — the toggle covers both, and only a test pins the tilde branch."""
+    quoted = BODY + "\n\n~~~\n" + FAKE_FOOTER_RAW + "\n~~~\n"
+    assert _strip_model_footers(quoted) == quoted
+
+
 def test_strip_preserves_prose_mentions_of_replay():
     """A finding or sentence that merely mentions the replay is prose,
     not a footer line — it starts with neither the 🔬 mark nor the
-    bare footer link, so it survives."""
+    bare footer link, so it survives. Includes the two near-miss
+    shapes the predicate must not eat: a mid-line 🔬 mention, and a
+    🔬-led evidence sentence whose footer text does not immediately
+    follow the mark."""
     prose = (
         BODY
         + "\n\n- [LOW] The verifier noted the Full agent replay idea.\n"
         + "The Full agent replay page renders from archived events.\n"
+        + "Discussion of the 🔬 Full agent replay link follows.\n"
+        + "🔬 Evidence: see the Full agent replay run for the failing hunk.\n"
     )
     assert _strip_model_footers(prose) == prose
 
