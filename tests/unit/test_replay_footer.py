@@ -365,6 +365,42 @@ def test_strip_preserves_tilde_fenced_footer_quote():
     assert _strip_model_footers(quoted) == quoted
 
 
+def test_strip_preserves_footer_after_unclosed_fence():
+    """Documented tradeoff, pinned: an unclosed fence disables
+    stripping for the rest of the body — a footer line after it is
+    possibly-quoted content, so it survives."""
+    unclosed = BODY + "\n\n```\n" + FAKE_FOOTER_RAW + "\n"
+    assert _strip_model_footers(unclosed) == unclosed
+
+
+def test_strip_shorter_same_char_line_does_not_close_fence():
+    """CommonMark pairing: a closing fence must run at least as long
+    as its opener — a 3-backtick line inside a 4-backtick block
+    neither closes it nor exposes the quoted footer to the strip."""
+    block = BODY + "\n\n````\ncontent\n```\n" + FAKE_FOOTER_RAW + "\n````\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_cross_char_line_does_not_close_fence():
+    """Pairing is by marker char too: a `~~~` line inside an open ```
+    block neither closes it nor opens a new one, so the quoted footer
+    after it stays protected."""
+    block = BODY + "\n\n```\ncontent\n~~~\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_mid_body_footer_preserves_surrounding_prose():
+    """Footers are not always last: a footer block sandwiched between
+    prose lines is removed (separator included) while the prose
+    around it survives verbatim."""
+    body = BODY + "\n\n---\n" + FAKE_FOOTER_RAW + "\nTrailing prose survives.\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert "re-review" not in out
+    assert "Trailing prose survives." in out
+    assert out.rstrip().endswith("Trailing prose survives.")
+
+
 def test_strip_preserves_prose_mentions_of_replay():
     """A finding or sentence that merely mentions the replay is prose,
     not a footer line — it starts with neither the 🔬 mark nor the
@@ -432,6 +468,21 @@ def test_publish_strips_fake_with_token_shaped_url_after_sanitize(monkeypatch):
     assert token not in shipped
     assert "[redacted:token]" in shipped
     assert shipped.count(REPLAY_FOOTER_MARK) == 1
+
+
+def test_publish_unclosed_fence_preserves_fake_but_appends_code_footer(monkeypatch):
+    """Publish half of the unclosed-fence tradeoff: the fenced fake
+    survives (never strip possibly-quoted content) and the code
+    footer still lands exactly once. Note the honest counts here — a
+    `count(mark) == 1` assertion would be wrong, because the preserved
+    fenced fake IS a second mark; what is pinned is one code link."""
+    publish, calls = _publish_fixture(monkeypatch, label_fn=lambda: "single-pass · glm-5.3-flash")
+    body = BODY + "\n\n```\n" + FAKE_FOOTER_RAW + "\n"
+    assert publish(body) == 555
+    shipped = _shipped_body(calls)
+    assert FAKE_FOOTER_RAW in shipped
+    assert shipped.count(f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)") == 1
+    assert shipped.rstrip().endswith("checkpoints for this review.")
 
 
 def test_config_replay_base_url_strips_trailing_slashes(monkeypatch):

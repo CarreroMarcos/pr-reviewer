@@ -617,17 +617,21 @@ def _is_model_footer_line(line: str) -> bool:
     return shape.match(line.strip()) is not None
 
 
-def _fence_marker(line: str) -> str | None:
-    """Fence delimiter char for a standalone fence line, else `None`.
+def _fence_marker(line: str) -> tuple[str, int] | None:
+    """Fence (char, length) for a standalone fence line, else `None`.
 
     CommonMark shape: 3+ fence chars plus an optional info string with
     no backticks. A line that merely STARTS with triple backticks —
     e.g. an inline code span like `` ```code``` text `` — is not a
     delimiter, so it must not flip fence tracking and hide a later
-    real footer from the strip.
+    real footer from the strip. Length matters for pairing: a closing
+    fence must run at least as long as its opener.
     """
     match = re.match(r"(`{3,}|~{3,})[^`]*$", line.strip())
-    return match.group(1)[0] if match else None
+    if match is None:
+        return None
+    run = match.group(1)
+    return run[0], len(run)
 
 
 def _strip_model_footers(content: str) -> str:
@@ -640,24 +644,25 @@ def _strip_model_footers(content: str) -> str:
     copy as the already-published footer and leave it stranded
     mid-body with nothing at the end). Lines inside fenced code blocks
     are never stripped — a quoted footer is documentation, not a
-    footer — and fences pair by marker char, so a `~~~` line inside a
-    ``` block neither closes it nor opens a new one. Documented
-    tradeoff: an unclosed fence disables stripping for the rest of
-    the body (never strip possibly-quoted content); the code footer
-    still appends, so the worst case is the old duplication, never
-    content loss. A `---` separator immediately before a dropped
-    footer line goes with it (the model's own footer separator), so
-    the code footer's separator does not stack on top of a leftover
-    one.
+    footer — and fences pair by marker char AND length, so a `~~~`
+    line inside a ``` block neither closes it nor opens a new one,
+    and a shorter same-char line never closes a longer opener.
+    Documented tradeoff: an unclosed fence disables stripping for
+    the rest of the body (never strip possibly-quoted content); the
+    code footer still appends, so the worst case is the old
+    duplication, never content loss. A `---` separator immediately
+    before a dropped footer line goes with it (the model's own footer
+    separator), so the code footer's separator does not stack on top
+    of a leftover one.
     """
     kept: list[str] = []
-    open_fence: str | None = None
+    open_fence: tuple[str, int] | None = None
     for line in content.split("\n"):
         marker = _fence_marker(line)
         if marker is not None:
             if open_fence is None:
                 open_fence = marker
-            elif marker == open_fence:
+            elif marker[0] == open_fence[0] and marker[1] >= open_fence[1]:
                 open_fence = None
             kept.append(line)
             continue
