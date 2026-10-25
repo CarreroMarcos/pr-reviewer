@@ -620,17 +620,21 @@ def _is_model_footer_line(line: str) -> bool:
 def _fence_marker(line: str) -> tuple[str, int] | None:
     """Fence (char, length) for a standalone fence line, else `None`.
 
-    CommonMark shape: 3+ fence chars plus an optional info string with
-    no backticks. A line that merely STARTS with triple backticks —
-    e.g. an inline code span like `` ```code``` text `` — is not a
-    delimiter, so it must not flip fence tracking and hide a later
-    real footer from the strip. Length matters for pairing: a closing
-    fence must run at least as long as its opener.
+    CommonMark shape: 3+ fence chars plus an optional info string —
+    with no backticks for a backtick fence (forbidden), but backticks
+    ARE allowed in a tilde fence's info string. A line that merely
+    STARTS with triple backticks — e.g. an inline code span like
+    `` ```code``` text `` — is not a delimiter, so it must not flip
+    fence tracking and hide a later real footer from the strip.
+    Length matters for pairing: a closing fence must run at least as
+    long as its opener.
     """
-    match = re.match(r"(`{3,}|~{3,})[^`]*$", line.strip())
+    match = re.match(r"(`{3,}|~{3,})(.*)$", line.strip())
     if match is None:
         return None
-    run = match.group(1)
+    run, rest = match.groups()
+    if run[0] == "`" and "`" in rest:
+        return None
     return run[0], len(run)
 
 
@@ -667,7 +671,12 @@ def _strip_model_footers(content: str) -> str:
             kept.append(line)
             continue
         if open_fence is None and _is_model_footer_line(line):
-            if kept and kept[-1].strip() == "---":
+            # Pop the preceding `---` only when it is a standalone
+            # thematic break (blank line — or nothing — before it). A
+            # `---` directly under a text line is a setext level-2
+            # heading underline, not a separator; popping it would
+            # silently demote a heading to a paragraph.
+            if kept and kept[-1].strip() == "---" and (len(kept) < 2 or kept[-2].strip() == ""):
                 kept.pop()
             continue
         kept.append(line)
@@ -1173,7 +1182,10 @@ def _make_review(
         lowest matching id wins. Miss bound: comments beyond page 1 (>100)
         are not scanned. ANY failure (transport, 403/404, unparseable list)
         logs a coded warning and omits the section — prior context must
-        never fail or delay a review.
+        never fail or delay a review. The returned body is
+        footer-stripped (same helper as publish): the footer is
+        code-owned and must never be model input, or the model
+        reproduces it with a hallucinated URL/label (standards #61).
         """
         if github_transport is None:
             return None
@@ -1203,7 +1215,12 @@ def _make_review(
         # Latent quirk (harmless while the one-canonical-comment invariant
         # holds): lowest matching id wins, so if duplicate canonical
         # comments ever recur, the OLDEST (stalest) prior review is used.
-        return min(matches, key=lambda c: c["id"])["body"]
+        prior = min(matches, key=lambda c: c["id"])["body"]
+        # Prevention, not just cure: the model imitates a footer it was
+        # shown, so the prior comment reaches the payload without one.
+        # The publish-time strip stays the guarantee for footers the
+        # model emits anyway, from any cause.
+        return _strip_model_footers(prior)
 
     def _refetch_meta() -> tuple[str, str] | None:
         """Best-effort post-LLM PR-meta re-fetch (description-race guard).

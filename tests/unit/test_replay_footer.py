@@ -297,6 +297,42 @@ def test_strip_model_footer_bare_link_form():
     assert out.rstrip() == BODY
 
 
+def test_strip_bare_footer_without_label_suffix():
+    """The label suffix is optional in the shape: a bare footer link
+    with NO ` — label` suffix strips too, in both the markdown form
+    (exactly the plain code-footer shape) and the raw-parens form."""
+    body = (
+        BODY
+        + "\n\n[Full agent replay](https://viewer.example.test/runs/996/"
+        + "c" * 40
+        + "/)\n\nFull agent replay (https://viewer.example.test/runs/996/"
+        + "c" * 40
+        + "/)\n"
+    )
+    out = _strip_model_footers(body)
+    assert "viewer.example.test" not in out
+    assert out.rstrip() == BODY
+
+
+def test_strip_preserves_info_string_fenced_footer_quote():
+    """Fences with info strings are fences: a footer quoted inside a
+    ```python block survives, so an info-string regression in the
+    fence regex would fail loudly instead of stripping quotes."""
+    quoted = BODY + "\n\n```python\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(quoted) == quoted
+
+
+def test_strip_preserves_setext_heading_underline():
+    """The `---` pop only fires for a standalone thematic break: a
+    `---` directly under a text line is a setext level-2 heading
+    underline, and popping it would demote the heading — so it
+    survives while the footer line itself is still dropped."""
+    body = "Some heading text\n---\n" + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert out == "Some heading text\n---\n"
+
+
 def test_strip_preserves_bare_mark_without_link():
     """False branch of the bare-link predicate: a bracketed mark with
     no `](` sequence is a mention, not a footer — whether or not a
