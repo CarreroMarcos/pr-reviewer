@@ -617,6 +617,19 @@ def _is_model_footer_line(line: str) -> bool:
     return "http://" in stripped or "https://" in stripped or "](" in stripped
 
 
+def _fence_marker(line: str) -> str | None:
+    """Fence delimiter char for a standalone fence line, else `None`.
+
+    CommonMark shape: 3+ fence chars plus an optional info string with
+    no backticks. A line that merely STARTS with triple backticks —
+    e.g. an inline code span like `` ```code``` text `` — is not a
+    delimiter, so it must not flip fence tracking and hide a later
+    real footer from the strip.
+    """
+    match = re.match(r"(`{3,}|~{3,})[^`]*$", line.strip())
+    return match.group(1)[0] if match else None
+
+
 def _strip_model_footers(content: str) -> str:
     """Remove model-emitted footer imitations before the code footer.
 
@@ -627,19 +640,28 @@ def _strip_model_footers(content: str) -> str:
     copy as the already-published footer and leave it stranded
     mid-body with nothing at the end). Lines inside fenced code blocks
     are never stripped — a quoted footer is documentation, not a
-    footer. A `---` separator immediately before a dropped footer line
-    goes with it (the model's own footer separator), so the code
-    footer's separator does not stack on top of a leftover one.
+    footer — and fences pair by marker char, so a `~~~` line inside a
+    ``` block neither closes it nor opens a new one. Documented
+    tradeoff: an unclosed fence disables stripping for the rest of
+    the body (never strip possibly-quoted content); the code footer
+    still appends, so the worst case is the old duplication, never
+    content loss. A `---` separator immediately before a dropped
+    footer line goes with it (the model's own footer separator), so
+    the code footer's separator does not stack on top of a leftover
+    one.
     """
     kept: list[str] = []
-    in_fence = False
+    open_fence: str | None = None
     for line in content.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            in_fence = not in_fence
+        marker = _fence_marker(line)
+        if marker is not None:
+            if open_fence is None:
+                open_fence = marker
+            elif marker == open_fence:
+                open_fence = None
             kept.append(line)
             continue
-        if not in_fence and _is_model_footer_line(line):
+        if open_fence is None and _is_model_footer_line(line):
             if kept and kept[-1].strip() == "---":
                 kept.pop()
             continue

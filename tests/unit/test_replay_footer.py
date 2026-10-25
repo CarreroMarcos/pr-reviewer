@@ -297,6 +297,28 @@ def test_strip_model_footer_bare_link_form():
     assert out.rstrip() == BODY
 
 
+def test_strip_preserves_bare_mark_without_link():
+    """False branch of the bare-link predicate: a bracketed mark with
+    no `](` sequence is a mention, not a footer — whether or not a
+    bare URL follows it — so both lines survive the strip."""
+    mentioned = (
+        BODY
+        + "\n\n[Full agent replay] https://viewer.example.test/runs/997\n"
+        + "[Full agent replay] is discussed below.\n"
+    )
+    assert _strip_model_footers(mentioned) == mentioned
+
+
+def test_strip_preserves_inline_backtick_span_line():
+    """A line that merely starts with an inline triple-backtick span
+    is not a fence delimiter: it must not flip fence tracking and
+    hide a later real footer from the strip."""
+    body = BODY + "\n\n```code``` note\n\n---\n" + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert "```code``` note" in out
+
+
 def test_strip_separator_pop_is_only_immediately_preceding():
     """The `---` pop fires only for a separator directly before the
     footer line: a body-internal `---` with prose after it survives,
@@ -371,6 +393,29 @@ def test_publish_model_copy_of_exact_link_does_not_strand_footer(monkeypatch):
     shipped = _shipped_body(calls)
     assert shipped.count(f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)") == 1
     assert shipped.rstrip().endswith("checkpoints for this review.")
+
+
+def test_publish_strips_fake_with_token_shaped_url_after_sanitize(monkeypatch):
+    """Sanitizer interaction, pinned behaviorally: the fake footer's
+    URL carries a 40-hex path segment, so the sanitizer redacts it to
+    `[redacted:token]` before the strip sees the line — and the strip
+    must still match that post-sanitize shape (scheme and `](`
+    survive redaction) instead of shipping a mangled duplicate footer.
+    A second bare hex token proves the sanitizer ran at all."""
+    publish, calls = _publish_fixture(monkeypatch, label_fn=lambda: "single-pass · glm-5.3-flash")
+    token = "e" * 40
+    fake_hex = (
+        "🔬 Full agent replay (https://viewer.example.test/runs/167/"
+        + token
+        + "/) — re-review · glm-5.3-flash"
+    )
+    body = BODY + "\n\nRef " + token + ".\n\n---\n" + fake_hex + "\n"
+    assert publish(body) == 555
+    shipped = _shipped_body(calls)
+    assert "re-review" not in shipped
+    assert token not in shipped
+    assert "[redacted:token]" in shipped
+    assert shipped.count(REPLAY_FOOTER_MARK) == 1
 
 
 def test_config_replay_base_url_strips_trailing_slashes(monkeypatch):
