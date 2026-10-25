@@ -309,6 +309,22 @@ def test_strip_preserves_bare_mark_without_link():
     assert _strip_model_footers(mentioned) == mentioned
 
 
+def test_strip_preserves_link_initial_prose():
+    """Full-line discipline: a sentence that merely STARTS with the
+    footer link is prose, not a footer — bare and emoji-led forms
+    alike survive, because neither is only the link plus its label."""
+    prose = (
+        BODY
+        + "\n\n[Full agent replay](https://viewer.example.test/runs/167/"
+        + "c" * 40
+        + "/) documents the run artifacts for this review.\n"
+        + "🔬 [Full agent replay](https://viewer.example.test/runs/167/"
+        + "c" * 40
+        + "/) documents the run artifacts for this review.\n"
+    )
+    assert _strip_model_footers(prose) == prose
+
+
 def test_strip_preserves_inline_backtick_span_line():
     """A line that merely starts with an inline triple-backtick span
     is not a fence delimiter: it must not flip fence tracking and

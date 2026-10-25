@@ -600,21 +600,21 @@ def _is_model_footer_line(line: str) -> bool:
     reproduce a footer-like block with a hallucinated URL and an
     invented label (seen live: a raw-parens URL to `/runs/{pr}/re-review`
     labeled `re-review · glm-5.3-flash`). A line only counts when it
-    IS a footer-shaped line: the bare markdown footer link, or the 🔬
-    mark immediately followed by the footer text (bare or bracketed)
-    plus a link — so prose that merely mentions the replay never
-    matches, even when it starts with 🔬 (e.g. `🔬 Evidence: see the
-    Full agent replay run ...`) or brackets the mark without linking.
+    is ONLY a footer: an optional 🔬 mark, then the footer link
+    (markdown form, or the mark text plus a parens URL), then
+    optionally the ` — label` suffix — and nothing else. That
+    full-line discipline is what keeps prose safe on both sides: a
+    sentence that merely mentions the replay never matches (even
+    `🔬 Evidence: see the Full agent replay run ...`), and neither
+    does link-initial prose (`[Full agent replay](...) documents ...`),
+    which is a sentence that happens to start with a link.
     """
-    stripped = line.strip()
-    if stripped.startswith(f"[{REPLAY_FOOTER_MARK}]"):
-        return "](" in stripped
-    if not stripped.startswith("🔬"):
-        return False
-    rest = stripped[1:].strip()
-    if not (rest.startswith(REPLAY_FOOTER_MARK) or rest.startswith(f"[{REPLAY_FOOTER_MARK}]")):
-        return False
-    return "http://" in stripped or "https://" in stripped or "](" in stripped
+    mark = re.escape(REPLAY_FOOTER_MARK)
+    shape = re.compile(
+        rf"^(?:🔬\s*)?(?:\[{mark}\]\([^)]+\)|{mark}\s*\([^)]+\))"
+        r"(\s+—\s+.*)?$"
+    )
+    return shape.match(line.strip()) is not None
 
 
 def _fence_marker(line: str) -> str | None:
