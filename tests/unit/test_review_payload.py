@@ -225,6 +225,61 @@ def test_payload_reaches_llm_with_fences_title_body_prior():
     assert creds.refresh_calls == 0
 
 
+def test_prior_comment_footer_stripped_from_model_input():
+    """Prevention half of the footer fix: the prior comment reaches
+    the model WITHOUT its code footer, so a re-review never shows the
+    model a footer to imitate (standards #61: Review #1's footer was
+    the pattern Review #2 copied with a hallucinated URL/label). The
+    publish strip stays the guarantee for footers emitted anyway."""
+    prior_with_footer = (
+        PRIOR
+        + "\n\n---\n🔬 [Full agent replay](https://v.test/runs/42/"
+        + "b" * 40
+        + "/) — single-pass · glm-5.3-flash\n"
+    )
+    _content, user_text, _events, _creds, _transport = _run(
+        replies=_page({"id": 5, "body": prior_with_footer})
+    )
+    assert "PREVIOUS REVIEW COMMENT" in user_text
+    assert PRIOR in user_text
+    assert "Full agent replay" not in user_text
+    assert "v.test" not in user_text
+
+
+def test_prior_comment_fenced_footer_quote_survives_to_model_input():
+    """Input-side fence protection, at payload level: a footer line
+    quoted inside a fenced block in the prior comment is context, not
+    a footer — it must reach the model intact, or the strip would
+    silently truncate prior-review context."""
+    footer_line = (
+        "🔬 [Full agent replay](https://v.test/runs/42/" + "b" * 40 + "/)"
+        " — single-pass · glm-5.3-flash"
+    )
+    prior_quoted = PRIOR + "\n\n```\n" + footer_line + "\n```\n"
+    _content, user_text, _events, _creds, _transport = _run(
+        replies=_page({"id": 5, "body": prior_quoted})
+    )
+    assert "PREVIOUS REVIEW COMMENT" in user_text
+    assert footer_line in user_text
+
+
+def test_prior_comment_unclosed_fence_footers_survive_to_model_input():
+    """Input-side unclosed-fence tradeoff, at payload level: a footer
+    line after an unclosed fence in the prior comment is
+    possibly-quoted content, so both the fence and the line survive
+    to the model."""
+    footer_line = (
+        "🔬 [Full agent replay](https://v.test/runs/42/" + "b" * 40 + "/)"
+        " — single-pass · glm-5.3-flash"
+    )
+    prior_unclosed = PRIOR + "\n\n```\n" + footer_line + "\n"
+    _content, user_text, _events, _creds, _transport = _run(
+        replies=_page({"id": 5, "body": prior_unclosed})
+    )
+    assert "PREVIOUS REVIEW COMMENT" in user_text
+    assert footer_line in user_text
+
+
 def test_first_review_omits_prior_section():
     """No marker comment anywhere → first review, prior section absent."""
     _content, user_text, _events, creds, _transport = _run(

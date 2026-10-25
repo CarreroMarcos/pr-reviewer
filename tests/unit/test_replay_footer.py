@@ -16,6 +16,7 @@ from worker_handler import (
     _label_fn_for,
     _make_publish,
     _run_label,
+    _strip_model_footers,
     _with_replay_footer,
 )
 
@@ -242,6 +243,356 @@ def test_decoy_link_for_different_run_does_not_suppress(monkeypatch):
 def test_footer_omitted_for_whitespace_only_env(monkeypatch):
     monkeypatch.setenv("REPLAY_BASE_URL", "   \n")
     assert _with_replay_footer(BODY, pr_number=167, sha=SHA) == BODY
+
+
+FAKE_FOOTER_RAW = (
+    "🔬 Full agent replay (https://viewer.example.lambda-url.us-west-2.on.aws"
+    "/runs/61/re-review) — re-review · glm-5.3-flash"
+)
+
+
+def test_strip_model_footer_raw_parens_form_with_separator():
+    """Standards #61, live: the model reproduced a footer block with a
+    raw-parens URL to a hallucinated `/runs/61/re-review` path and an
+    invented `re-review` label. The strip takes the fake line AND its
+    own `---` separator, so the code footer does not stack on a
+    leftover rule."""
+    body = BODY + "\n\n---\n" + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert "re-review" not in out
+    # the strip removes the footer block, not whitespace policy: the
+    # blank line the block sat in may remain, so compare rstripped.
+    assert out.rstrip() == BODY
+
+
+def test_strip_model_footer_markdown_link_form():
+    """A markdown-link imitation for a different run (the PR #169 decoy
+    shape) is stripped too — it is still model content, never the
+    code footer, even though it looks well-formed."""
+    decoy = (
+        BODY
+        + "\n\n🔬 [Full agent replay](https://viewer.example.test/runs/999/"
+        + "c" * 40
+        + "/)\n"
+    )
+    out = _strip_model_footers(decoy)
+    assert "viewer.example.test" not in out
+    assert out.startswith(BODY)
+
+
+def test_strip_model_footer_bare_link_form():
+    """The bare-link branch needs its own case: a footer link with no
+    leading 🔬 (the exact code-footer markdown shape, minus the emoji)
+    must strip — the emoji-prefixed cases above never exercise it."""
+    bare = (
+        BODY
+        + "\n\n[Full agent replay](https://viewer.example.test/runs/998/"
+        + "c" * 40
+        + "/) — re-review · glm-5.3-flash\n"
+    )
+    out = _strip_model_footers(bare)
+    assert "viewer.example.test" not in out
+    assert "re-review" not in out
+    assert out.rstrip() == BODY
+
+
+def test_strip_bare_footer_without_label_suffix():
+    """The label suffix is optional in the shape: a bare footer link
+    with NO ` — label` suffix strips too, in both the markdown form
+    (exactly the plain code-footer shape) and the raw-parens form."""
+    body = (
+        BODY
+        + "\n\n[Full agent replay](https://viewer.example.test/runs/996/"
+        + "c" * 40
+        + "/)\n\nFull agent replay (https://viewer.example.test/runs/996/"
+        + "c" * 40
+        + "/)\n"
+    )
+    out = _strip_model_footers(body)
+    assert "viewer.example.test" not in out
+    assert out.rstrip() == BODY
+
+
+def test_strip_preserves_info_string_fenced_footer_quote():
+    """Fences with info strings are fences: a footer quoted inside a
+    ```python block survives, so an info-string regression in the
+    fence regex would fail loudly instead of stripping quotes."""
+    quoted = BODY + "\n\n```python\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(quoted) == quoted
+
+
+def test_strip_preserves_tilde_fence_with_backticks_in_info():
+    """Tilde fences allow backticks in the info string (CommonMark) —
+    a `~~~ ```json sample` opener still toggles fence tracking and
+    protects its contents, pinning the backtick rule to backtick
+    fences only."""
+    block = BODY + "\n\n~~~ ```json sample\n" + FAKE_FOOTER_RAW + "\n~~~\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_text_bearing_fence_line_does_not_close():
+    """A closing fence carries no info string: a text-bearing
+    fence-looking line (``` end) inside a block is content, not a
+    closer, so the quoted footer after it stays protected until the
+    real bare closer."""
+    block = BODY + "\n\n```\ncontent\n``` end\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_indented_fence_line_does_not_toggle():
+    """A 4-space-indented fence-looking line is indented code content
+    (CommonMark allows at most 3 leading spaces on a fence), not a
+    delimiter — it neither opens nor closes fence tracking."""
+    block = BODY + "\n\n```\ncontent\n    ```\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_pops_separator_as_first_body_line():
+    """First-line branch of the separator-pop guard: a footer whose
+    preceding `---` is the body's first line (no kept[-2]) still pops
+    it — the guard must not IndexError or refuse the pop there."""
+    out = _strip_model_footers("---\n" + FAKE_FOOTER_RAW + "\n")
+    assert FAKE_FOOTER_RAW not in out
+    assert out.strip() == ""
+
+
+def test_strip_preserves_parens_prose_with_em_dash():
+    """URL-shape discipline: a prose sentence with a parenthetical
+    and an em-dash clause is not a footer — the parens target must
+    be a URL, or the line survives."""
+    prose = (
+        BODY
+        + "\n\nFull agent replay (added after the v2 redesign)"
+        + " — see section 4 for details.\n"
+    )
+    assert _strip_model_footers(prose) == prose
+
+
+def test_strip_indented_fake_footer_with_separator():
+    """Strip matches on the stripped line: a 2-space-indented fake
+    footer is still a footer, and its preceding `---` still pops."""
+    body = BODY + "\n\n---\n  " + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert out.rstrip() == BODY
+
+
+def test_strip_indented_fence_protects_indented_footer():
+    """Fence/strip interplay at the indent boundary: a footer line
+    indented inside an indented-opened fence (1-space opener) is
+    quoted content, so it survives."""
+    block = BODY + "\n\n ```\n  " + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_indented_footer_after_closed_fence():
+    """A 4-space-indented footer-looking line after a closed fence
+    is body text to the strip (only ``` fences track) — it strips,
+    while the closed fence block itself survives."""
+    body = BODY + "\n\n```\ncontent\n```\n    " + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert "content" in out
+
+
+def test_strip_preserves_setext_heading_underline():
+    """The `---` pop only fires for a standalone thematic break: a
+    `---` directly under a text line is a setext level-2 heading
+    underline, and popping it would demote the heading — so it
+    survives while the footer line itself is still dropped."""
+    body = "Some heading text\n---\n" + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert out == "Some heading text\n---\n"
+
+
+def test_strip_preserves_bare_mark_without_link():
+    """False branch of the bare-link predicate: a bracketed mark with
+    no `](` sequence is a mention, not a footer — whether or not a
+    bare URL follows it — so both lines survive the strip."""
+    mentioned = (
+        BODY
+        + "\n\n[Full agent replay] https://viewer.example.test/runs/997\n"
+        + "[Full agent replay] is discussed below.\n"
+    )
+    assert _strip_model_footers(mentioned) == mentioned
+
+
+def test_strip_preserves_link_initial_prose():
+    """Full-line discipline: a sentence that merely STARTS with the
+    footer link is prose, not a footer — bare and emoji-led forms
+    alike survive, because neither is only the link plus its label."""
+    prose = (
+        BODY
+        + "\n\n[Full agent replay](https://viewer.example.test/runs/167/"
+        + "c" * 40
+        + "/) documents the run artifacts for this review.\n"
+        + "🔬 [Full agent replay](https://viewer.example.test/runs/167/"
+        + "c" * 40
+        + "/) documents the run artifacts for this review.\n"
+    )
+    assert _strip_model_footers(prose) == prose
+
+
+def test_strip_preserves_inline_backtick_span_line():
+    """A line that merely starts with an inline triple-backtick span
+    is not a fence delimiter: it must not flip fence tracking and
+    hide a later real footer from the strip."""
+    body = BODY + "\n\n```code``` note\n\n---\n" + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert "```code``` note" in out
+
+
+def test_strip_separator_pop_is_only_immediately_preceding():
+    """The `---` pop fires only for a separator directly before the
+    footer line: a body-internal `---` with prose after it survives,
+    a `---` separated from the footer by a blank line survives, and
+    only the `---` directly before the footer goes with it."""
+    body = "A\n\n---\n\nprose\n\n---\n\n" + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    # blank-separated separator preserved, body-internal one preserved
+    assert out.count("\n---\n") == 2
+    body2 = BODY + "\n\n---\n\nprose\n\n---\n" + FAKE_FOOTER_RAW + "\n"
+    out2 = _strip_model_footers(body2)
+    assert FAKE_FOOTER_RAW not in out2
+    assert out2.count("---") == 1  # only the body-internal separator left
+
+
+def test_strip_preserves_fenced_footer_quote():
+    """A footer line inside a fenced block is documentation, not a
+    footer — the strip never touches fenced content."""
+    quoted = BODY + "\n\n```\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(quoted) == quoted
+
+
+def test_strip_preserves_tilde_fenced_footer_quote():
+    """The `~~~` fence delimiter gets the same protection as backticks
+    — the toggle covers both, and only a test pins the tilde branch."""
+    quoted = BODY + "\n\n~~~\n" + FAKE_FOOTER_RAW + "\n~~~\n"
+    assert _strip_model_footers(quoted) == quoted
+
+
+def test_strip_preserves_footer_after_unclosed_fence():
+    """Documented tradeoff, pinned: an unclosed fence disables
+    stripping for the rest of the body — a footer line after it is
+    possibly-quoted content, so it survives."""
+    unclosed = BODY + "\n\n```\n" + FAKE_FOOTER_RAW + "\n"
+    assert _strip_model_footers(unclosed) == unclosed
+
+
+def test_strip_shorter_same_char_line_does_not_close_fence():
+    """CommonMark pairing: a closing fence must run at least as long
+    as its opener — a 3-backtick line inside a 4-backtick block
+    neither closes it nor exposes the quoted footer to the strip."""
+    block = BODY + "\n\n````\ncontent\n```\n" + FAKE_FOOTER_RAW + "\n````\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_cross_char_line_does_not_close_fence():
+    """Pairing is by marker char too: a `~~~` line inside an open ```
+    block neither closes it nor opens a new one, so the quoted footer
+    after it stays protected."""
+    block = BODY + "\n\n```\ncontent\n~~~\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_mid_body_footer_preserves_surrounding_prose():
+    """Footers are not always last: a footer block sandwiched between
+    prose lines is removed (separator included) while the prose
+    around it survives verbatim."""
+    body = BODY + "\n\n---\n" + FAKE_FOOTER_RAW + "\nTrailing prose survives.\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert "re-review" not in out
+    assert "Trailing prose survives." in out
+    assert out.rstrip().endswith("Trailing prose survives.")
+
+
+def test_strip_preserves_prose_mentions_of_replay():
+    """A finding or sentence that merely mentions the replay is prose,
+    not a footer line — it starts with neither the 🔬 mark nor the
+    bare footer link, so it survives. Includes the two near-miss
+    shapes the predicate must not eat: a mid-line 🔬 mention, and a
+    🔬-led evidence sentence whose footer text does not immediately
+    follow the mark."""
+    prose = (
+        BODY
+        + "\n\n- [LOW] The verifier noted the Full agent replay idea.\n"
+        + "The Full agent replay page renders from archived events.\n"
+        + "Discussion of the 🔬 Full agent replay link follows.\n"
+        + "🔬 Evidence: see the Full agent replay run for the failing hunk.\n"
+    )
+    assert _strip_model_footers(prose) == prose
+
+
+def test_publish_strips_model_footer_then_appends_code_footer_once(monkeypatch):
+    """End to end on the #61 shape: the shipped comment carries exactly
+    one footer — the code footer for this run — and no trace of the
+    model's fake URL or invented label."""
+    publish, calls = _publish_fixture(monkeypatch, label_fn=lambda: "single-pass · glm-5.3-flash")
+    assert publish(BODY + "\n\n---\n" + FAKE_FOOTER_RAW + "\n") == 555
+    shipped = _shipped_body(calls)
+    assert shipped.count(REPLAY_FOOTER_MARK) == 1
+    assert "re-review" not in shipped
+    assert f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)" in shipped
+    assert shipped.rstrip().endswith("checkpoints for this review.")
+
+
+def test_publish_model_copy_of_exact_link_does_not_strand_footer(monkeypatch):
+    """Ordering pin: a model copy of the EXACT code link, stripped
+    before the append, cannot suppress the real footer via the
+    exactly-once anchor — the shipped footer lands once, at the end."""
+    publish, calls = _publish_fixture(monkeypatch, label_fn=lambda: "single-pass · glm-5.3-flash")
+    code_line = (
+        f"🔬 [{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/) — single-pass "
+        "· glm-5.3-flash · agent DAG, per-agent reasoning, and "
+        "checkpoints for this review."
+    )
+    assert publish(BODY + "\n\n" + code_line + "\n") == 555
+    shipped = _shipped_body(calls)
+    assert shipped.count(f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)") == 1
+    assert shipped.rstrip().endswith("checkpoints for this review.")
+
+
+def test_publish_strips_fake_with_token_shaped_url_after_sanitize(monkeypatch):
+    """Sanitizer interaction, pinned behaviorally: the fake footer's
+    URL carries a 40-hex path segment, so the sanitizer redacts it to
+    `[redacted:token]` before the strip sees the line — and the strip
+    must still match that post-sanitize shape (scheme and `](`
+    survive redaction) instead of shipping a mangled duplicate footer.
+    A second bare hex token proves the sanitizer ran at all."""
+    publish, calls = _publish_fixture(monkeypatch, label_fn=lambda: "single-pass · glm-5.3-flash")
+    token = "e" * 40
+    fake_hex = (
+        "🔬 Full agent replay (https://viewer.example.test/runs/167/"
+        + token
+        + "/) — re-review · glm-5.3-flash"
+    )
+    body = BODY + "\n\nRef " + token + ".\n\n---\n" + fake_hex + "\n"
+    assert publish(body) == 555
+    shipped = _shipped_body(calls)
+    assert "re-review" not in shipped
+    assert token not in shipped
+    assert "[redacted:token]" in shipped
+    assert shipped.count(REPLAY_FOOTER_MARK) == 1
+
+
+def test_publish_unclosed_fence_preserves_fake_but_appends_code_footer(monkeypatch):
+    """Publish half of the unclosed-fence tradeoff: the fenced fake
+    survives (never strip possibly-quoted content) and the code
+    footer still lands exactly once. Note the honest counts here — a
+    `count(mark) == 1` assertion would be wrong, because the preserved
+    fenced fake IS a second mark; what is pinned is one code link."""
+    publish, calls = _publish_fixture(monkeypatch, label_fn=lambda: "single-pass · glm-5.3-flash")
+    body = BODY + "\n\n```\n" + FAKE_FOOTER_RAW + "\n"
+    assert publish(body) == 555
+    shipped = _shipped_body(calls)
+    assert FAKE_FOOTER_RAW in shipped
+    assert shipped.count(f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)") == 1
+    assert shipped.rstrip().endswith("checkpoints for this review.")
 
 
 def test_config_replay_base_url_strips_trailing_slashes(monkeypatch):

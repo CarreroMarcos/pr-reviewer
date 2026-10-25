@@ -592,6 +592,107 @@ def _label_fn_for(events: list[dict[str, Any]], creds: _Credentials) -> Callable
     return lambda: _run_label(events, creds.current().glm_model)
 
 
+def _is_model_footer_line(line: str) -> bool:
+    """True when a line is a model-emitted footer imitation, not prose.
+
+    The footer is code-owned (ARCHITECTURE.md §2.8), but on re-reviews
+    the prior canonical comment is model input (§2.7), so the model can
+    reproduce a footer-like block with a hallucinated URL and an
+    invented label (seen live: a raw-parens URL to `/runs/{pr}/re-review`
+    labeled `re-review · glm-5.3-flash`). A line only counts when it
+    is ONLY a footer: an optional 🔬 mark, then the footer link
+    (markdown form, or the mark text plus a parens URL), then
+    optionally the ` — label` suffix — and nothing else. The
+    parenthesized target must be URL-shaped (`https?://`): without
+    that, a prose sentence like `Full agent replay (added after the
+    v2 redesign) — see section 4` would match the mark + parens +
+    suffix shape and be deleted. That full-line discipline is what
+    keeps prose safe on both sides: a sentence that merely mentions
+    the replay never matches (even `🔬 Evidence: see the Full agent
+    replay run ...`), and neither does link-initial prose
+    (`[Full agent replay](...) documents ...`), which is a sentence
+    that happens to start with a link.
+    """
+    mark = re.escape(REPLAY_FOOTER_MARK)
+    shape = re.compile(
+        rf"^(?:🔬\s*)?(?:\[{mark}\]\(https?://[^)]+\)|{mark}\s*\(https?://[^)]+\))"
+        r"(\s+—\s+.*)?$"
+    )
+    return shape.match(line.strip()) is not None
+
+
+def _fence_marker(line: str) -> tuple[str, int, bool] | None:
+    """Fence (char, length, has_info) for a fence line, else `None`.
+
+    CommonMark shape: at most 3 leading spaces, then 3+ fence chars,
+    plus an optional info string — with no backticks for a backtick
+    fence (forbidden), but backticks ARE allowed in a tilde fence's
+    info string. A line that merely STARTS with triple backticks —
+    e.g. an inline code span like `` ```code``` text `` — is not a
+    delimiter, so it must not flip fence tracking and hide a later
+    real footer from the strip. A 4-space-indented fence-looking line
+    is indented code content, not a delimiter, for the same reason.
+    `has_info` distinguishes openers (info allowed) from closers
+    (CommonMark forbids an info string on a closing fence) — the
+    strip loop only closes on a bare run.
+    """
+    match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+    if match is None:
+        return None
+    run, rest = match.groups()
+    if run[0] == "`" and "`" in rest:
+        return None
+    return run[0], len(run), rest.strip() != ""
+
+
+def _strip_model_footers(content: str) -> str:
+    """Remove model-emitted footer imitations before the code footer.
+
+    Runs at publish, after the sanitizer and before
+    `_with_replay_footer` — order matters twice: stripping first means
+    a model copy of the EXACT code link cannot suppress the real append
+    via the exactly-once anchor (the anchor would otherwise read the
+    copy as the already-published footer and leave it stranded
+    mid-body with nothing at the end). Lines inside fenced code blocks
+    are never stripped — a quoted footer is documentation, not a
+    footer — and fences pair by marker char AND length, so a `~~~`
+    line inside a ``` block neither closes it nor opens a new one,
+    and a shorter same-char line never closes a longer opener. A
+    closing fence must also be bare (no info string): a text-bearing
+    fence-looking line inside a block is content, not a closer.
+    Documented tradeoff: an unclosed fence disables stripping for
+    the rest of the body (never strip possibly-quoted content); the
+    code footer still appends, so the worst case is the old
+    duplication, never content loss. A `---` separator immediately
+    before a dropped footer line goes with it (the model's own footer
+    separator), so the code footer's separator does not stack on top
+    of a leftover one.
+    """
+    kept: list[str] = []
+    open_fence: tuple[str, int] | None = None
+    for line in content.split("\n"):
+        marker = _fence_marker(line)
+        if marker is not None:
+            char, length, has_info = marker
+            if open_fence is None:
+                open_fence = (char, length)
+            elif char == open_fence[0] and length >= open_fence[1] and not has_info:
+                open_fence = None
+            kept.append(line)
+            continue
+        if open_fence is None and _is_model_footer_line(line):
+            # Pop the preceding `---` only when it is a standalone
+            # thematic break (blank line — or nothing — before it). A
+            # `---` directly under a text line is a setext level-2
+            # heading underline, not a separator; popping it would
+            # silently demote a heading to a paragraph.
+            if kept and kept[-1].strip() == "---" and (len(kept) < 2 or kept[-2].strip() == ""):
+                kept.pop()
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _with_replay_footer(content: str, *, pr_number: int, sha: str, label: str | None = None) -> str:
     """Deterministic replay-link footer on the published canonical
     body — code-side, never model-side (the synthesizer prompt and output
@@ -1091,7 +1192,10 @@ def _make_review(
         lowest matching id wins. Miss bound: comments beyond page 1 (>100)
         are not scanned. ANY failure (transport, 403/404, unparseable list)
         logs a coded warning and omits the section — prior context must
-        never fail or delay a review.
+        never fail or delay a review. The returned body is
+        footer-stripped (same helper as publish): the footer is
+        code-owned and must never be model input, or the model
+        reproduces it with a hallucinated URL/label (standards #61).
         """
         if github_transport is None:
             return None
@@ -1121,7 +1225,12 @@ def _make_review(
         # Latent quirk (harmless while the one-canonical-comment invariant
         # holds): lowest matching id wins, so if duplicate canonical
         # comments ever recur, the OLDEST (stalest) prior review is used.
-        return min(matches, key=lambda c: c["id"])["body"]
+        prior = min(matches, key=lambda c: c["id"])["body"]
+        # Prevention, not just cure: the model imitates a footer it was
+        # shown, so the prior comment reaches the payload without one.
+        # The publish-time strip stays the guarantee for footers the
+        # model emits anyway, from any cause.
+        return _strip_model_footers(prior)
 
     def _refetch_meta() -> tuple[str, str] | None:
         """Best-effort post-LLM PR-meta re-fetch (description-race guard).
@@ -1718,6 +1827,12 @@ def _make_publish(
             # so defense-in-depth firing is observable.
             logger.warning("canary_leaked_at_publish: upstream gate bypassed; redacting")
         content = sanitize(content)
+        # Model footer imitations (hallucinated URL/label, copied from
+        # the prior comment on re-reviews) are stripped BEFORE the code
+        # footer appends — after the sanitizer so the strip sees the
+        # shipped text, and before `_with_replay_footer` so a model copy
+        # of the exact code link cannot suppress the real append.
+        content = _strip_model_footers(content)
         # The footer rides AFTER the sanitizer — it is code-side
         # decoration (the sha is public PR metadata, not model output);
         # inside the sanitizer the 40-hex sha reads as a payload token.
