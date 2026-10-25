@@ -16,6 +16,7 @@ from worker_handler import (
     _label_fn_for,
     _make_publish,
     _run_label,
+    _strip_model_footers,
     _with_replay_footer,
 )
 
@@ -242,6 +243,90 @@ def test_decoy_link_for_different_run_does_not_suppress(monkeypatch):
 def test_footer_omitted_for_whitespace_only_env(monkeypatch):
     monkeypatch.setenv("REPLAY_BASE_URL", "   \n")
     assert _with_replay_footer(BODY, pr_number=167, sha=SHA) == BODY
+
+
+FAKE_FOOTER_RAW = (
+    "🔬 Full agent replay (https://viewer.example.lambda-url.us-west-2.on.aws"
+    "/runs/61/re-review) — re-review · glm-5.3-flash"
+)
+
+
+def test_strip_model_footer_raw_parens_form_with_separator():
+    """Standards #61, live: the model reproduced a footer block with a
+    raw-parens URL to a hallucinated `/runs/61/re-review` path and an
+    invented `re-review` label. The strip takes the fake line AND its
+    own `---` separator, so the code footer does not stack on a
+    leftover rule."""
+    body = BODY + "\n\n---\n" + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert "re-review" not in out
+    # the strip removes the footer block, not whitespace policy: the
+    # blank line the block sat in may remain, so compare rstripped.
+    assert out.rstrip() == BODY
+
+
+def test_strip_model_footer_markdown_link_form():
+    """A markdown-link imitation for a different run (the PR #169 decoy
+    shape) is stripped too — it is still model content, never the
+    code footer, even though it looks well-formed."""
+    decoy = (
+        BODY
+        + "\n\n🔬 [Full agent replay](https://viewer.example.test/runs/999/"
+        + "c" * 40
+        + "/)\n"
+    )
+    out = _strip_model_footers(decoy)
+    assert "viewer.example.test" not in out
+    assert out.startswith(BODY)
+
+
+def test_strip_preserves_fenced_footer_quote():
+    """A footer line inside a fenced block is documentation, not a
+    footer — the strip never touches fenced content."""
+    quoted = BODY + "\n\n```\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(quoted) == quoted
+
+
+def test_strip_preserves_prose_mentions_of_replay():
+    """A finding or sentence that merely mentions the replay is prose,
+    not a footer line — it starts with neither the 🔬 mark nor the
+    bare footer link, so it survives."""
+    prose = (
+        BODY
+        + "\n\n- [LOW] The verifier noted the Full agent replay idea.\n"
+        + "The Full agent replay page renders from archived events.\n"
+    )
+    assert _strip_model_footers(prose) == prose
+
+
+def test_publish_strips_model_footer_then_appends_code_footer_once(monkeypatch):
+    """End to end on the #61 shape: the shipped comment carries exactly
+    one footer — the code footer for this run — and no trace of the
+    model's fake URL or invented label."""
+    publish, calls = _publish_fixture(monkeypatch, label_fn=lambda: "single-pass · glm-5.3-flash")
+    assert publish(BODY + "\n\n---\n" + FAKE_FOOTER_RAW + "\n") == 555
+    shipped = _shipped_body(calls)
+    assert shipped.count(REPLAY_FOOTER_MARK) == 1
+    assert "re-review" not in shipped
+    assert f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)" in shipped
+    assert shipped.rstrip().endswith("checkpoints for this review.")
+
+
+def test_publish_model_copy_of_exact_link_does_not_strand_footer(monkeypatch):
+    """Ordering pin: a model copy of the EXACT code link, stripped
+    before the append, cannot suppress the real footer via the
+    exactly-once anchor — the shipped footer lands once, at the end."""
+    publish, calls = _publish_fixture(monkeypatch, label_fn=lambda: "single-pass · glm-5.3-flash")
+    code_line = (
+        f"🔬 [{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/) — single-pass "
+        "· glm-5.3-flash · agent DAG, per-agent reasoning, and "
+        "checkpoints for this review."
+    )
+    assert publish(BODY + "\n\n" + code_line + "\n") == 555
+    shipped = _shipped_body(calls)
+    assert shipped.count(f"[{REPLAY_FOOTER_MARK}]({BASE}/runs/167/{SHA}/)") == 1
+    assert shipped.rstrip().endswith("checkpoints for this review.")
 
 
 def test_config_replay_base_url_strips_trailing_slashes(monkeypatch):

@@ -592,6 +592,54 @@ def _label_fn_for(events: list[dict[str, Any]], creds: _Credentials) -> Callable
     return lambda: _run_label(events, creds.current().glm_model)
 
 
+def _is_model_footer_line(line: str) -> bool:
+    """True when a line is a model-emitted footer imitation, not prose.
+
+    The footer is code-owned (ARCHITECTURE.md §2.8), but on re-reviews
+    the prior canonical comment is model input (§2.7), so the model can
+    reproduce a footer-like block with a hallucinated URL and an
+    invented label (seen live: a raw-parens URL to `/runs/{pr}/re-review`
+    labeled `re-review · glm-5.3-flash`). A line only counts when it
+    IS a footer line — starting with the 🔬 mark plus the footer text,
+    or the bare markdown footer link — so a finding that merely
+    mentions the replay never matches.
+    """
+    stripped = line.strip()
+    if stripped.startswith(f"[{REPLAY_FOOTER_MARK}]"):
+        return True
+    return stripped.startswith("🔬") and REPLAY_FOOTER_MARK in stripped
+
+
+def _strip_model_footers(content: str) -> str:
+    """Remove model-emitted footer imitations before the code footer.
+
+    Runs at publish, after the sanitizer and before
+    `_with_replay_footer` — order matters twice: stripping first means
+    a model copy of the EXACT code link cannot suppress the real append
+    via the exactly-once anchor (the anchor would otherwise read the
+    copy as the already-published footer and leave it stranded
+    mid-body with nothing at the end). Lines inside fenced code blocks
+    are never stripped — a quoted footer is documentation, not a
+    footer. A `---` separator immediately before a dropped footer line
+    goes with it (the model's own footer separator), so the code
+    footer's separator does not stack on top of a leftover one.
+    """
+    kept: list[str] = []
+    in_fence = False
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            kept.append(line)
+            continue
+        if not in_fence and _is_model_footer_line(line):
+            if kept and kept[-1].strip() == "---":
+                kept.pop()
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _with_replay_footer(content: str, *, pr_number: int, sha: str, label: str | None = None) -> str:
     """Deterministic replay-link footer on the published canonical
     body — code-side, never model-side (the synthesizer prompt and output
@@ -1718,6 +1766,12 @@ def _make_publish(
             # so defense-in-depth firing is observable.
             logger.warning("canary_leaked_at_publish: upstream gate bypassed; redacting")
         content = sanitize(content)
+        # Model footer imitations (hallucinated URL/label, copied from
+        # the prior comment on re-reviews) are stripped BEFORE the code
+        # footer appends — after the sanitizer so the strip sees the
+        # shipped text, and before `_with_replay_footer` so a model copy
+        # of the exact code link cannot suppress the real append.
+        content = _strip_model_footers(content)
         # The footer rides AFTER the sanitizer — it is code-side
         # decoration (the sha is public PR metadata, not model output);
         # inside the sanitizer the 40-hex sha reads as a payload token.
