@@ -369,6 +369,33 @@ def test_strip_preserves_parens_prose_with_em_dash():
     assert _strip_model_footers(prose) == prose
 
 
+def test_strip_indented_fake_footer_with_separator():
+    """Strip matches on the stripped line: a 2-space-indented fake
+    footer is still a footer, and its preceding `---` still pops."""
+    body = BODY + "\n\n---\n  " + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert out.rstrip() == BODY
+
+
+def test_strip_indented_fence_protects_indented_footer():
+    """Fence/strip interplay at the indent boundary: a footer line
+    indented inside an indented-opened fence (1-space opener) is
+    quoted content, so it survives."""
+    block = BODY + "\n\n ```\n  " + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_indented_footer_after_closed_fence():
+    """A 4-space-indented footer-looking line after a closed fence
+    is body text to the strip (only ``` fences track) — it strips,
+    while the closed fence block itself survives."""
+    body = BODY + "\n\n```\ncontent\n```\n    " + FAKE_FOOTER_RAW + "\n"
+    out = _strip_model_footers(body)
+    assert FAKE_FOOTER_RAW not in out
+    assert "content" in out
+
+
 def test_strip_preserves_setext_heading_underline():
     """The `---` pop only fires for a standalone thematic break: a
     `---` directly under a text line is a setext level-2 heading
