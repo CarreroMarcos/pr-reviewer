@@ -617,25 +617,28 @@ def _is_model_footer_line(line: str) -> bool:
     return shape.match(line.strip()) is not None
 
 
-def _fence_marker(line: str) -> tuple[str, int] | None:
-    """Fence (char, length) for a standalone fence line, else `None`.
+def _fence_marker(line: str) -> tuple[str, int, bool] | None:
+    """Fence (char, length, has_info) for a fence line, else `None`.
 
-    CommonMark shape: 3+ fence chars plus an optional info string —
-    with no backticks for a backtick fence (forbidden), but backticks
-    ARE allowed in a tilde fence's info string. A line that merely
-    STARTS with triple backticks — e.g. an inline code span like
-    `` ```code``` text `` — is not a delimiter, so it must not flip
-    fence tracking and hide a later real footer from the strip.
-    Length matters for pairing: a closing fence must run at least as
-    long as its opener.
+    CommonMark shape: at most 3 leading spaces, then 3+ fence chars,
+    plus an optional info string — with no backticks for a backtick
+    fence (forbidden), but backticks ARE allowed in a tilde fence's
+    info string. A line that merely STARTS with triple backticks —
+    e.g. an inline code span like `` ```code``` text `` — is not a
+    delimiter, so it must not flip fence tracking and hide a later
+    real footer from the strip. A 4-space-indented fence-looking line
+    is indented code content, not a delimiter, for the same reason.
+    `has_info` distinguishes openers (info allowed) from closers
+    (CommonMark forbids an info string on a closing fence) — the
+    strip loop only closes on a bare run.
     """
-    match = re.match(r"(`{3,}|~{3,})(.*)$", line.strip())
+    match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
     if match is None:
         return None
     run, rest = match.groups()
     if run[0] == "`" and "`" in rest:
         return None
-    return run[0], len(run)
+    return run[0], len(run), rest.strip() != ""
 
 
 def _strip_model_footers(content: str) -> str:
@@ -650,7 +653,9 @@ def _strip_model_footers(content: str) -> str:
     are never stripped — a quoted footer is documentation, not a
     footer — and fences pair by marker char AND length, so a `~~~`
     line inside a ``` block neither closes it nor opens a new one,
-    and a shorter same-char line never closes a longer opener.
+    and a shorter same-char line never closes a longer opener. A
+    closing fence must also be bare (no info string): a text-bearing
+    fence-looking line inside a block is content, not a closer.
     Documented tradeoff: an unclosed fence disables stripping for
     the rest of the body (never strip possibly-quoted content); the
     code footer still appends, so the worst case is the old
@@ -664,9 +669,10 @@ def _strip_model_footers(content: str) -> str:
     for line in content.split("\n"):
         marker = _fence_marker(line)
         if marker is not None:
+            char, length, has_info = marker
             if open_fence is None:
-                open_fence = marker
-            elif marker[0] == open_fence[0] and marker[1] >= open_fence[1]:
+                open_fence = (char, length)
+            elif char == open_fence[0] and length >= open_fence[1] and not has_info:
                 open_fence = None
             kept.append(line)
             continue

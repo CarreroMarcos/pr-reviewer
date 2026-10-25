@@ -322,6 +322,32 @@ def test_strip_preserves_info_string_fenced_footer_quote():
     assert _strip_model_footers(quoted) == quoted
 
 
+def test_strip_preserves_tilde_fence_with_backticks_in_info():
+    """Tilde fences allow backticks in the info string (CommonMark) —
+    a `~~~ ```json sample` opener still toggles fence tracking and
+    protects its contents, pinning the backtick rule to backtick
+    fences only."""
+    block = BODY + "\n\n~~~ ```json sample\n" + FAKE_FOOTER_RAW + "\n~~~\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_text_bearing_fence_line_does_not_close():
+    """A closing fence carries no info string: a text-bearing
+    fence-looking line (``` end) inside a block is content, not a
+    closer, so the quoted footer after it stays protected until the
+    real bare closer."""
+    block = BODY + "\n\n```\ncontent\n``` end\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(block) == block
+
+
+def test_strip_indented_fence_line_does_not_toggle():
+    """A 4-space-indented fence-looking line is indented code content
+    (CommonMark allows at most 3 leading spaces on a fence), not a
+    delimiter — it neither opens nor closes fence tracking."""
+    block = BODY + "\n\n```\ncontent\n    ```\n" + FAKE_FOOTER_RAW + "\n```\n"
+    assert _strip_model_footers(block) == block
+
+
 def test_strip_preserves_setext_heading_underline():
     """The `---` pop only fires for a standalone thematic break: a
     `---` directly under a text line is a setext level-2 heading
