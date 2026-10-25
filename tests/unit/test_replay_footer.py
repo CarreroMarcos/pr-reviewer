@@ -348,6 +348,27 @@ def test_strip_indented_fence_line_does_not_toggle():
     assert _strip_model_footers(block) == block
 
 
+def test_strip_pops_separator_as_first_body_line():
+    """First-line branch of the separator-pop guard: a footer whose
+    preceding `---` is the body's first line (no kept[-2]) still pops
+    it — the guard must not IndexError or refuse the pop there."""
+    out = _strip_model_footers("---\n" + FAKE_FOOTER_RAW + "\n")
+    assert FAKE_FOOTER_RAW not in out
+    assert out.strip() == ""
+
+
+def test_strip_preserves_parens_prose_with_em_dash():
+    """URL-shape discipline: a prose sentence with a parenthetical
+    and an em-dash clause is not a footer — the parens target must
+    be a URL, or the line survives."""
+    prose = (
+        BODY
+        + "\n\nFull agent replay (added after the v2 redesign)"
+        + " — see section 4 for details.\n"
+    )
+    assert _strip_model_footers(prose) == prose
+
+
 def test_strip_preserves_setext_heading_underline():
     """The `---` pop only fires for a standalone thematic break: a
     `---` directly under a text line is a setext level-2 heading

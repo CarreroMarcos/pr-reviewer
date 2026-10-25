@@ -602,16 +602,20 @@ def _is_model_footer_line(line: str) -> bool:
     labeled `re-review · glm-5.3-flash`). A line only counts when it
     is ONLY a footer: an optional 🔬 mark, then the footer link
     (markdown form, or the mark text plus a parens URL), then
-    optionally the ` — label` suffix — and nothing else. That
-    full-line discipline is what keeps prose safe on both sides: a
-    sentence that merely mentions the replay never matches (even
-    `🔬 Evidence: see the Full agent replay run ...`), and neither
-    does link-initial prose (`[Full agent replay](...) documents ...`),
-    which is a sentence that happens to start with a link.
+    optionally the ` — label` suffix — and nothing else. The
+    parenthesized target must be URL-shaped (`https?://`): without
+    that, a prose sentence like `Full agent replay (added after the
+    v2 redesign) — see section 4` would match the mark + parens +
+    suffix shape and be deleted. That full-line discipline is what
+    keeps prose safe on both sides: a sentence that merely mentions
+    the replay never matches (even `🔬 Evidence: see the Full agent
+    replay run ...`), and neither does link-initial prose
+    (`[Full agent replay](...) documents ...`), which is a sentence
+    that happens to start with a link.
     """
     mark = re.escape(REPLAY_FOOTER_MARK)
     shape = re.compile(
-        rf"^(?:🔬\s*)?(?:\[{mark}\]\([^)]+\)|{mark}\s*\([^)]+\))"
+        rf"^(?:🔬\s*)?(?:\[{mark}\]\(https?://[^)]+\)|{mark}\s*\(https?://[^)]+\))"
         r"(\s+—\s+.*)?$"
     )
     return shape.match(line.strip()) is not None
