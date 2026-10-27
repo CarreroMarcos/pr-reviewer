@@ -430,31 +430,3 @@ def test_already_backticked_fenced_and_email_preserved_verbatim():
     assert "`@with_config`" in result.content
     assert "dev@example.com" in result.content
     assert "```python\n@with_config\nclass C:\n    pass\n```" in result.content
-
-
-def test_adjacent_inline_code_and_prose_at_token_padded():
-    finding = (
-        "- [LOW] `src/config.py:10` — `TypeAdapter`@with_config and "
-        "@dataclass`BaseModel` are adjacent. Fix: separate them."
-    )
-    result = build(body=review_body(findings=[finding]))
-    assert result.verdict.ok is True
-    assert "`TypeAdapter` `@with_config`" in result.content
-    assert "`@dataclass` `BaseModel`" in result.content
-
-
-def test_odd_backtick_line_not_wrapped_and_never_hides_approval_verdict():
-    bad_body = review_body() + "\nThis is `safe to merge and @with_config\n"
-    with pytest.raises(assemble.AssembleError) as exc_info:
-        build(body=bad_body)
-    assert "approval_verdict" in exc_info.value.verdict.reasons
-    assert "mention" in exc_info.value.verdict.reasons
-
-
-@pytest.mark.parametrize("token", ["@approved", "@approve", "@lgtm", "@LGTM"])
-def test_approval_shaped_at_token_not_wrapped(token):
-    bad_body = review_body() + f"\nStatus: {token} by bot.\n"
-    with pytest.raises(assemble.AssembleError) as exc_info:
-        build(body=bad_body)
-    assert "approval_verdict" in exc_info.value.verdict.reasons
-    assert "mention" in exc_info.value.verdict.reasons

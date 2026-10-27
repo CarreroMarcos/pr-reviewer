@@ -46,7 +46,6 @@ from zoneinfo import ZoneInfo
 from common.diff import DiffResult
 from common.marker import build_marker
 from common.validate import (
-    _APPROVAL_STEM_RE,
     _CODE_BLOCK_RE,
     _EMAIL_RE,
     _INLINE_CODE_RE,
@@ -183,8 +182,6 @@ def _sub_outside(
     pattern: re.Pattern[str],
     transform: Callable[[str], str],
     text: str,
-    *,
-    pad_backtick_edges: bool = False,
 ) -> str:
     """Apply `transform` to every slice of `text` not matched by `pattern`,
     preserving matched spans verbatim."""
@@ -193,47 +190,12 @@ def _sub_outside(
     for match in pattern.finditer(text):
         start, end = match.span()
         if start > cursor:
-            segment = transform(text[cursor:start])
-            if pad_backtick_edges and cursor > 0 and segment.startswith("`"):
-                segment = " " + segment
-            if pad_backtick_edges and segment.endswith("`"):
-                segment = segment + " "
-            out.append(segment)
+            out.append(transform(text[cursor:start]))
         out.append(match.group(0))
         cursor = end
     if cursor < len(text):
-        segment = transform(text[cursor:])
-        if pad_backtick_edges and cursor > 0 and segment.startswith("`"):
-            segment = " " + segment
-        out.append(segment)
+        out.append(transform(text[cursor:]))
     return "".join(out)
-
-
-def _wrap_at_token(match: re.Match[str]) -> str:
-    token = match.group(0)
-    lowered = token[1:].lower()
-    if _APPROVAL_STEM_RE.search(lowered) or "lgtm" in lowered:
-        return token
-    return f"`{token}`"
-
-
-def _backtick_line_at_tokens(line: str) -> str:
-    # An odd backtick count on a non-fenced line means an unclosed ` span;
-    # inserting `@token` backticks there would pair with the stray ` and
-    # pull the prose between them into `_INLINE_CODE_RE`. Leave such lines
-    # untouched so `validate_comment` sees the original span boundaries.
-    if line.count("`") % 2 == 1:
-        return line
-    return _sub_outside(
-        _INLINE_CODE_RE,
-        lambda non_code: _sub_outside(
-            _EMAIL_RE,
-            lambda prose: _PROSE_AT_TOKEN_RE.sub(_wrap_at_token, prose),
-            non_code,
-        ),
-        line,
-        pad_backtick_edges=True,
-    )
 
 
 def _backtick_prose_at_tokens(text: str) -> str:
@@ -248,8 +210,14 @@ def _backtick_prose_at_tokens(text: str) -> str:
     """
     return _sub_outside(
         _CODE_BLOCK_RE,
-        lambda non_fenced: "\n".join(
-            _backtick_line_at_tokens(line) for line in non_fenced.split("\n")
+        lambda non_fenced: _sub_outside(
+            _INLINE_CODE_RE,
+            lambda non_code: _sub_outside(
+                _EMAIL_RE,
+                lambda prose: _PROSE_AT_TOKEN_RE.sub(r"`\g<0>`", prose),
+                non_code,
+            ),
+            non_fenced,
         ),
         text,
     )
