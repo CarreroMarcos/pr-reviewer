@@ -396,3 +396,65 @@ def test_payload_byte_deterministic():
 def test_payload_diff_text_verbatim():
     diff_text = "--- z.py (+2/-1) ---\n@@ patch @@\nlockfiles: no changes"
     assert diff_text in payload(diff_text=diff_text)
+
+
+# --- prose @token neutralization -----------------------------------------------
+
+
+def test_bare_prose_decorator_wrapped_in_backticks_and_passes_gate():
+    finding = (
+        "- [MEDIUM] `src/mars_atlas/config.py:143` — No tests added for Pydantic "
+        "TypeAdapter/dataclass config refactor. load_config's parsing path was "
+        "rewritten from per-section BaseModel schemas to a single TypeAdapter over "
+        "@with_config dataclasses and @dataclass helpers with @pytest.fixture. "
+        "Fix: add tests for @types/node and @with_config(_CONFIG_DICT)."
+    )
+    result = build(body=review_body(findings=[finding]))
+    assert result.verdict.ok is True
+    assert "`@with_config` dataclasses" in result.content
+    assert "`@dataclass` helpers" in result.content
+    assert "`@pytest.fixture`." in result.content
+    assert "`@types/node`" in result.content
+    assert "`@with_config`(_CONFIG_DICT)" in result.content
+
+
+def test_already_backticked_fenced_and_email_preserved_verbatim():
+    finding = (
+        "- [LOW] `src/config.py:10` — Use `@with_config` or contact "
+        "dev@example.com. Fix: update it.\n\n"
+        "```python\n@with_config\nclass C:\n    pass\n```"
+    )
+    result = build(body=review_body(findings=[finding]))
+    assert result.verdict.ok is True
+    assert "``@with_config``" not in result.content
+    assert "`@with_config`" in result.content
+    assert "dev@example.com" in result.content
+    assert "```python\n@with_config\nclass C:\n    pass\n```" in result.content
+
+
+def test_adjacent_inline_code_and_prose_at_token_padded():
+    finding = (
+        "- [LOW] `src/config.py:10` — `TypeAdapter`@with_config and "
+        "@dataclass`BaseModel` are adjacent. Fix: separate them."
+    )
+    result = build(body=review_body(findings=[finding]))
+    assert result.verdict.ok is True
+    assert "`TypeAdapter` `@with_config`" in result.content
+    assert "`@dataclass` `BaseModel`" in result.content
+
+
+def test_odd_backtick_line_not_wrapped_and_never_hides_approval_verdict():
+    bad_body = review_body() + "\nThis is `safe to merge and @with_config\n"
+    with pytest.raises(assemble.AssembleError) as exc_info:
+        build(body=bad_body)
+    assert "approval_verdict" in exc_info.value.verdict.reasons
+    assert "mention" in exc_info.value.verdict.reasons
+
+
+@pytest.mark.parametrize("token", ["@approved", "@approve", "@lgtm", "@LGTM"])
+def test_approval_shaped_at_token_not_wrapped(token):
+    bad_body = review_body() + f"\nStatus: {token} by bot.\n"
+    with pytest.raises(assemble.AssembleError) as exc_info:
+        build(body=bad_body)
+    assert "approval_verdict" in exc_info.value.verdict.reasons
+    assert "mention" in exc_info.value.verdict.reasons
