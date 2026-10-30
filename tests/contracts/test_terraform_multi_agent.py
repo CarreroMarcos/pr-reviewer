@@ -5,11 +5,11 @@ from tests/contracts/test_terraform_contract.py) and pins the
 multi-agent infrastructure surface:
 
 * GSI `pr-runs-index` on the state table (`pr_number (N)` +
-  `started_ts (S)`, 5/5, `INCLUDE` projecting exactly `["run_id",
+  `started_ts (S)`, 3/3, `INCLUDE` projecting exactly `["run_id",
   "sha", "status", "pipeline", "archive_s3_key", "archive_written_at",
   "findings_n"]` — ARCH §5.3 index; `run_id` is projected);
-* base table 20/20 rebalance (Always Free 25/25 envelope: 20 base + 5
-  GSI);
+* base table 12/12 rebalance (15/15 total = 60% of the Always Free 25/25
+  envelope: 12 base + 3 GSI);
 * ESM `scaling_config { maximum_concurrency = 2 }`;
 * worker function unreserved (no `reserved_concurrent_executions`);
 * all 12 multi-agent env vars present with their defaults, plus the
@@ -143,8 +143,8 @@ def test_gsi_pr_runs_index_exact_shape():
     assert _str_assignment(gsi, "name") == "pr-runs-index"
     assert _str_assignment(gsi, "hash_key") == "pr_number"
     assert _str_assignment(gsi, "range_key") == "started_ts"
-    assert _int_assignment(gsi, "read_capacity") == 5
-    assert _int_assignment(gsi, "write_capacity") == 5
+    assert _int_assignment(gsi, "read_capacity") == 3
+    assert _int_assignment(gsi, "write_capacity") == 3
     assert _str_assignment(gsi, "projection_type") == "INCLUDE"
     projected = re.findall(r'"([a-z_0-9]+)"', gsi.split("non_key_attributes", 1)[1])
     assert projected == EXPECTED_PROJECTION
@@ -162,13 +162,13 @@ def test_gsi_key_attribute_types():
     )
 
 
-def test_base_table_20_20():
+def test_base_table_12_12():
     table = _resource_block(STATE_TF, "aws_dynamodb_table", "state")
     # Scope the capacity reads to the TABLE level (before any nested
     # block): split off the first nested block.
     head = re.split(r"\n\s*(?:attribute|global_secondary_index|ttl)\s*\{", table, maxsplit=1)[0]
-    assert _int_assignment(head, "read_capacity") == 20
-    assert _int_assignment(head, "write_capacity") == 20
+    assert _int_assignment(head, "read_capacity") == 12
+    assert _int_assignment(head, "write_capacity") == 12
 
 
 # --- ESM scaling + unreserved worker ---
