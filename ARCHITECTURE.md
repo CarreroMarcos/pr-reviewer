@@ -156,7 +156,7 @@ Python 3.12 / `worker_handler.handler`; 900 s timeout, 1769 MB (≈ 1 vCPU; DECI
 
 ### 2.4 DynamoDB State Store
 
-Table `pr-reviewer-state`, partition key `pk`, PROVISIONED 20/20 + GSI `pr-runs-index` 5/5 (Always Free envelope: 25 RCU/25 WCU total). Item types: `delivery:{guid}` (TTL 7 days); `review:{repo_full_name}#{pr_number}` (§4.1); `mutex:pr-reviewer-worker` (§6.2). Capacity: ≈ 4 WCU + 1.5–3 RCU per new-revision review (items ≤ 1 KB); burst ≤ 20 WCU/s — under the 25 ceiling; throttling resolves via the retry path (failure mode 14).
+Table `pr-reviewer-state`, partition key `pk`, PROVISIONED 12/12 + GSI `pr-runs-index` 3/3 (15/15 total = 60% of the Always Free 25 RCU/25 WCU envelope, staying below the 85% / 21.25-unit monthly Free Tier alert email threshold with 10/10 account headroom). Item types: `delivery:{guid}` (TTL 7 days); `review:{repo_full_name}#{pr_number}` (§4.1); `mutex:pr-reviewer-worker` (§6.2). Capacity: ≈ 6–8 WCU + 1.5–2 RCU per new-revision review (items < 1 KB); 300-s burst bucket = 3,600 WCU / 7,200 reads; throttling resolves via the retry path (failure mode 14).
 
 ### 2.5 SQS DLQ + Operator Redrive
 
@@ -329,7 +329,7 @@ Never logged: Authorization headers, PAT, webhook secret, GLM key, raw payloads,
 | Fencing comparison | first-write, idempotent-equality, or live-head confirmation — never SHA ordering |
 | Metric alarms | 0 (all 10 decommissioned for Free Tier compliance) |
 
-**Terraform BOM:** `aws_lambda_function` ×3 + function URLs ×2 + event source mapping; `aws_sqs_queue` ×2 + redrive + redrive-allow policies; `aws_s3_bucket` (`pr-reviewer-archives`, 90-day expiry on `runs/`); `aws_dynamodb_table` (20/20 + GSI 5/5); IAM roles ×4 (incl. viewer); log groups ×3; SNS topic; 6 log metric filters; `archive_file` ×3. Absent: API Gateway, VPC, NAT, S3 backend, SSM parameter resources, Secrets Manager, EventBridge.
+**Terraform BOM:** `aws_lambda_function` ×3 + function URLs ×2 + event source mapping; `aws_sqs_queue` ×2 + redrive + redrive-allow policies; `aws_s3_bucket` (`pr-reviewer-archives`, 90-day expiry on `runs/`); `aws_dynamodb_table` (12/12 + GSI 3/3); IAM roles ×4 (incl. viewer); log groups ×3; SNS topic; 6 log metric filters; `archive_file` ×3. Absent: API Gateway, VPC, NAT, S3 backend, SSM parameter resources, Secrets Manager, EventBridge.
 
 **Deployment:** populate the five SSM parameters (§2.6) → `terraform init && terraform apply` → register webhook (Pull requests only) → acceptance testing. Apply from a clean, reviewed revision (zips embed the source). Rollback is re-applying the previous revision: no data migrations exist, and comment state is fenced and converges. **Acceptance criteria:** (a) delivery log 202 in seconds; (b) one canonical comment in 6–15 s — **measured 2026-09-17: currently unmet** (~130 s/case; §7 latency); (c) second push updates the same comment; (d) two rapid pushes leave only the latest head SHA reflected; (e) bad-signature webhook → 401, nothing enqueued; (f) DLQ empty on happy path; (g) artificially stale head SHA redriven into the queue must **not** mutate the canonical comment; (h) deleting the bot comment + new push converges to exactly one marker-bearing comment; (i) concurrent workers on the same PR still converge to a single comment with the correct head SHA; (j) redrive drill: a DLQ message moved back after a fix converges without duplicate comments.
 

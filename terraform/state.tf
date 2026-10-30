@@ -1,10 +1,9 @@
 # serverless-pr-reviewer — DynamoDB state store (T022, HLD §2.4).
 #
-# Table pr-reviewer-state, partition key pk, PROVISIONED 20 WCU / 20 RCU
-# base + 5/5 GSI (T032, HLD §7 Mars ruling: rebalance preserves the AWS
-# Always Free 25/25 envelope — 20 base + 5 `pr-runs-index`).
-# Zero headroom is intentional (HLD-pinned split, §7 Mars ruling): a
-# future GSI or bump must revisit the envelope, not drift past it. GSI
+# Table pr-reviewer-state, partition key pk, PROVISIONED 12 WCU / 12 RCU
+# base + 3/3 GSI (15/15 total = 60% of the AWS Always Free 25/25 envelope,
+# staying below the 85% / 21.25-unit monthly Free Tier alert email threshold
+# while leaving 10 RCU / 10 WCU account-wide buffer). GSI
 # capacity throttles independently of the base table — a throttled index
 # write fails the GSI alone, and the archive path treats index writes as
 # best-effort non-fatal by design (T029: swallowed with an
@@ -23,8 +22,8 @@
 resource "aws_dynamodb_table" "state" {
   name           = "pr-reviewer-state"
   billing_mode   = "PROVISIONED"
-  read_capacity  = 20
-  write_capacity = 20
+  read_capacity  = 12
+  write_capacity = 12
   hash_key       = "pk"
 
   attribute {
@@ -46,8 +45,8 @@ resource "aws_dynamodb_table" "state" {
     name            = "pr-runs-index"
     hash_key        = "pr_number"
     range_key       = "started_ts"
-    read_capacity   = 5
-    write_capacity  = 5
+    read_capacity   = 3
+    write_capacity  = 3
     projection_type = "INCLUDE"
 
     non_key_attributes = [
