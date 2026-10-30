@@ -36,6 +36,7 @@ prohibited content.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,7 +45,13 @@ from zoneinfo import ZoneInfo
 
 from common.diff import DiffResult
 from common.marker import build_marker
-from common.validate import ValidationVerdict, validate_comment
+from common.validate import (
+    _CODE_BLOCK_RE,
+    _EMAIL_RE,
+    _INLINE_CODE_RE,
+    ValidationVerdict,
+    validate_comment,
+)
 
 # Worker-injected review header stamps in America/Los_Angeles.
 # Evaluated at import/cold start so a missing tz database fails the
@@ -168,6 +175,54 @@ def format_stamp(now: float) -> str:
     return f"{dt.strftime('%b')} {dt.day}, {hour}:{dt.minute:02d} {suffix}"
 
 
+_PROSE_AT_TOKEN_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_](?:[A-Za-z0-9_./-]*[A-Za-z0-9_])?")
+
+
+def _sub_outside(
+    pattern: re.Pattern[str],
+    transform: Callable[[str], str],
+    text: str,
+) -> str:
+    """Apply `transform` to every slice of `text` not matched by `pattern`,
+    preserving matched spans verbatim."""
+    out: list[str] = []
+    cursor = 0
+    for match in pattern.finditer(text):
+        start, end = match.span()
+        if start > cursor:
+            out.append(transform(text[cursor:start]))
+        out.append(match.group(0))
+        cursor = end
+    if cursor < len(text):
+        out.append(transform(text[cursor:]))
+    return "".join(out)
+
+
+def _backtick_prose_at_tokens(text: str) -> str:
+    """Wrap bare prose `@tokens` (e.g. unbackticked `@with_config` or
+    `@dataclass` decorators) in inline code spans before validation.
+
+    Traverses the same span hierarchy as `validate_comment` (fenced code
+    blocks → inline code spans → email addresses), leaving each matched
+    span byte-identical and wrapping remaining `@identifiers` in single
+    backticks so GitHub never parses them as user mentions and the
+    publication gate accepts the review.
+    """
+    return _sub_outside(
+        _CODE_BLOCK_RE,
+        lambda non_fenced: _sub_outside(
+            _INLINE_CODE_RE,
+            lambda non_code: _sub_outside(
+                _EMAIL_RE,
+                lambda prose: _PROSE_AT_TOKEN_RE.sub(r"`\g<0>`", prose),
+                non_code,
+            ),
+            non_fenced,
+        ),
+        text,
+    )
+
+
 def build_comment(
     *,
     repo_full_name: str,
@@ -182,14 +237,18 @@ def build_comment(
     gate passes; raise `AssembleError` otherwise.
 
     Marker is worker-injected (`common.marker`); `review_content` is model
-    output and is never rewritten (stripped of surrounding whitespace only).
+    output (stripped of surrounding whitespace, with bare prose `@tokens`
+    wrapped in inline backticks so unbackticked decorators like
+    `@with_config` do not trip the mention gate or ping GitHub users).
     When `review_number` is given, one deterministic header line
     (`**Review #N · updated {stamp} PT**`) is inserted between the marker
     and the body; when None the output is byte-identical to the no-header
     form.
     """
     marker = build_marker(repo_full_name, pr_number)
-    body = review_content.strip() if isinstance(review_content, str) else ""
+    body = (
+        _backtick_prose_at_tokens(review_content.strip()) if isinstance(review_content, str) else ""
+    )
     chunks = [marker]
     if review_number is not None:
         stamp = format_stamp(time() if now is None else now)
